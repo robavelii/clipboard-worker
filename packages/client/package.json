@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./link": "./src/link.ts",
-    "./vault": "./src/vault.ts"
+    "./vault": "./src/vault.ts",
+    "./invite": "./src/invite.ts"
   },
   "dependencies": {
     "@clipsync/protocol": "*",

@@ -15,6 +15,10 @@ import type {
   ListClipsResponse,
   PairCodeResponse,
   Platform,
+  ClaimInviteRequest,
+  ClaimInviteResponse,
+  CreateInviteRequest,
+  CreateInviteResponse,
   TicketResponse,
   VaultKeyResponse,
   WhoAmI,
@@ -138,6 +142,23 @@ export class ApiClient {
   deleteClip(id: string): Promise<{ ok: boolean }> {
     return this.request(`/api/clips/${encodeURIComponent(id)}`, {
       method: "DELETE",
+    });
+  }
+
+  createInvite(body: CreateInviteRequest): Promise<CreateInviteResponse> {
+    return this.request("/api/invites", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  claimInvite(
+    id: string,
+    body: ClaimInviteRequest,
+  ): Promise<ClaimInviteResponse> {
+    return this.request(`/api/invites/${encodeURIComponent(id)}/claim`, {
+      method: "POST",
+      body: JSON.stringify(body),
     });
   }
 
