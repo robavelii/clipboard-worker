@@ -325,3 +325,38 @@ a missing permission. And building the crate with `cargo` rather than the Tauri
 CLI produces a binary still pointing at the dev server. Both fail at runtime,
 neither fails the build, and both cost an hour if you debug them by reading the
 code instead of by logging.
+
+## 17. Dedupe across the whole history, not just the newest clip
+
+The original rule was that a clip matching the *newest* one is a repeat and
+anything else is a new event. That absorbed the duplicate events clipboard
+managers emit, which was the problem it was written for, and it was wrong about
+everything else.
+
+Two consequences showed up together in real use. Copying something from last
+week added a second identical row, so history filled with duplicates. And
+`clipsync copy` writes to the clipboard, which the daemon then uploads -- so
+deleting a secret and copying it again put it straight back, which is a poor
+property for the one feature whose entire job is holding credentials briefly.
+
+Matching `content_hash` across the user's whole history fixes both: a repeat
+moves the existing row to the top instead of inserting. That is also what every
+clipboard manager does, so it is what people expect.
+
+The bump is a real event (`clip.bumped`) rather than a silent update, because
+re-copying an old clip still means "put this on my other devices' clipboards".
+Receivers treat it exactly like a new clip; the UI moves the entry instead of
+adding one. When the match is already the newest clip there is nothing to
+reorder, so that case stays a silent no-op -- which is the case clipboard
+managers hammer.
+
+The stored envelope is kept rather than replaced. It already decrypts to the
+same plaintext, and a fresh nonce would buy nothing.
+
+**The tests encoded the old behaviour.** Six checks failed on the first run
+after this change, all of them assuming a fixture would be *created* rather
+than bumped, or that a clip stays where it was in the list. They also made the
+suite single-use: running it twice against one database now fails on the second
+pass. Fixtures are tagged per run and lookups go by id rather than position, and
+the passphrase-rotation test now rotates back, so the suite is re-runnable --
+which is what caught this in the first place.

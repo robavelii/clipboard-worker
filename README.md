@@ -284,6 +284,11 @@ after this change get a random vault key and do not have the problem.
 
 ## Retention
 
+Identical content is stored once. Copying something you copied last week moves
+that entry back to the top rather than adding a second row, so history does not
+fill with duplicates and a clip you deleted does not quietly return the next
+time you copy it.
+
 Clips expire after 30 days and an hourly cron deletes them. Pinned clips never
 expire. Clipboard history accumulates API tokens and passwords whether or not
 you intend it to, so the default is to forget.

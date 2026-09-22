@@ -29,6 +29,15 @@ const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
 const ADMIN = process.env.CLIPSYNC_ADMIN_SECRET ?? "local-dev-admin-secret";
 const PASS = "correct horse battery staple";
 
+/**
+ * Payloads are tagged per run.
+ *
+ * Dedupe is global, so a fixture reused across runs is *bumped* rather than
+ * created, and every "is this new?" assertion would fail the second time the
+ * suite runs against the same database.
+ */
+const RUN = String(Date.now()).slice(-8);
+
 let pass = 0, fail = 0;
 function check(name: string, ok: boolean, detail = "") {
   if (ok) { pass++; console.log(`  PASS  ${name}`); }
@@ -79,7 +88,7 @@ check("a wrong passphrase cannot unwrap the vault key", wrongRejected);
 
 console.log("\n--- clips ---");
 const keys = await vaultKeysFrom(vaultKey, pc.kdfSalt);
-const TEXT = "docker compose up -d";
+const TEXT = `docker compose up -d # ${RUN}`;
 const created = await pcApi.createClip({
   type: "text", envelope: await encryptText(keys, TEXT),
   contentHash: await dedupeHash(keys, TEXT), size: Buffer.byteLength(TEXT),
@@ -100,12 +109,48 @@ const again = await pcApi.createClip({
 });
 check("repeat of newest clip is deduped", again.deduped && again.id === created.id);
 
-const other = "git reset --soft HEAD~1";
+const other = `git reset --soft HEAD~1 # ${RUN}`;
 const otherClip = await pcApi.createClip({
   type: "text", envelope: await encryptText(keys, other),
   contentHash: await dedupeHash(keys, other), size: Buffer.byteLength(other),
 });
 check("different content is not deduped", !otherClip.deduped);
+
+/** Re-send existing plaintext, as `clipsync copy` effectively does. */
+async function recopy(text: string) {
+  return pcApi.createClip({
+    type: "text", envelope: await encryptText(keys, text),
+    contentHash: await dedupeHash(keys, text), size: Buffer.byteLength(text),
+  });
+}
+
+// TEXT is now buried under otherClip, so copying it again must move it rather
+// than create a second row.
+const bumped = await recopy(TEXT);
+check("re-copying an older clip reuses its id", bumped.deduped && bumped.id === created.id);
+
+const afterBump = await pcApi.listClips(20);
+check("the re-copied clip is back on top", afterBump.clips[0]?.id === created.id);
+check("re-copying does not duplicate the row",
+  afterBump.clips.filter((c) => c.id === created.id).length === 1);
+
+const hashes = afterBump.clips.map((c) => c.contentHash);
+check("history holds no duplicate content", new Set(hashes).size === hashes.length);
+
+/**
+ * The reason this matters: before global dedupe, deleting a secret and then
+ * copying it again silently put it back.
+ */
+const secret = `hunter2-not-a-real-credential # ${RUN}`;
+const secretClip = await recopy(secret);
+await pcApi.deleteClip(secretClip.id);
+const readded = await recopy(secret);
+check("a deleted clip comes back as a new row, not a resurrected one",
+  !readded.deduped && readded.id !== secretClip.id);
+await pcApi.deleteClip(readded.id);
+
+// Put TEXT back on top so the checks that follow still find it newest.
+await recopy(TEXT);
 
 await expectStatus("oversized envelope is refused", () => pcApi.createClip({
   type: "text", envelope: "v1.aaaa." + "A".repeat(MAX_ENVELOPE_BYTES),
@@ -133,9 +178,10 @@ const laptopVault = await unlockVault(
 );
 check("paired device unwraps the same vault key", laptopVault.vaultKey === vaultKey);
 const laptopKeys = await vaultKeysFrom(laptopVault.vaultKey, laptop.kdfSalt);
-const fromLaptop = await laptopApi.listClips(10);
+const fromLaptop = await laptopApi.listClips(50);
 check("paired device decrypts existing history",
-  (await decryptText(laptopKeys, fromLaptop.clips.at(-1)!.envelope)) === TEXT);
+  (await decryptText(laptopKeys,
+    fromLaptop.clips.find((c) => c.id === created.id)!.envelope)) === TEXT);
 
 /** Polls until `predicate` holds, rather than sleeping a fixed interval. */
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<boolean> {
@@ -159,16 +205,18 @@ await new Promise<void>((res, rej) => {
 await new Promise((r) => setTimeout(r, 300));
 check("server sends a ready frame", received[0]?.type === "ready");
 
-const SYNCED = "npm install hono";
+const SYNCED = `npm install hono # ${RUN}`;
 await pcApi.createClip({
   type: "text", envelope: await encryptText(keys, SYNCED),
   contentHash: await dedupeHash(keys, SYNCED), size: Buffer.byteLength(SYNCED),
 });
-await waitFor(() => received.some((m) => m.type === "clip.created"));
+await waitFor(() =>
+  received.some((m) => m.type === "clip.created" || m.type === "clip.bumped"));
 
-const pushed = received.find((m) => m.type === "clip.created");
+const pushed = received.find(
+  (m) => m.type === "clip.created" || m.type === "clip.bumped");
 check("laptop receives the clip pushed by the pc", Boolean(pushed));
-if (pushed && pushed.type === "clip.created") {
+if (pushed && (pushed.type === "clip.created" || pushed.type === "clip.bumped")) {
   check("pushed clip decrypts on the laptop",
     (await decryptText(laptopKeys, pushed.clip.envelope)) === SYNCED);
   check("event names the originating device", pushed.origin === pc.deviceId);
@@ -218,9 +266,10 @@ check("linked device shares the vault salt", linked.credentials.kdfSalt === pc.k
 
 const linkedApi = new ApiClient(BASE, linked.credentials.token);
 const linkedKeys = await vaultKeysFrom(linked.vaultKey, linked.credentials.kdfSalt);
-const linkedHistory = await linkedApi.listClips(10);
+const linkedHistory = await linkedApi.listClips(50);
 check("linked device decrypts existing history",
-  (await decryptText(linkedKeys, linkedHistory.clips.at(-1)!.envelope)) === TEXT);
+  (await decryptText(linkedKeys,
+    linkedHistory.clips.find((c) => c.id === created.id)!.envelope)) === TEXT);
 
 // The claim deletes the row, so a replay finds nothing.
 const replayClaim = await fetch(new URL(`/api/link/${parsed.linkId}/claim`, BASE), {
@@ -261,9 +310,10 @@ check("scanning device gets working credentials", Boolean(phone.credentials.toke
 
 const phoneApi = new ApiClient(BASE, phone.credentials.token);
 const phoneKeys = await vaultKeysFrom(phone.vaultKey, phone.credentials.kdfSalt);
-const phoneHistory = await phoneApi.listClips(10);
+const phoneHistory = await phoneApi.listClips(50);
 check("scanning device decrypts existing history",
-  (await decryptText(phoneKeys, phoneHistory.clips.at(-1)!.envelope)) === TEXT);
+  (await decryptText(phoneKeys,
+    phoneHistory.clips.find((c) => c.id === created.id)!.envelope)) === TEXT);
 
 let replayRefused = false;
 try {
@@ -289,11 +339,21 @@ try {
 } catch { oldRejected = true; }
 check("the old passphrase no longer unwraps it", oldRejected);
 
-const stillReadable = await pcApi.listClips(10);
-check("clips written before the change still decrypt",
-  (await decryptText(await vaultKeysFrom(withNew.vaultKey, pc.kdfSalt),
-    stillReadable.clips.at(-1)!.envelope)) === TEXT,
+const stillReadable = await pcApi.listClips(20);
+const rotatedKeys = await vaultKeysFrom(withNew.vaultKey, pc.kdfSalt);
+const readBack = await Promise.all(
+  stillReadable.clips.map((c) =>
+    decryptText(rotatedKeys, c.envelope).catch(() => null)),
+);
+check("clips written before the change still decrypt", readBack.includes(TEXT),
   "rotation should re-wrap 32 bytes, not re-encrypt history");
+
+// Put the account back so the suite can be run twice in a row. Without this
+// the next run cannot unlock the vault it left behind.
+await changePassphrase(pcApi, vaultKey, pc.kdfSalt, PASS);
+const restored = await pcApi.vaultKey();
+check("the suite leaves the passphrase as it found it",
+  (await unlockVault(pcApi, PASS, pc.kdfSalt, restored.wrappedVaultKey)).vaultKey === vaultKey);
 
 console.log("\n--- tickets & revocation ---");
 /** Resolves true if the socket opens, false if the server refuses it. */

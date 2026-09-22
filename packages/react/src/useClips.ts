@@ -73,6 +73,17 @@ export function useClips(api: ApiClient, keys: VaultKeys) {
             );
           })();
           break;
+        case "clip.bumped":
+          void (async () => {
+            const [decrypted] = await decryptAll(keys, [event.clip]);
+            // Remove then prepend: the clip already exists somewhere in the
+            // list and has to move, not appear twice.
+            setClips((prev) => [
+              decrypted!,
+              ...prev.filter((c) => c.id !== decrypted!.id),
+            ]);
+          })();
+          break;
         case "clip.deleted":
           setClips((prev) => prev.filter((c) => c.id !== event.clipId));
           break;

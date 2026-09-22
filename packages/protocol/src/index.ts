@@ -198,6 +198,7 @@ export interface ApiError {
 
 export type SyncEventType =
   | "clip.created"
+  | "clip.bumped"
   | "clip.deleted"
   | "clip.pinned"
   | "device.connected"
@@ -213,6 +214,18 @@ interface SyncEventBase {
 
 export interface ClipCreatedEvent extends SyncEventBase {
   type: "clip.created";
+  clip: Clip;
+}
+
+/**
+ * An existing clip was copied again, so it moves back to the top.
+ *
+ * Carries the whole clip because receivers need to do exactly what they do for
+ * a new one -- a device that re-copies an old clip still expects it on its
+ * other devices' clipboards.
+ */
+export interface ClipBumpedEvent extends SyncEventBase {
+  type: "clip.bumped";
   clip: Clip;
 }
 
@@ -235,6 +248,7 @@ export interface DevicePresenceEvent extends SyncEventBase {
 
 export type SyncEvent =
   | ClipCreatedEvent
+  | ClipBumpedEvent
   | ClipDeletedEvent
   | ClipPinnedEvent
   | DevicePresenceEvent;

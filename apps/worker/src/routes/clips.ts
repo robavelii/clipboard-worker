@@ -85,20 +85,65 @@ export const clipRoutes = new Hono<AppEnv>()
     const { userId, deviceId } = c.var.device;
     const now = Date.now();
 
-    // Dedupe against the newest clip only. Copying A, then B, then A again is
-    // three real events; copying A twice in a row is one. Clipboard managers
-    // emit the latter constantly.
-    const newest = await c.env.DB.prepare(
-      `SELECT id, content_hash, created_at FROM clips
-        WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+    // Dedupe across the whole history, not just the newest clip.
+    //
+    // Copying something you copied last week should move that entry back to
+    // the top, not add a second identical row -- which is what every clipboard
+    // manager does, and what stops a deleted secret quietly reappearing every
+    // time it is copied again.
+    const existing = await c.env.DB.prepare(
+      `SELECT * FROM clips WHERE user_id = ? AND content_hash = ?
+        ORDER BY created_at DESC LIMIT 1`,
     )
-      .bind(userId)
-      .first<{ id: string; content_hash: string; created_at: number }>();
+      .bind(userId, body.contentHash)
+      .first<ClipRow>();
 
-    if (newest?.content_hash === body.contentHash) {
+    if (existing) {
+      const newest = await c.env.DB.prepare(
+        `SELECT id FROM clips WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(userId)
+        .first<{ id: string }>();
+
+      // Already on top: nothing to reorder, and no reason to tell anyone.
+      // Clipboard managers re-announce the current selection constantly.
+      if (newest?.id === existing.id) {
+        return c.json<CreateClipResponse>({
+          id: existing.id,
+          createdAt: existing.created_at,
+          deduped: true,
+        });
+      }
+
+      const bumpedAt = now;
+      const expiresAt = existing.pinned
+        ? existing.expires_at
+        : bumpedAt + DEFAULT_TTL_DAYS * 86_400_000;
+
+      // The stored envelope is kept rather than replaced: it already decrypts
+      // to the same plaintext, and rewriting it would buy nothing.
+      await c.env.DB.prepare(
+        `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?
+          WHERE id = ? AND user_id = ?`,
+      )
+        .bind(bumpedAt, deviceId, expiresAt, existing.id, userId)
+        .run();
+
+      const bumped = toClip({
+        ...existing,
+        created_at: bumpedAt,
+        device_id: deviceId,
+        expires_at: expiresAt,
+      });
+
+      await publish(c, userId, {
+        ...event("clip.bumped", deviceId),
+        clip: bumped,
+      });
+
       return c.json<CreateClipResponse>({
-        id: newest.id,
-        createdAt: newest.created_at,
+        id: existing.id,
+        createdAt: bumpedAt,
         deduped: true,
       });
     }

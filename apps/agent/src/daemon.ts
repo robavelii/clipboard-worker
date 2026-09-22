@@ -176,7 +176,11 @@ export class Daemon {
         );
         break;
 
+      // A bump means another device copied something again; from here it is
+      // indistinguishable from a new copy and belongs on the clipboard just
+      // the same.
       case "clip.created":
+      case "clip.bumped":
         // Defence in depth: the server already excludes the origin device.
         if (msg.origin === this.config.deviceId) break;
         void this.apply(msg.clip.envelope, msg.origin);
