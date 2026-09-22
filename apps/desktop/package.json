@@ -1,0 +1,30 @@
+{
+  "name": "@clipsync/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:ui": "vite --port 5174 --strictPort",
+    "build:ui": "vite build",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clipsync/protocol": "*",
+    "@clipsync/crypto": "*",
+    "@clipsync/client": "*",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}
