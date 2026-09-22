@@ -114,3 +114,37 @@ Clipboard history accrues API tokens, passwords and private URLs whether or not
 you meant it to. Unpinned clips expire after 30 days and an hourly cron removes
 them. A clipboard manager that remembers everything forever is a credential
 store nobody audits.
+
+## 10. Device linking transfers the secret, it does not re-derive it
+
+Pairing codes work but ask the user to type the passphrase again on every new
+machine, which is both annoying and the step where people quietly get it wrong
+and end up with a device that shows their whole history as locked.
+
+The fix is a key agreement, not a better prompt. The joining device generates a
+throwaway ECDH keypair; the approving device derives a shared secret and seals
+the passphrase to it. The server relays two public keys and one ciphertext, and
+cannot derive the shared secret from public keys alone.
+
+**What the QR is actually for.** Not convenience — authentication. A relay that
+can choose which public key the approver sees can substitute its own, read the
+secret, and re-seal it. Carrying the joining device's key out of band, through a
+camera or a human paste, removes that choice. Both ends then display a
+fingerprint of the key so a mismatch is visible. `approveLink` also compares the
+key the server returned against the one that arrived out of band and refuses
+outright if they differ, so the human check is a backstop rather than the only
+defence.
+
+**What is transferred.** The passphrase itself, not raw key material. That is a
+deliberate simplification: the agent already stores the passphrase at mode 0600
+so it can start unattended, so transferring it adds no local exposure.
+
+The cleaner long-term shape is a random vault key wrapped by a
+passphrase-derived KEK — it would let you change the passphrase without
+re-encrypting history. That is worth doing when passphrase rotation becomes a
+requirement; it is not worth the migration today.
+
+**Where the secret briefly rests.** Between approval and pickup the server holds
+the new device's bearer token in the clear, for at most ten minutes, in a row
+that cannot be read without the pickup token and that the claiming read deletes.
+The sealed passphrase is never readable by the server at any point.

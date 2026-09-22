@@ -99,32 +99,59 @@ your own hostname, or set `workers_dev: true` to use the generated
 
 ## Adding a device
 
-The first device authenticates with `ADMIN_SECRET`. Every later device joins
-with a single-use pairing code, valid for ten minutes:
+The first device authenticates with `ADMIN_SECRET`. After that, there are two
+ways to add one.
+
+### Linking (preferred — no passphrase typing)
+
+On the new machine:
+
+```bash
+clipsync link --url https://clip.rfh.et
+```
+
+It prints a QR code and a URL, plus a six-digit code. On a machine that is
+already set up, either open that URL in the web UI, or:
+
+```bash
+clipsync approve https://clip.rfh.et/link#...
+```
+
+Check that the six-digit code matches on both screens, approve, and the new
+device is running. Nobody types the passphrase.
+
+**Why the code matters.** The new device generates a throwaway keypair and the
+approving device seals your passphrase to it, so the server relays ciphertext
+it cannot open. The one attack left is a server that swaps in its own public
+key — which is why the key travels out of band, in the QR or the URL fragment,
+and why both ends show a fingerprint of it. Matching codes mean no substitution
+happened. Mismatched codes mean stop.
+
+### Pairing codes (manual fallback)
+
+Useful when the two machines cannot see each other's screens:
 
 ```bash
 clipsync pair-code
 ```
 
-Then on the new machine:
-
 ```bash
 clipsync pair PAIR-XXXX-XXXX --url https://clip.rfh.et
 ```
 
-The browser pairs the same way — open the Worker URL and paste a code.
-
-**Every device must use the same encryption passphrase.** It is the only key to
-your history; nothing on the server can recover it. A device that pairs with the
-wrong passphrase will see existing clips as locked, and both the CLI and the web
-UI warn you at pair time rather than letting you discover it later.
+This one *does* require typing the same passphrase on the new device. It is the
+only key to your history and nothing on the server can recover it; both the CLI
+and the web UI check it against existing clips and warn immediately rather than
+letting you discover the mistake later.
 
 ## CLI
 
 | Command | Purpose |
 |---|---|
 | `clipsync login --url <url>` | Create the account and enrol this device |
-| `clipsync pair <code> --url <url>` | Join with a pairing code |
+| `clipsync link --url <url>` | Join by QR — no passphrase typing |
+| `clipsync approve <link-url>` | Approve a device that ran `clipsync link` |
+| `clipsync pair <code> --url <url>` | Join with a pairing code (manual) |
 | `clipsync pair-code` | Mint a code for another device |
 | `clipsync run` | Watch the clipboard and sync (the daemon) |
 | `clipsync history [-n 20]` | Recent clips, decrypted locally |
@@ -170,6 +197,13 @@ tag is an HMAC under a key they do not hold, not a plain digest.
 salt, then HKDF into two subkeys: `AES-GCM-256` for content and `HMAC-SHA256`
 for dedupe tags. The salt is public; the passphrase never leaves the device.
 
+**Device linking.** ECDH over P-256, with both public keys bound into the HKDF
+info so a swapped transcript derives a different key and fails closed. The
+server sees two public keys and one ciphertext. The joining device's key
+travels out of band and both ends display a fingerprint of it, which is what
+closes the key-substitution attack. Link requests expire in ten minutes, the
+pickup token is single-use, and the claiming read deletes the row.
+
 **Tokens.** Device tokens are 256-bit random strings stored only as SHA-256
 digests. Revoking a device invalidates its token immediately. The WebSocket uses
 a separate single-use 30-second ticket, because browsers cannot set headers on a
@@ -212,17 +246,18 @@ implementations of the same AES-GCM framing is where crypto bugs come from.
 npm run test
 ```
 
-Unit tests for the crypto envelope — round-trips, tampering, wrong passphrase,
-and the property that dedupe tags differ across passphrases.
+Unit tests for the crypto envelope and the linking handshake — round-trips,
+tampering, wrong passphrase, the property that dedupe tags differ across
+passphrases, and that a substituted public key fails closed.
 
 ```bash
 npm run e2e
 ```
 
-Twenty-nine checks against a running `npm run dev`: bootstrap, pairing,
+Thirty-eight checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
-revocation, and an explicit assertion that no plaintext appears in any API
-response.
+revocation, the full linking handshake including a refused key substitution,
+and an explicit assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
