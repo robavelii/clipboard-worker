@@ -20,7 +20,7 @@ import {
   parseLinkUrl,
 } from "@clipsync/client/link";
 import { createLinkKeypair } from "@clipsync/crypto";
-import { deriveKeys, encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
+import { encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
 import { PING_FRAME, MAX_ENVELOPE_BYTES, type ServerMessage } from "@clipsync/protocol";
 
 const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
@@ -123,7 +123,14 @@ await expectStatus("unknown pair code is rejected",
   () => new ApiClient(BASE).pair("PAIR-ZZZZ-ZZZZ", "impostor", "linux"), 400);
 
 const laptopApi = new ApiClient(BASE, laptop.token);
-const laptopKeys = await deriveKeys(PASS, laptop.kdfSalt);
+// The paired device unwraps the vault key rather than deriving content keys
+// from the passphrase. On an account with a random vault key those are not
+// the same thing, which is the whole point of the indirection.
+const laptopVault = await unlockVault(
+  laptopApi, PASS, laptop.kdfSalt, laptop.wrappedVaultKey,
+);
+check("paired device unwraps the same vault key", laptopVault.vaultKey === vaultKey);
+const laptopKeys = await vaultKeysFrom(laptopVault.vaultKey, laptop.kdfSalt);
 const fromLaptop = await laptopApi.listClips(10);
 check("paired device decrypts existing history",
   (await decryptText(laptopKeys, fromLaptop.clips.at(-1)!.envelope)) === TEXT);
