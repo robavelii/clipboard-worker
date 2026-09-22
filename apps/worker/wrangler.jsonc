@@ -1,0 +1,43 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "clipsync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // The web UI is served as static assets from the same origin as the API,
+  // so there is no CORS surface at all. /api/* must reach the Worker before
+  // the SPA fallback swallows it.
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clipsync",
+      // Replace with the id printed by `npm run db:create -w @clipsync/worker`.
+      // Local dev ignores this value.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // One SyncRoom per user: the fan-out point for every connected device.
+  "durable_objects": {
+    "bindings": [{ "name": "SYNC", "class_name": "SyncRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SyncRoom"] }],
+
+  // Hourly purge of expired, unpinned clips.
+  "triggers": {
+    "crons": ["17 * * * *"]
+  }
+}
