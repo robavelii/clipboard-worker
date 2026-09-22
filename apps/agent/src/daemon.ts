@@ -19,13 +19,12 @@ import {
 import {
   dedupeHash,
   decryptText,
-  deriveKeys,
   encryptText,
   type VaultKeys,
 } from "@clipsync/crypto";
 import { ApiClient } from "@clipsync/client";
 import { detectClipboard, type ClipboardBackend } from "./clipboard";
-import { resolvePassphrase, type AgentConfig } from "./config";
+import { resolveVaultKeys, type AgentConfig } from "./config";
 
 const POLL_INTERVAL_MS = 600;
 const PING_INTERVAL_MS = 30_000;
@@ -64,10 +63,7 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
-    this.keys = await deriveKeys(
-      resolvePassphrase(this.config),
-      this.config.kdfSalt,
-    );
+    this.keys = await resolveVaultKeys(this.config, this.api);
     this.clipboard = await detectClipboard();
 
     log(

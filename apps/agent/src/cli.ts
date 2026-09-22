@@ -3,7 +3,7 @@
 import { hostname, platform as osPlatform } from "node:os";
 import { parseArgs } from "node:util";
 import type { Platform } from "@clipsync/protocol";
-import { decryptText, deriveKeys } from "@clipsync/crypto";
+import { decryptText } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import {
   approveLink,
@@ -20,9 +20,11 @@ import {
   configPath,
   loadConfig,
   requireConfig,
-  resolvePassphrase,
+  resolveVaultKey,
+  resolveVaultKeys,
   saveConfig,
 } from "./config";
+import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon } from "./daemon";
 import { ask, askNewPassphrase, askSecret, closePrompts } from "./prompt";
 
@@ -37,6 +39,7 @@ Usage
   clipsync run [--push-current] [--verbose]             Watch the clipboard and sync
   clipsync history [-n <count>]                         Show recent clips
   clipsync copy <clip-id>                               Copy a clip to this clipboard
+  clipsync passphrase                                   Change the passphrase
   clipsync devices [--revoke <id>]                      List or revoke devices
   clipsync status                                       Show current configuration
   clipsync logout                                       Forget local credentials
@@ -85,7 +88,19 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
     currentPlatform(),
   );
 
-  await saveConfig({ baseUrl, deviceName, passphrase, ...creds });
+  const api = new ApiClient(baseUrl, creds.token);
+  const { vaultKey, migrated } = await unlockVault(
+    api,
+    passphrase,
+    creds.kdfSalt,
+    creds.wrappedVaultKey,
+    creds.createdAccount ?? false,
+  );
+
+  await saveConfig({ baseUrl, deviceName, vaultKey, ...creds });
+  if (migrated && !creds.createdAccount) {
+    console.log("Upgraded this account to a wrapped vault key.");
+  }
   console.log(`Enrolled "${deviceName}" (${creds.deviceId}).`);
   console.log(`Credentials written to ${configPath()}.`);
   console.log(`\nNext: clipsync run`);
@@ -113,25 +128,26 @@ async function cmdPair(
     currentPlatform(),
   );
 
-  await saveConfig({ baseUrl, deviceName, passphrase, ...creds });
-  console.log(`Paired "${deviceName}" (${creds.deviceId}).`);
-
-  // Immediate feedback on a mistyped passphrase beats silent garbage later.
   const api = new ApiClient(baseUrl, creds.token);
-  const { clips } = await api.listClips(1);
-  const sample = clips[0];
-  if (sample) {
-    const keys = await deriveKeys(passphrase, creds.kdfSalt);
-    try {
-      await decryptText(keys, sample.envelope);
-      console.log("Passphrase verified against existing history.");
-    } catch {
-      console.warn(
-        "\nWARNING: this passphrase does not decrypt existing clips.\n" +
-          "Re-run `clipsync pair` with the right one, or history will look empty.",
-      );
-    }
+
+  // A wrong passphrase now fails here, loudly, instead of silently producing
+  // a history of undecryptable rows.
+  let vaultKey: string;
+  try {
+    ({ vaultKey } = await unlockVault(
+      api,
+      passphrase,
+      creds.kdfSalt,
+      creds.wrappedVaultKey,
+    ));
+  } catch {
+    throw new Error(
+      "that passphrase does not unlock this account -- re-run `clipsync pair` with the right one",
+    );
   }
+
+  await saveConfig({ baseUrl, deviceName, vaultKey, ...creds });
+  console.log(`Paired "${deviceName}" (${creds.deviceId}).`);
   console.log(`\nNext: clipsync run`);
 }
 
@@ -164,7 +180,7 @@ async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
   console.log(`\nWaiting for approval…`);
 
   let lastShown = -1;
-  const { credentials, passphrase } = await awaitApproval(
+  const { credentials, vaultKey } = await awaitApproval(
     baseUrl,
     pending,
     (secondsLeft) => {
@@ -176,8 +192,9 @@ async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
     },
   );
 
-  await saveConfig({ baseUrl, deviceName, passphrase, ...credentials });
+  await saveConfig({ baseUrl, deviceName, vaultKey, ...credentials });
   console.log(`\nLinked "${deviceName}" (${credentials.deviceId}).`);
+  console.log(`This device holds the vault key, not your passphrase.`);
   console.log(`Credentials written to ${configPath()}.`);
   console.log(`\nNext: clipsync run`);
 }
@@ -189,6 +206,7 @@ async function cmdApprove(target: string | undefined): Promise<void> {
   }
 
   const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
   const parsed = parseLinkUrl(target);
   if (!parsed) {
     throw new Error(
@@ -218,7 +236,7 @@ async function cmdApprove(target: string | undefined): Promise<void> {
     config.token,
     parsed.linkId,
     parsed.publicKey,
-    resolvePassphrase(config),
+    await resolveVaultKey(config, api),
   );
   console.log(`Approved "${deviceName}". It can start syncing now.`);
 }
@@ -257,7 +275,7 @@ async function cmdRun(opts: {
 async function cmdHistory(limit: number): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const keys = await deriveKeys(resolvePassphrase(config), config.kdfSalt);
+  const keys = await resolveVaultKeys(config, api);
 
   const { clips } = await api.listClips(limit);
   if (!clips.length) {
@@ -287,7 +305,7 @@ async function cmdCopy(id: string | undefined): Promise<void> {
 
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const keys = await deriveKeys(resolvePassphrase(config), config.kdfSalt);
+  const keys = await resolveVaultKeys(config, api);
 
   const clip = await api.getClip(id);
   const text = await decryptText(keys, clip.envelope);
@@ -316,6 +334,32 @@ async function cmdDevices(opts: { revoke?: string }): Promise<void> {
   }
 }
 
+/**
+ * Change the passphrase.
+ *
+ * Re-wraps the vault key. No clip is re-encrypted and no other device has to
+ * do anything -- they all hold the vault key, not the passphrase.
+ */
+async function cmdPassphrase(): Promise<void> {
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  const vaultKey = await resolveVaultKey(config, api);
+
+  console.log(
+    "Changing the passphrase re-wraps your vault key.\n" +
+      "Your clips are not re-encrypted and your other devices keep working.\n",
+  );
+
+  const next = await askNewPassphrase();
+  await changePassphrase(api, vaultKey, config.kdfSalt, next);
+
+  console.log("\nPassphrase changed.");
+  console.log(
+    "Use the new one anywhere you unlock with a passphrase — the web UI, or a\n" +
+      "device that sets CLIPSYNC_PASSPHRASE.",
+  );
+}
+
 async function cmdStatus(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -327,7 +371,15 @@ async function cmdStatus(): Promise<void> {
   console.log(`worker     ${config.baseUrl}`);
   console.log(`device     ${config.deviceName} (${config.deviceId})`);
   console.log(
-    `passphrase ${process.env.CLIPSYNC_PASSPHRASE ? "from CLIPSYNC_PASSPHRASE" : config.passphrase ? "stored in config" : "not set"}`,
+    `vault key  ${
+      config.vaultKey
+        ? "stored in config"
+        : config.passphrase
+          ? "will upgrade from the stored passphrase on next use"
+          : process.env.CLIPSYNC_PASSPHRASE
+            ? "unwrapped from CLIPSYNC_PASSPHRASE at startup"
+            : "missing"
+    }`,
   );
 
   try {
@@ -388,6 +440,8 @@ async function main(): Promise<void> {
       return cmdHistory(Number(values.number) || 20);
     case "copy":
       return cmdCopy(arg);
+    case "passphrase":
+      return cmdPassphrase();
     case "devices":
       return cmdDevices({ revoke: values.revoke });
     case "status":

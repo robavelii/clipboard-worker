@@ -1,6 +1,9 @@
 /** On-disk agent state: `~/.config/clipsync/config.json`, mode 0600. */
 
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import type { ApiClient } from "@clipsync/client";
+import { unlockVault } from "@clipsync/client/vault";
+import { vaultKeysFrom, type VaultKeys } from "@clipsync/crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -12,10 +15,26 @@ export interface AgentConfig {
   token: string;
   kdfSalt: string;
   /**
+   * The vault key, not the passphrase.
+   *
    * Stored so the agent can start unattended. End-to-end encryption defends
-   * against a compromise of the *server*; a passphrase on a 0600 file on a
-   * machine that already holds the decrypted clipboard adds nothing to the
-   * local threat model. Set CLIPSYNC_PASSPHRASE to keep it out of the file.
+   * against a compromise of the *server*; a key in a 0600 file on a machine
+   * that already holds the decrypted clipboard adds nothing to the local
+   * threat model.
+   *
+   * Holding the key rather than the passphrase also means a device linked by
+   * QR can read the clipboard without ever learning the passphrase, and that
+   * changing the passphrase does not require touching this file.
+   *
+   * Set CLIPSYNC_PASSPHRASE instead to keep nothing on disk; the agent then
+   * unwraps the key from the server at startup.
+   */
+  vaultKey?: string;
+  /**
+   * Written by versions that stored the passphrase instead of the vault key.
+   * {@link resolveVaultKeys} upgrades such a config in place on first run and
+   * clears this field, so an agent that is already running keeps working
+   * across the upgrade without anyone re-enrolling.
    */
   passphrase?: string;
 }
@@ -61,13 +80,51 @@ export async function clearConfig(): Promise<void> {
   await rm(configPath(), { force: true });
 }
 
-/** Env wins over the config file so a headless run can avoid storing it. */
-export function resolvePassphrase(config: AgentConfig): string {
-  const pass = process.env.CLIPSYNC_PASSPHRASE ?? config.passphrase;
-  if (!pass) {
+/**
+ * Resolve the keys that encrypt clips.
+ *
+ * Prefers the stored vault key. Falls back to CLIPSYNC_PASSPHRASE, which costs
+ * one PBKDF2 at startup and a round trip to fetch the wrapped key.
+ */
+export async function resolveVaultKeys(
+  config: AgentConfig,
+  api: ApiClient,
+): Promise<VaultKeys> {
+  if (config.vaultKey) {
+    return vaultKeysFrom(config.vaultKey, config.kdfSalt);
+  }
+  const vaultKey = await resolveVaultKey(config, api);
+  return vaultKeysFrom(vaultKey, config.kdfSalt);
+}
+
+/**
+ * The raw vault key, needed to re-wrap it under a new passphrase.
+ *
+ * Also the upgrade path: a config written before the vault key existed holds
+ * a passphrase, which is enough to derive or unwrap the key. When that
+ * happens the config is rewritten to hold the key instead, so the cost is
+ * paid exactly once.
+ */
+export async function resolveVaultKey(
+  config: AgentConfig,
+  api: ApiClient,
+): Promise<string> {
+  if (config.vaultKey) return config.vaultKey;
+
+  const passphrase = process.env.CLIPSYNC_PASSPHRASE ?? config.passphrase;
+  if (!passphrase) {
     throw new Error(
-      "no passphrase available -- set CLIPSYNC_PASSPHRASE or re-run `clipsync login`",
+      "no vault key available -- set CLIPSYNC_PASSPHRASE or re-run `clipsync login`",
     );
   }
-  return pass;
+
+  const { kdfSalt, wrappedVaultKey } = await api.vaultKey();
+  const { vaultKey } = await unlockVault(api, passphrase, kdfSalt, wrappedVaultKey);
+
+  if (config.passphrase) {
+    const { passphrase: _dropped, ...rest } = config;
+    await saveConfig({ ...rest, vaultKey });
+  }
+
+  return vaultKey;
 }
