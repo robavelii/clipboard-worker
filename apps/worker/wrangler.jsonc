@@ -5,6 +5,15 @@
   "compatibility_date": "2026-09-22",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Custom domain. Wrangler provisions the DNS record and certificate on
+  // deploy, since rfh.et is a zone on this account.
+  "routes": [{ "pattern": "clip.rfh.et", "custom_domain": true }],
+
+  // Stated rather than inherited: adding a custom domain turns these off by
+  // default, and a personal clipboard should have exactly one public door.
+  "workers_dev": false,
+  "preview_urls": false,
+
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
@@ -23,9 +32,8 @@
     {
       "binding": "DB",
       "database_name": "clipsync",
-      // Replace with the id printed by `npm run db:create -w @clipsync/worker`.
-      // Local dev ignores this value.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // Created with `npm run db:create`. Local dev ignores this value.
+      "database_id": "7cf3f6ff-09cc-47d2-8c1a-5eeb98093956",
       "migrations_dir": "migrations"
     }
   ],
