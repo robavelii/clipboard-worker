@@ -1,0 +1,169 @@
+/**
+ * End-to-end smoke test against a running Worker.
+ *
+ *   Terminal 1: npm run dev
+ *   Terminal 2: npm run e2e
+ *
+ * Exercises the real HTTP + WebSocket surface with real encryption, standing
+ * in for two devices. Complements the unit tests in packages/crypto: those
+ * prove the envelope format, this proves the wiring.
+ *
+ * Writes to the local D1 database, so run it against `wrangler dev --local`.
+ */
+
+import { ApiClient, ApiRequestError } from "@clipsync/client";
+import { deriveKeys, encryptText, decryptText, dedupeHash } from "@clipsync/crypto";
+import { PING_FRAME, MAX_ENVELOPE_BYTES, type ServerMessage } from "@clipsync/protocol";
+
+const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
+const ADMIN = process.env.CLIPSYNC_ADMIN_SECRET ?? "local-dev-admin-secret";
+const PASS = "correct horse battery staple";
+
+let pass = 0, fail = 0;
+function check(name: string, ok: boolean, detail = "") {
+  if (ok) { pass++; console.log(`  PASS  ${name}`); }
+  else { fail++; console.log(`  FAIL  ${name} ${detail}`); }
+}
+
+async function expectStatus(name: string, fn: () => Promise<unknown>, status: number) {
+  try { await fn(); check(name, false, "(no error thrown)"); }
+  catch (e) {
+    const got = e instanceof ApiRequestError ? e.status : -1;
+    check(name, got === status, `expected ${status} got ${got}`);
+  }
+}
+
+console.log("\n--- auth ---");
+await expectStatus("wrong admin secret is rejected",
+  () => new ApiClient(BASE).bootstrap("wrong-secret", "pc", "linux"), 403);
+
+const pc = await new ApiClient(BASE).bootstrap(ADMIN, "test-pc", "linux");
+check("bootstrap returns credentials", Boolean(pc.token && pc.userId && pc.kdfSalt));
+
+const pcApi = new ApiClient(BASE, pc.token);
+const me = await pcApi.me();
+check("whoami matches enrolled device", me.deviceId === pc.deviceId && me.deviceName === "test-pc");
+await expectStatus("bad token is rejected", () => new ApiClient(BASE, "garbage").me(), 401);
+
+console.log("\n--- clips ---");
+const keys = await deriveKeys(PASS, pc.kdfSalt);
+const TEXT = "docker compose up -d";
+const created = await pcApi.createClip({
+  type: "text", envelope: await encryptText(keys, TEXT),
+  contentHash: await dedupeHash(keys, TEXT), size: Buffer.byteLength(TEXT),
+});
+check("clip created", !created.deduped && created.id.startsWith("clip_"));
+
+const listed = await pcApi.listClips(10);
+check("clip appears in history", listed.clips[0]?.id === created.id);
+check("stored payload is ciphertext",
+  !JSON.stringify(listed.clips[0]).includes(TEXT),
+  "plaintext leaked into the API response!");
+check("clip decrypts to the original",
+  (await decryptText(keys, listed.clips[0]!.envelope)) === TEXT);
+
+const again = await pcApi.createClip({
+  type: "text", envelope: await encryptText(keys, TEXT),
+  contentHash: await dedupeHash(keys, TEXT), size: Buffer.byteLength(TEXT),
+});
+check("repeat of newest clip is deduped", again.deduped && again.id === created.id);
+
+const other = "git reset --soft HEAD~1";
+const otherClip = await pcApi.createClip({
+  type: "text", envelope: await encryptText(keys, other),
+  contentHash: await dedupeHash(keys, other), size: Buffer.byteLength(other),
+});
+check("different content is not deduped", !otherClip.deduped);
+
+await expectStatus("oversized envelope is refused", () => pcApi.createClip({
+  type: "text", envelope: "v1.aaaa." + "A".repeat(MAX_ENVELOPE_BYTES),
+  contentHash: "x", size: 1,
+}), 413);
+
+console.log("\n--- pairing ---");
+const { code } = await pcApi.pairCode();
+check("pair code has the documented shape", /^PAIR-[0-9A-Z]{4}-[0-9A-Z]{4}$/.test(code));
+
+const laptop = await new ApiClient(BASE).pair(code, "test-laptop", "linux");
+check("pairing yields a token", Boolean(laptop.token));
+check("paired device shares the vault salt", laptop.kdfSalt === pc.kdfSalt);
+await expectStatus("pair code is single use",
+  () => new ApiClient(BASE).pair(code, "impostor", "linux"), 400);
+await expectStatus("unknown pair code is rejected",
+  () => new ApiClient(BASE).pair("PAIR-ZZZZ-ZZZZ", "impostor", "linux"), 400);
+
+const laptopApi = new ApiClient(BASE, laptop.token);
+const laptopKeys = await deriveKeys(PASS, laptop.kdfSalt);
+const fromLaptop = await laptopApi.listClips(10);
+check("paired device decrypts existing history",
+  (await decryptText(laptopKeys, fromLaptop.clips.at(-1)!.envelope)) === TEXT);
+
+console.log("\n--- realtime sync ---");
+const socket = new WebSocket(await laptopApi.syncUrl());
+const received: ServerMessage[] = [];
+socket.addEventListener("message", (e) => received.push(JSON.parse(e.data as string)));
+await new Promise<void>((res, rej) => {
+  socket.addEventListener("open", () => res());
+  socket.addEventListener("error", () => rej(new Error("ws failed")));
+  setTimeout(() => rej(new Error("ws open timeout")), 5000);
+});
+await new Promise((r) => setTimeout(r, 300));
+check("server sends a ready frame", received[0]?.type === "ready");
+
+const SYNCED = "npm install hono";
+await pcApi.createClip({
+  type: "text", envelope: await encryptText(keys, SYNCED),
+  contentHash: await dedupeHash(keys, SYNCED), size: Buffer.byteLength(SYNCED),
+});
+await new Promise((r) => setTimeout(r, 700));
+
+const pushed = received.find((m) => m.type === "clip.created");
+check("laptop receives the clip pushed by the pc", Boolean(pushed));
+if (pushed && pushed.type === "clip.created") {
+  check("pushed clip decrypts on the laptop",
+    (await decryptText(laptopKeys, pushed.clip.envelope)) === SYNCED);
+  check("event names the originating device", pushed.origin === pc.deviceId);
+}
+
+socket.send(PING_FRAME);
+await new Promise((r) => setTimeout(r, 300));
+check("keepalive is answered", received.some((m) => m.type === "pong"));
+
+const devices = await pcApi.devices();
+const ids = new Set(devices.devices.map((d) => d.id));
+// Asserted by membership, not by count: the local D1 database persists
+// between runs of this script.
+check("both devices are listed", ids.has(pc.deviceId) && ids.has(laptop.deviceId));
+check("laptop shows as online",
+  devices.devices.find((d) => d.id === laptop.deviceId)?.online === true);
+
+console.log("\n--- tickets & revocation ---");
+/** Resolves true if the socket opens, false if the server refuses it. */
+function opens(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(url);
+    const done = (ok: boolean) => { try { ws.close(); } catch {} resolve(ok); };
+    ws.addEventListener("open", () => done(true));
+    ws.addEventListener("error", () => done(false));
+    setTimeout(() => done(false), 4000);
+  });
+}
+
+const t = await laptopApi.syncTicket();
+const ticketUrl = new URL("/api/sync/ws", BASE);
+ticketUrl.protocol = ticketUrl.protocol === "https:" ? "wss:" : "ws:";
+ticketUrl.searchParams.set("ticket", t.ticket);
+
+check("valid ticket upgrades", await opens(ticketUrl.toString()));
+check("replayed ticket is refused", !(await opens(ticketUrl.toString())));
+check("forged ticket is refused",
+  !(await opens(ticketUrl.toString().replace(/ticket=.*$/, "ticket=made-up"))));
+
+await expectStatus("a device cannot revoke itself",
+  () => pcApi.revokeDevice(pc.deviceId), 400);
+await pcApi.revokeDevice(laptop.deviceId);
+await expectStatus("revoked token stops working", () => laptopApi.me(), 401);
+
+socket.close();
+console.log(`\n${pass} passed, ${fail} failed\n`);
+process.exit(fail ? 1 : 0);
