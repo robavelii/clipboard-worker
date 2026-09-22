@@ -219,3 +219,54 @@ than one replacing the other.
 No browser can read the clipboard in the background on iOS or Android, so the
 phone receives and pastes but does not push. Fixing that needs a share target
 in a PWA on Android, or a Shortcut posting to the API on iOS.
+
+## 13. Sharing, not capturing, on mobile
+
+The desktop agent watches the clipboard. A phone cannot: no browser may read
+the clipboard in the background on iOS or Android, and that is an OS decision,
+not a gap to code around. Anything claiming otherwise on the web is either a
+native app or is asking the user to paste.
+
+So mobile capture is an explicit share. On Android that is a real share target,
+declared in the manifest, which is why the app now ships a manifest, icons and
+a service worker — installability is the precondition for appearing in the
+share sheet, and a registered worker with a fetch handler is the precondition
+for installability. The worker caches nothing deliberately: the payloads are
+ciphertext fetched with a bearer token, and a cache would outlive the tab that
+holds the key.
+
+iOS has no share-target support, so a Shortcut opens `/share?text=…` instead.
+The Shortcut carries only the text — it cannot encrypt, because Shortcuts has
+no AES-GCM — and the web app does the sealing before anything is uploaded. The
+two platforms therefore converge on one endpoint rather than growing separate
+paths.
+
+**The cost is the unlock.** Sharing opens a fresh tab, and the vault key lives
+in sessionStorage, so every share would demand the passphrase. That is enough
+friction that nobody would use it. The fix is an opt-in to localStorage,
+default on for phones, stated plainly on the join screen: anyone who can unlock
+the phone can then read the clipboard history. It is the same bargain as any
+notes app, but it is a bargain and it should be visible rather than assumed.
+
+## 14. Tauri for the tray app
+
+Electron was the obvious choice and the wrong one. A tray app is running all
+the time, so its idle cost is the cost: roughly 150 MB on disk and 200 MB
+resident for Electron, against about 5 MB and 50 MB for Tauri, which uses the
+system webview.
+
+The usual reason to take Electron anyway is that Tauri needs GTK and WebKit
+development headers that may not be installed and may need root. Checking
+first showed the machine already had all of them, so the objection did not
+apply.
+
+The Rust side stays deliberately small — a tray icon, a panel that shows and
+hides, and one command that reads the agent's config file. Everything else is
+the same TypeScript the CLI and the web UI run, including the crypto, so the
+tray app adds a window rather than a second implementation to keep in step.
+
+Reading the agent's config is what makes it need no enrolment: the credentials
+and vault key already sit in `~/.config/clipsync/config.json`, so the panel
+inherits them. The hooks it shares with the web UI moved to `packages/react`
+for the same reason the crypto is shared — reconnection and event handling are
+easy to get subtly wrong twice.

@@ -118,9 +118,8 @@ it ever reaches the server, so there is nothing to compare and nothing the
 server could substitute. The trade is that the code on screen *is* the
 credential: it lasts five minutes and works once.
 
-A phone is receive-mostly. It gets every clip and copies with a tap, but it
-cannot capture what you copy on the phone — no browser can read the clipboard
-in the background on iOS or Android.
+A phone gets every clip and copies with a tap. Sending *from* a phone is a
+deliberate share rather than something automatic — see below.
 
 ### Linking (another computer, no passphrase typing)
 
@@ -180,6 +179,7 @@ letting you discover the mistake later.
 | `clipsync history [-n 20]` | Recent clips, decrypted locally |
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
 | `clipsync passphrase` | Change the passphrase |
+| `clipsync-desktop` | Tray panel (see above) |
 | `clipsync devices [--revoke <id>]` | List or revoke devices |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Forget local credentials |
@@ -294,6 +294,7 @@ you intend it to, so the default is to forget.
 packages/protocol   Wire types shared by all three surfaces
 packages/crypto     Envelope encryption — one implementation, three runtimes
 packages/client     Typed API client shared by the agent and the web UI
+packages/react      Hooks shared by the web UI and the tray app
 apps/worker         Hono API, SyncRoom Durable Object, cron, static assets
 apps/web            React + Vite UI, served by the Worker
 apps/agent          Node CLI and clipboard daemon
@@ -327,8 +328,7 @@ no plaintext appears in any API response.
 
 ## Not built yet
 
-Images and file sync (needs R2), pushing *from* a phone (needs a PWA share
-target on Android or a Shortcut on iOS), a global `Ctrl+Shift+V` picker,
+Images and file sync (needs R2), a global `Ctrl+Shift+V` picker,
 semantic search, and non-Linux clipboard backends. `packages/crypto` and the
 `ClipType` union are the two places that will need to change first for images.
 
