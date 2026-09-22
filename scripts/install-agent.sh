@@ -10,16 +10,20 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$REPO/apps/agent/dist/clipsync.mjs"
+DESKTOP_BIN="$REPO/apps/desktop/src-tauri/target/release/clipsync-desktop"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+UNIT_DIR="$CONFIG_DIR/systemd/user"
 UNIT="$UNIT_DIR/clipsync.service"
+AUTOSTART="$CONFIG_DIR/autostart/clipsync-desktop.desktop"
 
 uninstall() {
   systemctl --user disable --now clipsync.service 2>/dev/null || true
-  rm -f "$UNIT" "$BIN_DIR/clipsync"
+  pkill -f "release/clipsync-desktop" 2>/dev/null || true
+  rm -f "$UNIT" "$BIN_DIR/clipsync" "$BIN_DIR/clipsync-desktop" "$AUTOSTART"
   systemctl --user daemon-reload 2>/dev/null || true
-  echo "Removed the launcher and the service. Your credentials in"
-  echo "${XDG_CONFIG_HOME:-$HOME/.config}/clipsync are untouched."
+  echo "Removed the launchers, the service and the tray autostart."
+  echo "Your credentials in $CONFIG_DIR/clipsync are untouched."
   exit 0
 }
 
@@ -76,6 +80,29 @@ systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY 2>/dev/nu
 
 systemctl --user daemon-reload
 systemctl --user enable --now clipsync.service
+
+# The tray app is optional: it needs a Rust toolchain to build, and the agent
+# is fully usable without it.
+if [ -x "$DESKTOP_BIN" ]; then
+  ln -sf "$DESKTOP_BIN" "$BIN_DIR/clipsync-desktop"
+  echo "tray      $BIN_DIR/clipsync-desktop"
+
+  mkdir -p "$(dirname "$AUTOSTART")"
+  cat > "$AUTOSTART" <<DESKTOPFILE
+[Desktop Entry]
+Type=Application
+Name=ClipSync
+Comment=Encrypted clipboard history in the tray
+Exec=$DESKTOP_BIN
+Icon=$REPO/apps/desktop/src-tauri/icons/icon.png
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+DESKTOPFILE
+  echo "autostart $AUTOSTART"
+else
+  echo "tray      not built — run 'npm run build -w @clipsync/desktop' for the tray app"
+fi
 
 echo
 systemctl --user --no-pager --lines=0 status clipsync.service | head -4
