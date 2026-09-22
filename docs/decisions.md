@@ -182,3 +182,40 @@ properly needs a re-key: a fresh random vault key and a re-encryption pass over
 history. That is worth building when a passphrase actually leaks; it is not
 worth pre-emptively forcing every existing account through it. Accounts created
 after this change start with a random vault key and do not have the problem.
+
+## 12. Scan-to-join points the QR the other way
+
+`clipsync link` has the joining device display a QR and the set-up device read
+it. That works between two laptops and is useless for a phone, which is the
+device most worth enrolling by camera — because it is the set-up machine that
+would need to do the scanning, and desktops rarely can.
+
+So invites reverse it: the set-up device displays, the phone scans. That single
+change also removes most of the cryptography. When the QR travels to the
+scanner directly, it can carry a secret rather than merely a public key, so
+there is no key agreement to perform and no fingerprint for a human to compare:
+
+    S = 32 random bytes, generated on the set-up device
+    server holds  AES-GCM(HKDF(S), vaultKey)  and  SHA-256(S)
+    phone reads S from the camera and opens the payload
+
+The server never sees S. It holds a ciphertext it cannot open and a hash that
+tells it nothing, and it still cannot substitute anything, because it was never
+on the path S travelled.
+
+`SHA-256(S)` exists so that knowing an invite id is not enough to claim it.
+Without that check, guessing or observing an id would mint a device token —
+useless for reading clips, but enough to enrol and to push. S has 256 bits of
+entropy, so the hash is not brute-forcible, and it is derived differently from
+the sealing key.
+
+**What this costs.** For its lifetime the code on screen *is* the credential;
+anyone who photographs it can enrol. That is inherent to putting a secret in a
+QR, and the mitigation is the obvious one: five minutes, one scan. The ECDH
+flow in `link.ts` does not have this property, which is why both exist rather
+than one replacing the other.
+
+**What it does not solve.** A phone still cannot capture what you copy on it.
+No browser can read the clipboard in the background on iOS or Android, so the
+phone receives and pastes but does not push. Fixing that needs a share target
+in a PWA on Android, or a Shortcut posting to the API on iOS.

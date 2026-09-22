@@ -13,6 +13,8 @@
 
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
+import { claimInvite, createInvite, parseInviteUrl } from "@clipsync/client/invite";
+import { inviteProof } from "@clipsync/crypto";
 import {
   approveLink,
   awaitApproval,
@@ -236,6 +238,42 @@ const strangerClaim = await fetch(new URL(`/api/link/${parsed.linkId}/claim`, BA
 });
 check("a wrong pickup token is refused", strangerClaim.status === 404,
   `got ${strangerClaim.status}`);
+
+console.log("\n--- scan-to-join invites ---");
+
+const invite = await createInvite(pcApi, BASE, vaultKey);
+check("invite url carries the secret in the fragment",
+  parseInviteUrl(invite.url)?.secret === invite.secret);
+
+// Knowing the id without having scanned the QR must not be enough.
+let idAloneRefused = false;
+try {
+  await claimInvite(new ApiClient(BASE), invite.inviteId,
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "impostor", "other");
+} catch { idAloneRefused = true; }
+check("the invite id alone cannot claim a device", idAloneRefused);
+
+const phone = await claimInvite(
+  new ApiClient(BASE), invite.inviteId, invite.secret, "test-phone", "other",
+);
+check("scanning device gets the vault key", phone.vaultKey === vaultKey);
+check("scanning device gets working credentials", Boolean(phone.credentials.token));
+
+const phoneApi = new ApiClient(BASE, phone.credentials.token);
+const phoneKeys = await vaultKeysFrom(phone.vaultKey, phone.credentials.kdfSalt);
+const phoneHistory = await phoneApi.listClips(10);
+check("scanning device decrypts existing history",
+  (await decryptText(phoneKeys, phoneHistory.clips.at(-1)!.envelope)) === TEXT);
+
+let replayRefused = false;
+try {
+  await claimInvite(new ApiClient(BASE), invite.inviteId, invite.secret, "second-phone", "other");
+} catch { replayRefused = true; }
+check("an invite works exactly once", replayRefused);
+
+// The server holds the sealed payload and the proof; neither may open it.
+check("proof is not the sealing secret",
+  (await inviteProof(invite.secret)) !== invite.secret);
 
 console.log("\n--- passphrase rotation ---");
 

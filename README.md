@@ -102,10 +102,31 @@ your own hostname, or set `workers_dev: true` to use the generated
 The first device authenticates with `ADMIN_SECRET`. After that, there are two
 ways to add one.
 
-### Linking (preferred — no passphrase typing)
+### Scanning (phones, tablets, any browser)
+
+On a machine that is already set up:
+
+```bash
+clipsync invite
+```
+
+It prints a QR. Scan it with the phone's camera and you are done — no
+passphrase, no code, nothing to type but a device name.
+
+The QR carries a one-time secret, and the vault key is sealed under it before
+it ever reaches the server, so there is nothing to compare and nothing the
+server could substitute. The trade is that the code on screen *is* the
+credential: it lasts five minutes and works once.
+
+A phone is receive-mostly. It gets every clip and copies with a tap, but it
+cannot capture what you copy on the phone — no browser can read the clipboard
+in the background on iOS or Android.
+
+### Linking (another computer, no passphrase typing)
 
 
-On the new machine:
+For a second computer running the agent, the QR goes the other way — the
+joining machine shows it:
 
 ```bash
 clipsync link --url https://clip.rfh.et
@@ -150,7 +171,8 @@ letting you discover the mistake later.
 | Command | Purpose |
 |---|---|
 | `clipsync login --url <url>` | Create the account and enrol this device |
-| `clipsync link --url <url>` | Join by QR — no passphrase typing |
+| `clipsync invite` | Show a QR for a phone or browser to scan |
+| `clipsync link --url <url>` | Join another computer by QR |
 | `clipsync approve <link-url>` | Approve a device that ran `clipsync link` |
 | `clipsync pair <code> --url <url>` | Join with a pairing code (manual) |
 | `clipsync pair-code` | Mint a code for another device |
@@ -212,6 +234,11 @@ key. The server stores the wrapped form and cannot open it.
 That indirection is why `clipsync passphrase` re-wraps 32 bytes instead of
 re-encrypting your whole history, and why a device linked by QR can read the
 clipboard without ever learning the passphrase.
+
+**Scan-to-join.** The vault key is sealed under a 256-bit secret that exists
+only in the QR and reaches the scanner through its camera. The server stores
+the ciphertext and a SHA-256 of the secret — enough to check who may claim the
+invite, not enough to open it. Invites last five minutes and are single-use.
 
 **Device linking.** Transfers the vault key, not the passphrase, so a linked
 device can read the clipboard but cannot change the passphrase that guards it.
@@ -291,15 +318,17 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-Forty-five checks against a running `npm run dev`: bootstrap, pairing,
+Fifty-three checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
 revocation, the full linking handshake including a refused key substitution,
+scan-to-join including a refused claim that knows only the invite id,
 passphrase rotation leaving old clips readable, and an explicit assertion that
 no plaintext appears in any API response.
 
 ## Not built yet
 
-Images and file sync (needs R2), mobile, a global `Ctrl+Shift+V` picker,
+Images and file sync (needs R2), pushing *from* a phone (needs a PWA share
+target on Android or a Shortcut on iOS), a global `Ctrl+Shift+V` picker,
 semantic search, and non-Linux clipboard backends. `packages/crypto` and the
 `ClipType` union are the two places that will need to change first for images.
 
