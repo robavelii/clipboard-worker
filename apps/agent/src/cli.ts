@@ -12,6 +12,7 @@ import {
   inspectLink,
   parseLinkUrl,
 } from "@clipsync/client/link";
+import { createInvite } from "@clipsync/client/invite";
 import { fingerprint } from "@clipsync/crypto";
 import { toString as qrToString } from "qrcode";
 import { detectClipboard } from "./clipboard";
@@ -33,6 +34,7 @@ const USAGE = `clipsync — encrypted clipboard sync
 Usage
   clipsync login --url <worker-url> [--name <device>]   Create the account, enrol this device
   clipsync link --url <url> [--name <device>]           Join by QR -- no passphrase typing
+  clipsync invite                                       Show a QR for a phone to scan
   clipsync approve <link-url>                           Approve a device that ran 'clipsync link'
   clipsync pair <code> --url <url> [--name <device>]    Join using a pairing code (manual)
   clipsync pair-code                                    Mint a code for another device
@@ -197,6 +199,42 @@ async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
   console.log(`This device holds the vault key, not your passphrase.`);
   console.log(`Credentials written to ${configPath()}.`);
   console.log(`\nNext: clipsync run`);
+}
+
+/**
+ * Show a QR that enrols whatever scans it.
+ *
+ * The reverse of `clipsync link`: here *this* device displays the code and the
+ * joining device reads it. That suits anything with a camera and no terminal,
+ * which is every phone.
+ *
+ * The QR carries a one-time secret, and the vault key is sealed under it
+ * before it ever reaches the server -- so there is no fingerprint to compare.
+ * The flip side is that the code on screen is the credential until it expires
+ * or is scanned, which is why it lasts five minutes and works once.
+ */
+async function cmdInvite(): Promise<void> {
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  const vaultKey = await resolveVaultKey(config, api);
+
+  const invite = await createInvite(api, config.baseUrl, vaultKey);
+
+  console.log(
+    await qrToString(invite.url, {
+      type: "terminal",
+      small: true,
+      errorCorrectionLevel: "L",
+    }),
+  );
+
+  const minutes = Math.round((invite.expiresAt - Date.now()) / 60000);
+  console.log(`Scan this with your phone's camera.`);
+  console.log(`\n  ${invite.url}\n`);
+  console.log(
+    `Valid for ${minutes} minutes, one scan. Nothing else to type -- the phone\n` +
+      `gets the key from the code itself, not from the server.`,
+  );
 }
 
 /** Approve a device that ran `clipsync link`. Requires this device's vault. */
@@ -425,6 +463,8 @@ async function main(): Promise<void> {
       return cmdLogin({ url: values.url, name: values.name });
     case "link":
       return cmdLink({ url: values.url, name: values.name });
+    case "invite":
+      return cmdInvite();
     case "approve":
       return cmdApprove(arg);
     case "pair":
