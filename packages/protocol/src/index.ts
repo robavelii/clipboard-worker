@@ -156,6 +156,32 @@ export type LinkClaimResponse =
       credentials: Credentials;
     };
 
+/* ------------------------- scan-to-join invites ------------------------ */
+
+export interface CreateInviteRequest {
+  /** Vault key sealed under a key derived from the QR secret. */
+  sealedVaultKey: string;
+  /** SHA-256 of the QR secret, so the id alone cannot enrol a device. */
+  proofHash: string;
+}
+
+export interface CreateInviteResponse {
+  inviteId: string;
+  expiresAt: number;
+}
+
+export interface ClaimInviteRequest {
+  /** SHA-256 of the QR secret. The secret itself never leaves the scanner. */
+  proof: string;
+  deviceName: string;
+  platform: Platform;
+}
+
+export interface ClaimInviteResponse {
+  sealedVaultKey: string;
+  credentials: Credentials;
+}
+
 export interface TicketResponse {
   ticket: string;
   expiresAt: number;

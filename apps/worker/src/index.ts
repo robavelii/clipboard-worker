@@ -11,6 +11,7 @@ import type { ApiError } from "@clipsync/protocol";
 import { authRoutes } from "./routes/auth";
 import { clipRoutes } from "./routes/clips";
 import { deviceRoutes } from "./routes/devices";
+import { inviteRoutes } from "./routes/invites";
 import { linkRoutes } from "./routes/link";
 import { syncRoutes } from "./routes/sync";
 import { vaultRoutes } from "./routes/vault";
@@ -25,6 +26,7 @@ const app = new Hono<{ Bindings: Env }>()
   .route("/api/devices", deviceRoutes)
   .route("/api/vault", vaultRoutes)
   .route("/api/link", linkRoutes)
+  .route("/api/invites", inviteRoutes)
   .route("/api/clips", clipRoutes)
   .route("/api/sync", syncRoutes)
 
@@ -92,11 +94,13 @@ export default {
         "DELETE FROM clips WHERE pinned = 0 AND expires_at IS NOT NULL AND expires_at < ?",
       ).bind(now),
       env.DB.prepare("DELETE FROM link_requests WHERE expires_at < ?").bind(now),
+      env.DB.prepare("DELETE FROM invites WHERE expires_at < ?").bind(now),
     ]);
     console.log({
       msg: "purged expired rows",
       clips: purged[0]?.meta.changes ?? 0,
       linkRequests: purged[1]?.meta.changes ?? 0,
+      invites: purged[2]?.meta.changes ?? 0,
     });
   },
 } satisfies ExportedHandler<Env>;
