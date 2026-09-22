@@ -13,6 +13,7 @@ import { clipRoutes } from "./routes/clips";
 import { deviceRoutes } from "./routes/devices";
 import { linkRoutes } from "./routes/link";
 import { syncRoutes } from "./routes/sync";
+import { vaultRoutes } from "./routes/vault";
 
 export { SyncRoom } from "./sync-room";
 
@@ -22,6 +23,7 @@ const app = new Hono<{ Bindings: Env }>()
 
   .route("/api/auth", authRoutes)
   .route("/api/devices", deviceRoutes)
+  .route("/api/vault", vaultRoutes)
   .route("/api/link", linkRoutes)
   .route("/api/clips", clipRoutes)
   .route("/api/sync", syncRoutes)

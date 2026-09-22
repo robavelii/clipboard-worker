@@ -82,9 +82,11 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     const platform = assertPlatform(body.platform);
 
     let user = await getUser(c.env.DB);
+    const createdAccount = !user;
     if (!user) {
       user = {
         id: newId("usr"),
+        wrapped_vault_key: null,
         // Generated once, never rotated: rotating it would orphan every clip
         // already encrypted under the old derivation.
         kdf_salt: randomSalt(),
@@ -109,6 +111,8 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       deviceId,
       token,
       kdfSalt: user.kdf_salt,
+      wrappedVaultKey: user.wrapped_vault_key,
+      createdAccount,
     });
   })
 
@@ -123,5 +127,6 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       deviceName: device.deviceName,
       platform: assertPlatform(device.platform),
       kdfSalt: user.kdf_salt,
+      wrappedVaultKey: user.wrapped_vault_key,
     });
   });

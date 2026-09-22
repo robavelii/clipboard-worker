@@ -242,6 +242,7 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
         deviceId: row.device_id!,
         token: row.device_token,
         kdfSalt: user.kdf_salt,
+        wrappedVaultKey: user.wrapped_vault_key,
       },
     });
   });

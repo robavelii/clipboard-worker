@@ -81,6 +81,7 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       deviceId,
       token,
       kdfSalt: user.kdf_salt,
+      wrappedVaultKey: user.wrapped_vault_key,
     });
   })
 

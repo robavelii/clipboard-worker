@@ -5,6 +5,8 @@ import type { Clip, Device, Platform } from "@clipsync/protocol";
 export interface UserRow {
   id: string;
   kdf_salt: string;
+  /** Sealed under the passphrase-derived KEK. null until migrated. */
+  wrapped_vault_key: string | null;
   created_at: number;
 }
 

@@ -64,6 +64,22 @@ export interface Credentials {
   deviceId: string;
   token: string;
   kdfSalt: string;
+  /**
+   * The account's vault key, sealed under the passphrase. null on an account
+   * that predates it -- the first device to unlock writes it.
+   */
+  wrappedVaultKey: string | null;
+  /**
+   * True when this call created the account. The caller uses it to decide
+   * between a fresh random vault key and the one implied by the old
+   * passphrase-derived scheme.
+   */
+  createdAccount?: boolean;
+}
+
+export interface VaultKeyResponse {
+  kdfSalt: string;
+  wrappedVaultKey: string | null;
 }
 
 export interface WhoAmI {
@@ -72,6 +88,7 @@ export interface WhoAmI {
   deviceName: string;
   platform: Platform;
   kdfSalt: string;
+  wrappedVaultKey: string | null;
 }
 
 export interface PairCodeResponse {
