@@ -5,6 +5,15 @@ import { parseArgs } from "node:util";
 import type { Platform } from "@clipsync/protocol";
 import { decryptText, deriveKeys } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
+import {
+  approveLink,
+  awaitApproval,
+  beginLink,
+  inspectLink,
+  parseLinkUrl,
+} from "@clipsync/client/link";
+import { fingerprint } from "@clipsync/crypto";
+import { toString as qrToString } from "qrcode";
 import { detectClipboard } from "./clipboard";
 import {
   clearConfig,
@@ -21,7 +30,9 @@ const USAGE = `clipsync — encrypted clipboard sync
 
 Usage
   clipsync login --url <worker-url> [--name <device>]   Create the account, enrol this device
-  clipsync pair <code> --url <url> [--name <device>]    Join using a pairing code
+  clipsync link --url <url> [--name <device>]           Join by QR -- no passphrase typing
+  clipsync approve <link-url>                           Approve a device that ran 'clipsync link'
+  clipsync pair <code> --url <url> [--name <device>]    Join using a pairing code (manual)
   clipsync pair-code                                    Mint a code for another device
   clipsync run [--push-current] [--verbose]             Watch the clipboard and sync
   clipsync history [-n <count>]                         Show recent clips
@@ -122,6 +133,94 @@ async function cmdPair(
     }
   }
   console.log(`\nNext: clipsync run`);
+}
+
+/**
+ * Join an existing account without typing the passphrase.
+ *
+ * Shows a QR containing this device's ephemeral public key. An already-set-up
+ * device scans or pastes it, checks the fingerprint, and seals the passphrase
+ * back. The server relays ciphertext it cannot open.
+ */
+async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
+  const baseUrl = opts.url ?? (await ask("Worker URL: "));
+  if (!baseUrl) throw new Error("--url is required");
+
+  const deviceName = opts.name ?? hostname();
+  const pending = await beginLink(baseUrl, deviceName, currentPlatform());
+
+  const qr = await qrToString(pending.url, {
+    type: "terminal",
+    small: true,
+    errorCorrectionLevel: "L",
+  });
+
+  console.log(qr);
+  console.log(`Scan this, or open the link on a device that is already set up:`);
+  console.log(`\n  ${pending.url}\n`);
+  console.log(`Or from that device's terminal:`);
+  console.log(`\n  clipsync approve ${pending.url}\n`);
+  console.log(`Check that it shows the same code:  ${pending.fingerprint}`);
+  console.log(`\nWaiting for approval…`);
+
+  let lastShown = -1;
+  const { credentials, passphrase } = await awaitApproval(
+    baseUrl,
+    pending,
+    (secondsLeft) => {
+      const minutes = Math.ceil(secondsLeft / 60);
+      if (minutes !== lastShown) {
+        lastShown = minutes;
+        console.log(`  …${minutes} minute${minutes === 1 ? "" : "s"} left`);
+      }
+    },
+  );
+
+  await saveConfig({ baseUrl, deviceName, passphrase, ...credentials });
+  console.log(`\nLinked "${deviceName}" (${credentials.deviceId}).`);
+  console.log(`Credentials written to ${configPath()}.`);
+  console.log(`\nNext: clipsync run`);
+}
+
+/** Approve a device that ran `clipsync link`. Requires this device's vault. */
+async function cmdApprove(target: string | undefined): Promise<void> {
+  if (!target) {
+    throw new Error("usage: clipsync approve <link-url>");
+  }
+
+  const config = await requireConfig();
+  const parsed = parseLinkUrl(target);
+  if (!parsed) {
+    throw new Error(
+      "that does not look like a link URL -- paste the whole https://…/link#… line",
+    );
+  }
+
+  const status = await inspectLink(config.baseUrl, config.token, parsed.linkId);
+  const fp = await fingerprint(parsed.publicKey);
+
+  console.log(`\nDevice requesting access:`);
+  console.log(`  name        ${status.deviceName}`);
+  console.log(`  platform    ${status.platform}`);
+  console.log(`  code        ${fp}`);
+  console.log(
+    `\nApprove only if that code matches the one shown on the other device.`,
+  );
+
+  const answer = await ask("Approve? [y/N] ");
+  if (!/^y(es)?$/i.test(answer)) {
+    console.log("Not approved.");
+    return;
+  }
+
+  const { deviceName } = await approveLink(
+    config.baseUrl,
+    config.token,
+    parsed.linkId,
+    parsed.publicKey,
+    resolvePassphrase(config),
+  );
+  console.log(`Approved "${deviceName}". It can start syncing now.`);
 }
 
 async function cmdPairCode(): Promise<void> {
@@ -272,6 +371,10 @@ async function main(): Promise<void> {
   switch (command) {
     case "login":
       return cmdLogin({ url: values.url, name: values.name });
+    case "link":
+      return cmdLink({ url: values.url, name: values.name });
+    case "approve":
+      return cmdApprove(arg);
     case "pair":
       return cmdPair(arg, { url: values.url, name: values.name });
     case "pair-code":
