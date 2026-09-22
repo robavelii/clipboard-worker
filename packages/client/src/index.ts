@@ -39,10 +39,15 @@ export class ApiClient {
    * @param baseUrl Absolute Worker URL, or "" when the caller is served from
    *   the Worker's own origin (the web UI).
    * @param token Device bearer token. Omitted for the pairing calls.
+   * @param fetchImpl Replacement for the global fetch. The desktop app passes
+   *   Tauri's, which issues the request from Rust -- its webview origin is
+   *   tauri://localhost, so the browser fetch would be a cross-origin call to
+   *   an API that intentionally sends no CORS headers.
    */
   constructor(
     private readonly baseUrl: string,
     private readonly token?: string,
+    private readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
   ) {}
 
   private url(path: string): string {
@@ -57,7 +62,7 @@ export class ApiClient {
     headers.set("content-type", "application/json");
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
 
-    const res = await fetch(this.url(path), { ...init, headers });
+    const res = await this.fetchImpl(this.url(path), { ...init, headers });
 
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as ApiError | null;

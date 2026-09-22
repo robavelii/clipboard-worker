@@ -23,6 +23,24 @@ fn config_path() -> Option<PathBuf> {
     Some(base.join("clipsync").join("config.json"))
 }
 
+/// Append a line to a debug log.
+///
+/// The webview has no console anyone can see once the app is packaged, and a
+/// failed `fetch` surfaces in WebKit as the uninformative "Load failed". This
+/// gives the panel somewhere to record what actually went wrong.
+#[tauri::command]
+fn log_debug(line: String) {
+    let path = std::env::temp_dir().join("clipsync-desktop.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// Hand the agent's credentials to the webview.
 ///
 /// Reusing the CLI's config is what makes this app need no enrolment of its
@@ -51,8 +69,16 @@ fn toggle(window: &WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Requests go through Rust rather than the webview.
+        //
+        // The panel is served from tauri://localhost, so every call to the
+        // Worker is cross-origin, and the Worker deliberately sends no CORS
+        // headers -- the web UI shares its origin, so there was never a reason
+        // to. Rather than open the API up for one client, the desktop app
+        // makes its requests natively, where CORS does not apply.
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .invoke_handler(tauri::generate_handler![load_agent_config])
+        .invoke_handler(tauri::generate_handler![load_agent_config, log_debug])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open ClipSync", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

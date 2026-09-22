@@ -298,3 +298,30 @@ programmatic read: iOS shows its paste-permission banner on every call and
 Chrome requires a permission grant. A manual paste into a field asks nothing,
 because the user performing the paste is the consent. The convenient-looking
 button is the worse experience.
+
+## 16. The desktop app pays for the "no CORS surface" decision
+
+Serving the web UI from the Worker's own origin meant the API never needed CORS
+headers, and not having them is a genuinely smaller attack surface. The tray app
+then broke on exactly that: its webview runs at `tauri://localhost`, so every
+call is cross-origin, and WebKit reports the resulting block as `TypeError: Load
+failed` -- a message that says nothing about the cause.
+
+Two ways out. Adding `Access-Control-Allow-Origin` for the Tauri origin is three
+lines, and permanently widens a personal API to suit one client. Routing the
+desktop app's requests through Rust with the Tauri HTTP plugin leaves the server
+exactly as strict as it was, scoped by capability to the Worker's URL and
+nothing else. The second is better: the client adapts to the server, not the
+reverse.
+
+WebSockets were never affected -- they are not subject to CORS -- so the live
+socket kept working throughout and only the HTTP calls failed, which made the
+failure look stranger than it was.
+
+**Two Tauri traps worth recording.** Tauri v2 denies core and plugin commands
+from JavaScript unless a `capabilities/` file grants them, and the denial is
+silent enough that a window that will not close looks like a UI bug rather than
+a missing permission. And building the crate with `cargo` rather than the Tauri
+CLI produces a binary still pointing at the dev server. Both fail at runtime,
+neither fails the build, and both cost an hour if you debug them by reading the
+code instead of by logging.

@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"What the panel is allowed to ask the shell to do. Tauri v2 denies core and plugin commands unless they are listed here, which is why the window and clipboard calls need naming explicitly.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-hide","core:window:allow-show","core:window:allow-set-focus","core:window:allow-start-dragging","clipboard-manager:allow-write-text",{"identifier":"http:default","allow":[{"url":"https://clip.rfh.et/*"},{"url":"http://127.0.0.1:8787/*"}],"deny":[]}]}}

@@ -10,9 +10,28 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { ApiClient } from "@clipsync/client";
 import { vaultKeysFrom, type VaultKeys } from "@clipsync/crypto";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
+
+/** Records to a file the packaged app can write; see log_debug in lib.rs. */
+function debugLog(...parts: unknown[]): void {
+  const line = `[${new Date().toISOString()}] ${parts
+    .map((p) => (typeof p === "string" ? p : JSON.stringify(p)))
+    .join(" ")}`;
+  void invoke("log_debug", { line }).catch(() => {});
+}
+
+/** WebKit reports every failed fetch as "Load failed", which says nothing. */
+function describe(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message === "Load failed"
+      ? "Could not reach the server. Check that the machine is online and that the Worker URL in ~/.config/clipsync/config.json is correct."
+      : `${err.name}: ${err.message}`;
+  }
+  return String(err);
+}
 
 interface AgentConfig {
   baseUrl: string;
@@ -33,9 +52,11 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
+        debugLog("boot: reading agent config");
         const config = JSON.parse(
           await invoke<string>("load_agent_config"),
         ) as AgentConfig;
+        debugLog("boot: config ok", { baseUrl: config.baseUrl, device: config.deviceName });
 
         if (!config.vaultKey) {
           throw new Error(
@@ -43,17 +64,23 @@ export function App() {
           );
         }
 
+        const api = new ApiClient(config.baseUrl, config.token, tauriFetch);
+
+        // Prove the network path before rendering a list that would otherwise
+        // fail with WebKit's opaque "Load failed".
+        await api.me();
+        debugLog("boot: worker reachable");
+
         setBoot({
           state: "ready",
-          api: new ApiClient(config.baseUrl, config.token),
+          api,
           keys: await vaultKeysFrom(config.vaultKey, config.kdfSalt),
           config,
         });
+        debugLog("boot: ready");
       } catch (err) {
-        setBoot({
-          state: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
+        debugLog("boot: failed", describe(err), String(err));
+        setBoot({ state: "error", message: describe(err) });
       }
     })();
   }, []);
@@ -74,6 +101,7 @@ export function App() {
     return (
       <div className="panel centered">
         <p className="error">{boot.message}</p>
+        <p className="muted small">Details in {"/tmp/clipsync-desktop.log"}</p>
       </div>
     );
   }
@@ -110,8 +138,12 @@ function Panel({
 
   const copy = useCallback(async (clip: DecryptedClip) => {
     if (clip.text === null) return;
-    await writeText(clip.text);
-    await getCurrentWindow().hide();
+    try {
+      await writeText(clip.text);
+      await getCurrentWindow().hide();
+    } catch (err) {
+      debugLog("copy failed", describe(err));
+    }
   }, []);
 
   return (
