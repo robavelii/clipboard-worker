@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./link": "./src/link.ts"
   },
   "dependencies": {
-    "@clipsync/protocol": "*"
+    "@clipsync/protocol": "*",
+    "@clipsync/crypto": "*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
