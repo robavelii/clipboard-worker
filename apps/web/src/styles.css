@@ -167,3 +167,30 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .checkbox input { width: auto; margin-top: 2px; flex: none; }
 .checkbox span { display: block; color: var(--text); font-size: 13px; }
 .checkbox em { display: block; font-style: normal; color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.compose textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 2.8em;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.compose textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.composebar { display: flex; align-items: center; gap: 10px; }
+.composebar .muted, .composebar .error { flex: 1; }

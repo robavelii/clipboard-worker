@@ -13,6 +13,7 @@ import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
 import { ShareScreen, readSharedText } from "./ShareScreen";
+import { Compose } from "./Compose";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 export function App() {
@@ -144,7 +145,7 @@ function Workspace({
   onLock: () => void;
 }) {
   const api = useMemo(() => new ApiClient("", token), [token]);
-  const { clips, loading, error, hasMore, loadMore, applyEvent, remove, togglePin } =
+  const { clips, loading, error, hasMore, loadMore, applyEvent, remove, togglePin, reload } =
     useClips(api, keys);
   const { status, connected } = useSync(api, applyEvent);
 
@@ -242,6 +243,8 @@ function Workspace({
           </button>
         </div>
       )}
+
+      <Compose api={api} keys={keys} onSent={reload} />
 
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}

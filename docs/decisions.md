@@ -280,3 +280,21 @@ produces a binary that still points at the Vite dev server and fails with
 not the crate's, so the build has to go through `tauri build`. The failure is
 confusing because the binary is produced successfully and only misbehaves at
 runtime, on a machine where the dev server happens not to be running.
+
+## 15. A paste box beside the share sheet
+
+Sharing covers most of what a phone needs to send, but not all of it: a 2FA
+code, a password-manager field, text copied from an app with no Share action.
+None of those can be shared, only copied.
+
+So the web UI also takes a paste. It is strictly more taps than sharing -- copy,
+switch app, tap, paste, send, against select and Share -- so it is the fallback
+rather than the headline. Having both means there is no category of text the
+phone simply cannot send.
+
+It is a plain textarea, not a "paste from clipboard" button, and that
+distinction is the whole design. `navigator.clipboard.readText()` is a
+programmatic read: iOS shows its paste-permission banner on every call and
+Chrome requires a permission grant. A manual paste into a field asks nothing,
+because the user performing the paste is the consent. The convenient-looking
+button is the worse experience.
