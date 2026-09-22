@@ -22,13 +22,14 @@ export function LinkApproval({
   linkId,
   publicKey,
   token,
-  passphrase,
+  vaultKey,
   onClose,
 }: {
   linkId: string;
   publicKey: string;
   token: string;
-  passphrase: string;
+  /** Sealed to the joining device. It never learns the passphrase. */
+  vaultKey: string;
   onClose: () => void;
 }) {
   const [state, setState] = useState<State>({ phase: "loading" });
@@ -70,7 +71,7 @@ export function LinkApproval({
         token,
         linkId,
         publicKey,
-        passphrase,
+        vaultKey,
       );
       setState({ phase: "done", deviceName });
     } catch (err) {
@@ -104,8 +105,8 @@ export function LinkApproval({
       <div className="card">
         <h1>Approved</h1>
         <p className="muted">
-          “{state.deviceName}” is set up and can start syncing. Nobody had to
-          type the passphrase on it.
+          “{state.deviceName}” is set up and can start syncing. Nobody typed
+          the passphrase on it — and it never learned one.
         </p>
         <button onClick={onClose}>Done</button>
       </div>
@@ -136,8 +137,9 @@ export function LinkApproval({
       <p className="fingerprint">{state.code}</p>
 
       <p className="muted small">
-        Approving sends your passphrase to that device, encrypted so that only
-        it can read it. If the codes differ, do not approve.
+        Approving sends that device your vault key, encrypted so only it can
+        read it. It will be able to read your clipboard, but not to change
+        your passphrase. If the codes differ, do not approve.
       </p>
 
       <button onClick={() => void approve()}>Approve</button>

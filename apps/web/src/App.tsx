@@ -3,11 +3,11 @@ import { ApiClient } from "@clipsync/client";
 import type { Device } from "@clipsync/protocol";
 import type { VaultKeys } from "@clipsync/crypto";
 import {
-  cachedPassphrase,
+  cachedVaultKey,
   clearSession,
-  forgetPassphrase,
+  forgetVaultKey,
+  keysFor,
   loadCredentials,
-  unlock,
 } from "./session";
 import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
@@ -24,27 +24,30 @@ export function App() {
     setLink(null);
   }, []);
 
-  // Restore the key from the tab's cached passphrase on reload.
+  // Restore from the tab's cached vault key on reload. No PBKDF2 needed --
+  // the expensive step only happens at unlock.
   useEffect(() => {
-    const pass = cachedPassphrase();
-    if (!creds || !pass || keys) return;
-    void unlock(pass, creds.kdfSalt).then(setKeys).catch(() => forgetPassphrase());
+    const vaultKey = cachedVaultKey();
+    if (!creds || !vaultKey || keys) return;
+    void keysFor(vaultKey, creds.kdfSalt)
+      .then(setKeys)
+      .catch(() => forgetVaultKey());
   }, [creds, keys]);
 
   if (!creds) return <Centered><PairScreen onPaired={() => setCreds(loadCredentials())} /></Centered>;
 
-  // An approval needs the passphrase itself, not just the derived keys, so it
-  // waits behind the unlock screen like everything else.
+  // An approval seals the vault key, so it waits behind the unlock screen
+  // like everything else.
   if (link && keys) {
-    const passphrase = cachedPassphrase();
-    if (passphrase) {
+    const vaultKey = cachedVaultKey();
+    if (vaultKey) {
       return (
         <Centered>
           <LinkApproval
             linkId={link.linkId}
             publicKey={link.publicKey}
             token={creds.token}
-            passphrase={passphrase}
+            vaultKey={vaultKey}
             onClose={closeLink}
           />
         </Centered>
@@ -56,8 +59,10 @@ export function App() {
     return (
       <Centered>
         <UnlockScreen
-          kdfSalt={creds.kdfSalt}
-          onUnlocked={(pass) => void unlock(pass, creds.kdfSalt).then(setKeys)}
+          credentials={creds}
+          onUnlocked={(vaultKey) =>
+            void keysFor(vaultKey, creds.kdfSalt).then(setKeys)
+          }
           onForget={() => {
             clearSession();
             setCreds(null);
@@ -78,7 +83,7 @@ export function App() {
         setCreds(null);
       }}
       onLock={() => {
-        forgetPassphrase();
+        forgetVaultKey();
         setKeys(null);
       }}
     />

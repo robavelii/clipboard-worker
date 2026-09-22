@@ -2,8 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
-import { deriveKeys, decryptText } from "@clipsync/crypto";
-import { cachePassphrase, saveCredentials } from "./session";
+import type { Credentials } from "@clipsync/protocol";
+import { saveCredentials, unlockWithPassphrase } from "./session";
 
 export function PairScreen({ onPaired }: { onPaired: () => void }) {
   const [code, setCode] = useState("");
@@ -22,27 +22,24 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
     try {
       // Same-origin: the Worker serves this page and the API.
       const creds = await new ApiClient("").pair(code, name, "web");
+      const api = new ApiClient("", creds.token);
 
-      // Warn immediately on a passphrase mismatch rather than showing a
-      // history of undecryptable rows.
-      const keys = await deriveKeys(passphrase, creds.kdfSalt);
-      const { clips } = await new ApiClient("", creds.token).listClips(1);
-      const sample = clips[0];
-      if (sample) {
-        try {
-          await decryptText(keys, sample.envelope);
-        } catch {
-          setWarning(
-            "That passphrase does not decrypt your existing clips. " +
-              "Continuing will show them as locked.",
-          );
-          setBusy(false);
-          return;
-        }
+      // A wrong passphrase cannot unwrap the vault key, so it fails here
+      // rather than rendering a history of locked rows.
+      try {
+        await unlockWithPassphrase(
+          api,
+          passphrase,
+          creds.kdfSalt,
+          creds.wrappedVaultKey,
+        );
+      } catch {
+        setWarning("That passphrase does not unlock this account.");
+        setBusy(false);
+        return;
       }
 
       saveCredentials(creds);
-      cachePassphrase(passphrase);
       onPaired();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -98,12 +95,12 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
 }
 
 export function UnlockScreen({
-  kdfSalt,
+  credentials,
   onUnlocked,
   onForget,
 }: {
-  kdfSalt: string;
-  onUnlocked: (passphrase: string) => void;
+  credentials: Credentials;
+  onUnlocked: (vaultKey: string) => void;
   onForget: () => void;
 }) {
   const [passphrase, setPassphrase] = useState("");
@@ -115,12 +112,17 @@ export function UnlockScreen({
     setBusy(true);
     setError(null);
     try {
-      // Derivation is deliberately slow; doing it here surfaces the cost once.
-      await deriveKeys(passphrase, kdfSalt);
-      cachePassphrase(passphrase);
-      onUnlocked(passphrase);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Deliberately slow: one PBKDF2 to unwrap the vault key, then the key
+      // is cached for the tab and nothing else costs anything.
+      const vaultKey = await unlockWithPassphrase(
+        new ApiClient("", credentials.token),
+        passphrase,
+        credentials.kdfSalt,
+        credentials.wrappedVaultKey,
+      );
+      onUnlocked(vaultKey);
+    } catch {
+      setError("That passphrase does not unlock this account.");
       setBusy(false);
     }
   }
@@ -146,7 +148,7 @@ export function UnlockScreen({
       {error && <p className="error">{error}</p>}
 
       <button type="submit" disabled={busy}>
-        {busy ? "Deriving key…" : "Unlock"}
+        {busy ? "Unlocking…" : "Unlock"}
       </button>
       <button type="button" className="link" onClick={onForget}>
         Unpair this browser

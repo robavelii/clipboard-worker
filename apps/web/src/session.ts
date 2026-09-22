@@ -8,10 +8,16 @@
  */
 
 import type { Credentials } from "@clipsync/protocol";
-import { deriveKeys, type VaultKeys } from "@clipsync/crypto";
+import { vaultKeysFrom, type VaultKey, type VaultKeys } from "@clipsync/crypto";
+import { unlockVault } from "@clipsync/client/vault";
+import type { ApiClient } from "@clipsync/client";
 
 const CREDS_KEY = "clipsync.credentials";
-const PASS_KEY = "clipsync.passphrase";
+/**
+ * The vault key, not the passphrase, and in sessionStorage rather than
+ * localStorage: closing the tab drops it. Neither is ever sent anywhere.
+ */
+const VAULT_KEY = "clipsync.vaultKey";
 
 export function loadCredentials(): Credentials | null {
   const raw = localStorage.getItem(CREDS_KEY);
@@ -30,24 +36,37 @@ export function saveCredentials(creds: Credentials): void {
 
 export function clearSession(): void {
   localStorage.removeItem(CREDS_KEY);
-  sessionStorage.removeItem(PASS_KEY);
+  sessionStorage.removeItem(VAULT_KEY);
 }
 
-export function cachedPassphrase(): string | null {
-  return sessionStorage.getItem(PASS_KEY);
+export function cachedVaultKey(): VaultKey | null {
+  return sessionStorage.getItem(VAULT_KEY);
 }
 
-export function cachePassphrase(passphrase: string): void {
-  sessionStorage.setItem(PASS_KEY, passphrase);
+export function cacheVaultKey(vaultKey: VaultKey): void {
+  sessionStorage.setItem(VAULT_KEY, vaultKey);
 }
 
-export function forgetPassphrase(): void {
-  sessionStorage.removeItem(PASS_KEY);
+export function forgetVaultKey(): void {
+  sessionStorage.removeItem(VAULT_KEY);
 }
 
-export async function unlock(
-  passphrase: string,
+/** Cheap: no PBKDF2, just HKDF off a key already in hand. */
+export async function keysFor(
+  vaultKey: VaultKey,
   kdfSalt: string,
 ): Promise<VaultKeys> {
-  return deriveKeys(passphrase, kdfSalt);
+  return vaultKeysFrom(vaultKey, kdfSalt);
+}
+
+/** Expensive: runs PBKDF2, then unwraps or migrates the vault key. */
+export async function unlockWithPassphrase(
+  api: ApiClient,
+  passphrase: string,
+  kdfSalt: string,
+  wrappedVaultKey: string | null,
+): Promise<VaultKey> {
+  const { vaultKey } = await unlockVault(api, passphrase, kdfSalt, wrappedVaultKey);
+  cacheVaultKey(vaultKey);
+  return vaultKey;
 }
