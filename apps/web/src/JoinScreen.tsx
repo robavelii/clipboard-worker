@@ -32,6 +32,11 @@ export function JoinScreen({
   onJoined: () => void;
 }) {
   const [name, setName] = useState(defaultDeviceName);
+  // Default on for phones: sharing into ClipSync opens a new tab each time, so
+  // without this the share sheet would ask for the passphrase on every use.
+  const [stayUnlocked, setStayUnlocked] = useState(() =>
+    /iPhone|iPad|Android/.test(navigator.userAgent),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,7 +55,7 @@ export function JoinScreen({
       );
 
       saveCredentials(credentials);
-      cacheVaultKey(vaultKey);
+      cacheVaultKey(vaultKey, stayUnlocked);
       // Drop the secret from the address bar so a screenshot or a shared
       // history entry cannot replay it.
       window.history.replaceState(null, "", "/");
@@ -80,6 +85,21 @@ export function JoinScreen({
           autoFocus
           required
         />
+      </label>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={stayUnlocked}
+          onChange={(e) => setStayUnlocked(e.target.checked)}
+        />
+        <span>
+          Stay unlocked on this device
+          <em>
+            Needed for the share sheet. Anyone who can unlock this device can
+            then read your clipboard history.
+          </em>
+        </span>
       </label>
 
       {error && <p className="error">{error}</p>}

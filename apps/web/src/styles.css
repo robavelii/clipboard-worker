@@ -149,3 +149,21 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .linkform { display: flex; gap: 8px; }
 .linkform input { flex: 1; }
 .paircode p { margin: 0 0 8px; }
+
+.sharepreview {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 12px/1.5 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 11em;
+  overflow: auto;
+}
+
+.checkbox { flex-direction: row; align-items: flex-start; gap: 9px; cursor: pointer; }
+.checkbox input { width: auto; margin-top: 2px; flex: none; }
+.checkbox span { display: block; color: var(--text); font-size: 13px; }
+.checkbox em { display: block; font-style: normal; color: var(--muted); font-size: 12px; margin-top: 2px; }

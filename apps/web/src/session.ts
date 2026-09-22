@@ -14,8 +14,10 @@ import type { ApiClient } from "@clipsync/client";
 
 const CREDS_KEY = "clipsync.credentials";
 /**
- * The vault key, not the passphrase, and in sessionStorage rather than
- * localStorage: closing the tab drops it. Neither is ever sent anywhere.
+ * The vault key, not the passphrase. Neither is ever sent anywhere.
+ *
+ * sessionStorage by default, so closing the tab drops the key. A device may
+ * opt into localStorage instead -- see {@link cacheVaultKey}.
  */
 const VAULT_KEY = "clipsync.vaultKey";
 
@@ -36,19 +38,38 @@ export function saveCredentials(creds: Credentials): void {
 
 export function clearSession(): void {
   localStorage.removeItem(CREDS_KEY);
-  sessionStorage.removeItem(VAULT_KEY);
+  forgetVaultKey();
 }
 
 export function cachedVaultKey(): VaultKey | null {
-  return sessionStorage.getItem(VAULT_KEY);
+  return sessionStorage.getItem(VAULT_KEY) ?? localStorage.getItem(VAULT_KEY);
 }
 
-export function cacheVaultKey(vaultKey: VaultKey): void {
-  sessionStorage.setItem(VAULT_KEY, vaultKey);
+/**
+ * Cache the key for this device.
+ *
+ * `persist` moves it to localStorage, which survives closing the tab. That is
+ * a real weakening -- anyone who can unlock the phone can then read the
+ * clipboard history -- but sharing into ClipSync opens a *new* tab every time,
+ * so without it the share sheet would demand the passphrase on every use and
+ * nobody would use it. Offered as an explicit choice rather than a default.
+ */
+export function cacheVaultKey(vaultKey: VaultKey, persist = false): void {
+  if (persist) {
+    localStorage.setItem(VAULT_KEY, vaultKey);
+    sessionStorage.removeItem(VAULT_KEY);
+  } else {
+    sessionStorage.setItem(VAULT_KEY, vaultKey);
+  }
+}
+
+export function isPersisted(): boolean {
+  return localStorage.getItem(VAULT_KEY) !== null;
 }
 
 export function forgetVaultKey(): void {
   sessionStorage.removeItem(VAULT_KEY);
+  localStorage.removeItem(VAULT_KEY);
 }
 
 /** Cheap: no PBKDF2, just HKDF off a key already in hand. */
@@ -65,8 +86,9 @@ export async function unlockWithPassphrase(
   passphrase: string,
   kdfSalt: string,
   wrappedVaultKey: string | null,
+  persist = false,
 ): Promise<VaultKey> {
   const { vaultKey } = await unlockVault(api, passphrase, kdfSalt, wrappedVaultKey);
-  cacheVaultKey(vaultKey);
+  cacheVaultKey(vaultKey, persist);
   return vaultKey;
 }
