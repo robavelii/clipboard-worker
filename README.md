@@ -104,6 +104,7 @@ ways to add one.
 
 ### Linking (preferred — no passphrase typing)
 
+
 On the new machine:
 
 ```bash
@@ -156,6 +157,7 @@ letting you discover the mistake later.
 | `clipsync run` | Watch the clipboard and sync (the daemon) |
 | `clipsync history [-n 20]` | Recent clips, decrypted locally |
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
+| `clipsync passphrase` | Change the passphrase |
 | `clipsync devices [--revoke <id>]` | List or revoke devices |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Forget local credentials |
@@ -164,6 +166,14 @@ letting you discover the mistake later.
 started; pass `--push-current` if you want that.
 
 ### Running it as a service
+
+```bash
+scripts/install-agent.sh
+```
+
+Puts `clipsync` on your PATH and installs a systemd user service that starts
+with your desktop session. Needs no root; `scripts/install-agent.sh --uninstall`
+reverses it. The unit it writes looks like this:
 
 ```ini
 # ~/.config/systemd/user/clipsync.service
@@ -193,11 +203,19 @@ Cloudflare account sees ciphertext and HMAC tags. They cannot read your clips,
 and they cannot confirm a guess ("was this clip `hunter2`?") because the dedupe
 tag is an HMAC under a key they do not hold, not a plain digest.
 
-**Key derivation.** `PBKDF2-SHA256`, 600k iterations, over a per-account random
-salt, then HKDF into two subkeys: `AES-GCM-256` for content and `HMAC-SHA256`
-for dedupe tags. The salt is public; the passphrase never leaves the device.
+**Key derivation.** A vault key — 32 random bytes — is what actually protects
+clips, via HKDF into `AES-GCM-256` for content and `HMAC-SHA256` for dedupe
+tags. The passphrase only unlocks it: `PBKDF2-SHA256`, 600k iterations, over a
+public per-account salt, then HKDF to a key-encryption key that wraps the vault
+key. The server stores the wrapped form and cannot open it.
 
-**Device linking.** ECDH over P-256, with both public keys bound into the HKDF
+That indirection is why `clipsync passphrase` re-wraps 32 bytes instead of
+re-encrypting your whole history, and why a device linked by QR can read the
+clipboard without ever learning the passphrase.
+
+**Device linking.** Transfers the vault key, not the passphrase, so a linked
+device can read the clipboard but cannot change the passphrase that guards it.
+ECDH over P-256, with both public keys bound into the HKDF
 info so a swapped transcript derives a different key and fails closed. The
 server sees two public keys and one ciphertext. The joining device's key
 travels out of band and both ends display a fingerprint of it, which is what
@@ -217,6 +235,25 @@ encryption addresses — but it does mean local disk compromise is game over. Se
 
 The server also learns metadata it cannot avoid: how many clips you make, when,
 from which device, and roughly how large they are.
+
+## Retention
+
+## Changing the passphrase
+
+```bash
+clipsync passphrase
+```
+
+Re-wraps the vault key. No clip is re-encrypted, and your other devices keep
+working without doing anything — they hold the vault key, not the passphrase.
+
+One caveat for accounts created before the vault key existed: their vault key
+*is* the old passphrase-derived value, so someone who knows the original
+passphrase can still recompute it. Changing the passphrase locks out the web UI
+and any `CLIPSYNC_PASSPHRASE` device, but it does not fully retire the old
+secret. Fully retiring it needs a re-key — a fresh random vault key and a
+re-encryption pass over history — which is not built yet. Accounts created
+after this change get a random vault key and do not have the problem.
 
 ## Retention
 
@@ -254,10 +291,11 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-Thirty-eight checks against a running `npm run dev`: bootstrap, pairing,
+Forty-five checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
 revocation, the full linking handshake including a refused key substitution,
-and an explicit assertion that no plaintext appears in any API response.
+passphrase rotation leaving old clips readable, and an explicit assertion that
+no plaintext appears in any API response.
 
 ## Not built yet
 

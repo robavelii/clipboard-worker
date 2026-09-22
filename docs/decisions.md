@@ -148,3 +148,37 @@ requirement; it is not worth the migration today.
 the new device's bearer token in the clear, for at most ten minutes, in a row
 that cannot be read without the pickup token and that the claiming read deletes.
 The sealed passphrase is never readable by the server at any point.
+
+## 11. A vault key under the passphrase, not keys from the passphrase
+
+Deriving the content keys straight from the passphrase made the passphrase
+unchangeable in practice: rotating it changes the derived keys, which makes
+every clip ever stored unreadable. "Change your passphrase" would have meant
+"re-encrypt your entire history, from a device that holds all of it".
+
+So the content keys now hang off a vault key, and the passphrase only wraps
+that key. Rotation re-wraps 32 bytes. Nothing else moves, and other devices do
+not even need to know it happened, because they hold the vault key rather than
+the passphrase.
+
+The same indirection improves linking: a device that joins by QR receives the
+vault key alone. It can read and write clips but cannot derive the KEK, so it
+cannot change the passphrase. Previously linking handed over the passphrase
+itself, which gave every linked device full control of the account.
+
+**Migrating without re-encrypting.** Existing accounts have clips encrypted
+under keys derived from `PBKDF2(passphrase, salt)`. Making *that value* the
+vault key reproduces the old content keys exactly, so migration re-wraps 32
+bytes and leaves every stored clip readable. There is a test asserting exactly
+this, because it is the property the whole migration rests on. Agent configs
+that still hold a passphrase upgrade themselves in place on first use, so an
+agent already running as a service keeps working across the change.
+
+**What migration does not fix.** For a migrated account the vault key is still
+a function of the original passphrase, so someone who knows that passphrase can
+recompute it even after a rotation. Rotation locks out the web UI and any
+`CLIPSYNC_PASSPHRASE` device, but it does not retire the old secret. Doing that
+properly needs a re-key: a fresh random vault key and a re-encryption pass over
+history. That is worth building when a passphrase actually leaks; it is not
+worth pre-emptively forcing every existing account through it. Accounts created
+after this change start with a random vault key and do not have the problem.
