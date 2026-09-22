@@ -12,6 +12,7 @@
  */
 
 import { ApiClient, ApiRequestError } from "@clipsync/client";
+import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import {
   approveLink,
   awaitApproval,
@@ -19,7 +20,7 @@ import {
   parseLinkUrl,
 } from "@clipsync/client/link";
 import { createLinkKeypair } from "@clipsync/crypto";
-import { deriveKeys, encryptText, decryptText, dedupeHash } from "@clipsync/crypto";
+import { deriveKeys, encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
 import { PING_FRAME, MAX_ENVELOPE_BYTES, type ServerMessage } from "@clipsync/protocol";
 
 const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
@@ -52,8 +53,30 @@ const me = await pcApi.me();
 check("whoami matches enrolled device", me.deviceId === pc.deviceId && me.deviceName === "test-pc");
 await expectStatus("bad token is rejected", () => new ApiClient(BASE, "garbage").me(), 401);
 
+console.log("\n--- vault ---");
+const unlocked = await unlockVault(
+  pcApi, PASS, pc.kdfSalt, pc.wrappedVaultKey, pc.createdAccount ?? false,
+);
+const vaultKey = unlocked.vaultKey;
+check("vault key is available after bootstrap", Boolean(vaultKey));
+
+const storedVault = await pcApi.vaultKey();
+check("server stores only the wrapped vault key",
+  Boolean(storedVault.wrappedVaultKey?.startsWith("k1.")) &&
+  !storedVault.wrappedVaultKey!.includes(vaultKey),
+  "raw vault key leaked to the server!");
+
+const reopened = await unlockVault(pcApi, PASS, pc.kdfSalt, storedVault.wrappedVaultKey);
+check("the same passphrase reopens the same vault key", reopened.vaultKey === vaultKey);
+
+let wrongRejected = false;
+try {
+  await unlockVault(pcApi, "definitely the wrong one", pc.kdfSalt, storedVault.wrappedVaultKey);
+} catch { wrongRejected = true; }
+check("a wrong passphrase cannot unwrap the vault key", wrongRejected);
+
 console.log("\n--- clips ---");
-const keys = await deriveKeys(PASS, pc.kdfSalt);
+const keys = await vaultKeysFrom(vaultKey, pc.kdfSalt);
 const TEXT = "docker compose up -d";
 const created = await pcApi.createClip({
   type: "text", envelope: await encryptText(keys, TEXT),
@@ -170,22 +193,22 @@ const parsed = parseLinkUrl(pending.url)!;
 const impostor = await createLinkKeypair();
 let refused = false;
 try {
-  await approveLink(BASE, pc.token, parsed.linkId, impostor.publicKey, PASS);
+  await approveLink(BASE, pc.token, parsed.linkId, impostor.publicKey, vaultKey);
 } catch {
   refused = true;
 }
 check("approver refuses a key that does not match the scanned one", refused);
 
-const approvalDone = approveLink(BASE, pc.token, parsed.linkId, parsed.publicKey, PASS);
+const approvalDone = approveLink(BASE, pc.token, parsed.linkId, parsed.publicKey, vaultKey);
 const [, linked] = await Promise.all([approvalDone, awaitApproval(BASE, pending)]);
 
 check("linked device receives working credentials", Boolean(linked.credentials.token));
-check("linked device recovers the passphrase without typing it",
-  linked.passphrase === PASS);
+check("linked device recovers the vault key without typing a passphrase",
+  Boolean(linked.vaultKey) && linked.vaultKey.length > 20);
 check("linked device shares the vault salt", linked.credentials.kdfSalt === pc.kdfSalt);
 
 const linkedApi = new ApiClient(BASE, linked.credentials.token);
-const linkedKeys = await deriveKeys(linked.passphrase, linked.credentials.kdfSalt);
+const linkedKeys = await vaultKeysFrom(linked.vaultKey, linked.credentials.kdfSalt);
 const linkedHistory = await linkedApi.listClips(10);
 check("linked device decrypts existing history",
   (await decryptText(linkedKeys, linkedHistory.clips.at(-1)!.envelope)) === TEXT);
@@ -206,6 +229,26 @@ const strangerClaim = await fetch(new URL(`/api/link/${parsed.linkId}/claim`, BA
 });
 check("a wrong pickup token is refused", strangerClaim.status === 404,
   `got ${strangerClaim.status}`);
+
+console.log("\n--- passphrase rotation ---");
+
+await changePassphrase(pcApi, vaultKey, pc.kdfSalt, "a brand new passphrase");
+const afterRotation = await pcApi.vaultKey();
+
+const withNew = await unlockVault(pcApi, "a brand new passphrase", pc.kdfSalt, afterRotation.wrappedVaultKey);
+check("the new passphrase opens the same vault key", withNew.vaultKey === vaultKey);
+
+let oldRejected = false;
+try {
+  await unlockVault(pcApi, PASS, pc.kdfSalt, afterRotation.wrappedVaultKey);
+} catch { oldRejected = true; }
+check("the old passphrase no longer unwraps it", oldRejected);
+
+const stillReadable = await pcApi.listClips(10);
+check("clips written before the change still decrypt",
+  (await decryptText(await vaultKeysFrom(withNew.vaultKey, pc.kdfSalt),
+    stillReadable.clips.at(-1)!.envelope)) === TEXT,
+  "rotation should re-wrap 32 bytes, not re-encrypt history");
 
 console.log("\n--- tickets & revocation ---");
 /** Resolves true if the socket opens, false if the server refuses it. */
