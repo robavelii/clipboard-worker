@@ -99,6 +99,46 @@ export interface ListClipsResponse {
   nextCursor: number | null;
 }
 
+/* --------------------------- device linking ---------------------------- */
+
+export interface LinkRequest {
+  /** Joining device's ephemeral ECDH public key, raw point, base64url. */
+  publicKey: string;
+  deviceName: string;
+  platform: Platform;
+}
+
+export interface LinkRequestResponse {
+  linkId: string;
+  /** Proves ownership of the request when claiming. Shown to nobody else. */
+  pickupToken: string;
+  expiresAt: number;
+}
+
+export interface LinkStatusResponse {
+  linkId: string;
+  publicKey: string;
+  deviceName: string;
+  platform: Platform;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface LinkApproveRequest {
+  approverPublicKey: string;
+  /** AES-GCM envelope of the vault passphrase under the ECDH shared key. */
+  wrappedSecret: string;
+}
+
+export type LinkClaimResponse =
+  | { status: "pending" }
+  | {
+      status: "approved";
+      approverPublicKey: string;
+      wrappedSecret: string;
+      credentials: Credentials;
+    };
+
 export interface TicketResponse {
   ticket: string;
   expiresAt: number;
