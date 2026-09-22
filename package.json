@@ -1,0 +1,26 @@
+{
+  "name": "clipsync",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @clipsync/web && npm run dev -w @clipsync/worker",
+    "dev:web": "npm run dev -w @clipsync/web",
+    "build": "npm run build -w @clipsync/web && npm run build -w @clipsync/agent",
+    "deploy": "npm run build && npm run deploy -w @clipsync/worker",
+    "db:create": "npm run db:create -w @clipsync/worker",
+    "db:migrate:local": "npm run db:migrate:local -w @clipsync/worker",
+    "db:migrate": "npm run db:migrate -w @clipsync/worker",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test -w @clipsync/crypto",
+    "e2e": "esbuild scripts/e2e.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/e2e.mjs && node node_modules/.cache/e2e.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3"
+  }
+}
