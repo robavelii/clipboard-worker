@@ -1,0 +1,23 @@
+{
+  "name": "@clipsync/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "clipsync": "./dist/clipsync.mjs"
+  },
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/clipsync.mjs --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/clipsync.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clipsync/protocol": "*",
+    "@clipsync/crypto": "*",
+    "@clipsync/client": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}
