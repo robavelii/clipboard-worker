@@ -16,6 +16,7 @@ import type {
   PairCodeResponse,
   Platform,
   TicketResponse,
+  VaultKeyResponse,
   WhoAmI,
 } from "@clipsync/protocol";
 
@@ -89,6 +90,18 @@ export class ApiClient {
 
   me(): Promise<WhoAmI> {
     return this.request("/api/auth/me");
+  }
+
+  vaultKey(): Promise<VaultKeyResponse> {
+    return this.request("/api/vault/key");
+  }
+
+  /** Write the wrapped vault key: migration, or completing a passphrase change. */
+  putVaultKey(wrappedVaultKey: string): Promise<{ ok: boolean }> {
+    return this.request("/api/vault/key", {
+      method: "PUT",
+      body: JSON.stringify({ wrappedVaultKey }),
+    });
   }
 
   pairCode(): Promise<PairCodeResponse> {

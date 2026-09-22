@@ -98,14 +98,15 @@ export async function beginLink(
 /**
  * Joining device: wait for approval, then open the sealed secret.
  *
- * Returns the credentials *and* the passphrase, which is what makes this
- * worth doing -- nobody types it on this machine.
+ * Returns the credentials *and* the vault key. The vault key alone is enough
+ * to read and write clips, so this device never learns the passphrase that
+ * guards the account.
  */
 export async function awaitApproval(
   baseUrl: string,
   pending: PendingLink,
   onTick?: (secondsLeft: number) => void,
-): Promise<{ credentials: Credentials; passphrase: string }> {
+): Promise<{ credentials: Credentials; vaultKey: string }> {
   for (;;) {
     if (Date.now() > pending.expiresAt) {
       throw new Error("link request expired -- run `clipsync link` again");
@@ -137,13 +138,13 @@ export async function awaitApproval(
       continue;
     }
 
-    const passphrase = await openFromDevice(
+    const vaultKey = await openFromDevice(
       pending.keypair,
       result.approverPublicKey,
       result.wrappedSecret,
     );
 
-    return { credentials: result.credentials, passphrase };
+    return { credentials: result.credentials, vaultKey };
   }
 }
 
@@ -164,7 +165,10 @@ export async function inspectLink(
 }
 
 /**
- * Approving device: seal the passphrase to the joining device.
+ * Approving device: seal the vault key to the joining device.
+ *
+ * The vault key rather than the passphrase, so a linked device can read the
+ * clipboard without gaining the ability to change the passphrase.
  *
  * `expectedPublicKey` is the key that arrived out of band. It is compared
  * against what the server returned, which is what defeats a server that tries
@@ -175,7 +179,7 @@ export async function approveLink(
   token: string,
   linkId: string,
   expectedPublicKey: string,
-  passphrase: string,
+  vaultKey: string,
 ): Promise<{ deviceName: string }> {
   const status = await inspectLink(baseUrl, token, linkId);
 
@@ -187,7 +191,7 @@ export async function approveLink(
 
   const { envelope, approverPublicKey } = await sealToDevice(
     expectedPublicKey,
-    passphrase,
+    vaultKey,
   );
 
   const res = await fetch(new URL(`/api/link/${linkId}/approve`, baseUrl), {
