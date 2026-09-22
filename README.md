@@ -1,5 +1,7 @@
 # ClipSync
 
+**Live at [clip.rfh.et](https://clip.rfh.et)**
+
 Encrypted clipboard sync across your own machines. Copy on one device, paste on
 another. Built on Cloudflare Workers, D1 and Durable Objects.
 
@@ -55,7 +57,15 @@ node apps/agent/dist/clipsync.mjs run
 Copy something. It appears at http://127.0.0.1:8787 and on every other paired
 device.
 
+To use the deployed instance instead, point the agent at it:
+
+```bash
+node apps/agent/dist/clipsync.mjs login --url https://clip.rfh.et
+```
+
 ## Deploy
+
+Already deployed to `clip.rfh.et`. To stand up your own instance:
 
 ```bash
 npx wrangler login
@@ -82,6 +92,11 @@ npx wrangler secret put ADMIN_SECRET --config apps/worker/wrangler.jsonc
 npm run deploy
 ```
 
+`wrangler.jsonc` binds the Worker to `clip.rfh.et` as a custom domain and sets
+`workers_dev: false` — one public door, not two. Change the `routes` entry for
+your own hostname, or set `workers_dev: true` to use the generated
+`*.workers.dev` URL instead.
+
 ## Adding a device
 
 The first device authenticates with `ADMIN_SECRET`. Every later device joins
@@ -94,7 +109,7 @@ clipsync pair-code
 Then on the new machine:
 
 ```bash
-clipsync pair PAIR-XXXX-XXXX --url https://clipsync.<your-subdomain>.workers.dev
+clipsync pair PAIR-XXXX-XXXX --url https://clip.rfh.et
 ```
 
 The browser pairs the same way — open the Worker URL and paste a code.
