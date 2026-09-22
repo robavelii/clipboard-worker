@@ -12,6 +12,13 @@
  */
 
 import { ApiClient, ApiRequestError } from "@clipsync/client";
+import {
+  approveLink,
+  awaitApproval,
+  beginLink,
+  parseLinkUrl,
+} from "@clipsync/client/link";
+import { createLinkKeypair } from "@clipsync/crypto";
 import { deriveKeys, encryptText, decryptText, dedupeHash } from "@clipsync/crypto";
 import { PING_FRAME, MAX_ENVELOPE_BYTES, type ServerMessage } from "@clipsync/protocol";
 
@@ -148,6 +155,57 @@ const ids = new Set(devices.devices.map((d) => d.id));
 check("both devices are listed", ids.has(pc.deviceId) && ids.has(laptop.deviceId));
 check("laptop shows as online",
   devices.devices.find((d) => d.id === laptop.deviceId)?.online === true);
+
+console.log("\n--- device linking (QR handshake) ---");
+
+// The joining device never learns the passphrase by being told it.
+const pending = await beginLink(BASE, "linked-laptop", "linux");
+check("link url carries the public key out of band",
+  parseLinkUrl(pending.url)?.publicKey === pending.keypair.publicKey);
+check("fingerprint is human-checkable", /^\d{3}-\d{3}$/.test(pending.fingerprint));
+
+const parsed = parseLinkUrl(pending.url)!;
+
+// An approver handed a *different* key than the one it scanned must refuse.
+const impostor = await createLinkKeypair();
+let refused = false;
+try {
+  await approveLink(BASE, pc.token, parsed.linkId, impostor.publicKey, PASS);
+} catch {
+  refused = true;
+}
+check("approver refuses a key that does not match the scanned one", refused);
+
+const approvalDone = approveLink(BASE, pc.token, parsed.linkId, parsed.publicKey, PASS);
+const [, linked] = await Promise.all([approvalDone, awaitApproval(BASE, pending)]);
+
+check("linked device receives working credentials", Boolean(linked.credentials.token));
+check("linked device recovers the passphrase without typing it",
+  linked.passphrase === PASS);
+check("linked device shares the vault salt", linked.credentials.kdfSalt === pc.kdfSalt);
+
+const linkedApi = new ApiClient(BASE, linked.credentials.token);
+const linkedKeys = await deriveKeys(linked.passphrase, linked.credentials.kdfSalt);
+const linkedHistory = await linkedApi.listClips(10);
+check("linked device decrypts existing history",
+  (await decryptText(linkedKeys, linkedHistory.clips.at(-1)!.envelope)) === TEXT);
+
+// The claim deletes the row, so a replay finds nothing.
+const replayClaim = await fetch(new URL(`/api/link/${parsed.linkId}/claim`, BASE), {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ pickupToken: pending.pickupToken }),
+});
+check("pickup token is single use", replayClaim.status === 404,
+  `got ${replayClaim.status}`);
+
+const strangerClaim = await fetch(new URL(`/api/link/${parsed.linkId}/claim`, BASE), {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ pickupToken: "not-the-right-token" }),
+});
+check("a wrong pickup token is refused", strangerClaim.status === 404,
+  `got ${strangerClaim.status}`);
 
 console.log("\n--- tickets & revocation ---");
 /** Resolves true if the socket opens, false if the server refuses it. */
