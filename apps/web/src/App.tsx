@@ -10,12 +10,19 @@ import {
   unlock,
 } from "./session";
 import { PairScreen, UnlockScreen } from "./screens";
+import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { useClips, type DecryptedClip } from "./useClips";
 import { useSync } from "./useSync";
 
 export function App() {
   const [creds, setCreds] = useState(loadCredentials);
   const [keys, setKeys] = useState<VaultKeys | null>(null);
+  const [link, setLink] = useState(readLinkFromLocation);
+
+  const closeLink = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    setLink(null);
+  }, []);
 
   // Restore the key from the tab's cached passphrase on reload.
   useEffect(() => {
@@ -25,6 +32,25 @@ export function App() {
   }, [creds, keys]);
 
   if (!creds) return <Centered><PairScreen onPaired={() => setCreds(loadCredentials())} /></Centered>;
+
+  // An approval needs the passphrase itself, not just the derived keys, so it
+  // waits behind the unlock screen like everything else.
+  if (link && keys) {
+    const passphrase = cachedPassphrase();
+    if (passphrase) {
+      return (
+        <Centered>
+          <LinkApproval
+            linkId={link.linkId}
+            publicKey={link.publicKey}
+            token={creds.token}
+            passphrase={passphrase}
+            onClose={closeLink}
+          />
+        </Centered>
+      );
+    }
+  }
 
   if (!keys) {
     return (
@@ -84,6 +110,7 @@ function Workspace({
   const [devices, setDevices] = useState<Device[]>([]);
   const [query, setQuery] = useState("");
   const [pairCode, setPairCode] = useState<string | null>(null);
+  const [linkUrl, setLinkUrl] = useState("");
 
   const refreshDevices = useCallback(() => {
     void api.devices().then((r) => setDevices(r.devices)).catch(() => {});
@@ -140,13 +167,39 @@ function Workspace({
         </button>
       </div>
 
-      {pairCode && (
-        <p className="paircode">
-          Pairing code <code>{pairCode}</code> — valid 10 minutes, single use.
+      {pairCode !== null && (
+        <div className="paircode">
+          <p>
+            Paste a link from <code>clipsync link</code> — the other device
+            never has to be told the passphrase:
+          </p>
+          <form
+            className="linkform"
+            onSubmit={(e) => {
+              e.preventDefault();
+              try {
+                const url = new URL(linkUrl.trim());
+                window.location.href = `/link${url.hash}`;
+              } catch {
+                /* ignore malformed input; the field stays put */
+              }
+            }}
+          >
+            <input
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              placeholder="https://clip.rfh.et/link#…"
+            />
+            <button type="submit">Open</button>
+          </form>
+          <p className="muted small">
+            Or use a manual pairing code (that device will ask for the
+            passphrase): <code>{pairCode}</code> — 10 minutes, single use.
+          </p>
           <button className="link" onClick={() => setPairCode(null)}>
             dismiss
           </button>
-        </p>
+        </div>
       )}
 
       {error && <p className="error">{error}</p>}

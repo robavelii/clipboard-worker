@@ -133,3 +133,19 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
 .paircode code { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; }
 
 code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+
+.fingerprint {
+  margin: 0;
+  font: 600 26px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--accent);
+}
+
+.linkform { display: flex; gap: 8px; }
+.linkform input { flex: 1; }
+.paircode p { margin: 0 0 8px; }
