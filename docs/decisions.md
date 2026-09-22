@@ -250,10 +250,13 @@ notes app, but it is a bargain and it should be visible rather than assumed.
 
 ## 14. Tauri for the tray app
 
-Electron was the obvious choice and the wrong one. A tray app is running all
-the time, so its idle cost is the cost: roughly 150 MB on disk and 200 MB
-resident for Electron, against about 5 MB and 50 MB for Tauri, which uses the
-system webview.
+Electron was the obvious choice and the wrong one. A tray app runs all the
+time, so its idle cost is the cost: roughly 150 MB on disk for Electron against
+5 MB for Tauri, which links against the system webview instead of shipping one.
+
+The memory saving is real but smaller than the binary size implies -- measured
+here at about 135 MB resident with the panel loaded, because WebKit dominates
+either way. Disk, startup and update size are where Tauri actually wins.
 
 The usual reason to take Electron anyway is that Tauri needs GTK and WebKit
 development headers that may not be installed and may need root. Checking
@@ -270,3 +273,10 @@ and vault key already sit in `~/.config/clipsync/config.json`, so the panel
 inherits them. The hooks it shares with the web UI moved to `packages/react`
 for the same reason the crypto is shared — reconnection and event handling are
 easy to get subtly wrong twice.
+
+**A trap worth recording.** Building the crate with `cargo build --release`
+produces a binary that still points at the Vite dev server and fails with
+`connection refused`. Embedding the compiled frontend is the Tauri CLI's job,
+not the crate's, so the build has to go through `tauri build`. The failure is
+confusing because the binary is produced successfully and only misbehaves at
+runtime, on a machine where the dev server happens not to be running.

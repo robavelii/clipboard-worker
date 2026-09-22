@@ -7,8 +7,9 @@
     "dev:ui": "vite --port 5174 --strictPort",
     "build:ui": "vite build",
     "dev": "tauri dev",
-    "build": "tauri build",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build": "tauri build --no-bundle",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:deb": "tauri build"
   },
   "dependencies": {
     "@clipsync/protocol": "*",
