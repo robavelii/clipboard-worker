@@ -11,6 +11,7 @@ import {
 } from "./session";
 import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
+import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
 import { useClips, type DecryptedClip } from "./useClips";
 import { useSync } from "./useSync";
 
@@ -18,6 +19,7 @@ export function App() {
   const [creds, setCreds] = useState(loadCredentials);
   const [keys, setKeys] = useState<VaultKeys | null>(null);
   const [link, setLink] = useState(readLinkFromLocation);
+  const [invite, setInvite] = useState(readInviteFromLocation);
 
   const closeLink = useCallback(() => {
     window.history.replaceState(null, "", "/");
@@ -33,6 +35,23 @@ export function App() {
       .then(setKeys)
       .catch(() => forgetVaultKey());
   }, [creds, keys]);
+
+  // A scanned invite outranks everything: it is how an unenrolled device
+  // becomes enrolled, and it re-enrols one that was already paired.
+  if (invite) {
+    return (
+      <Centered>
+        <JoinScreen
+          inviteId={invite.inviteId}
+          secret={invite.secret}
+          onJoined={() => {
+            setInvite(null);
+            setCreds(loadCredentials());
+          }}
+        />
+      </Centered>
+    );
+  }
 
   if (!creds) return <Centered><PairScreen onPaired={() => setCreds(loadCredentials())} /></Centered>;
 

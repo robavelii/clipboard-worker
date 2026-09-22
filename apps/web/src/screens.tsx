@@ -51,7 +51,11 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
     <form className="card" onSubmit={submit}>
       <h1>Pair this browser</h1>
       <p className="muted">
-        Run <code>clipsync pair-code</code> on a device that is already set up.
+        Easier: run <code>clipsync invite</code> on a device that is already set
+        up and scan the QR it prints — no passphrase, nothing to type.
+      </p>
+      <p className="muted small">
+        Otherwise, pair with a code from <code>clipsync pair-code</code>:
       </p>
 
       <label>
