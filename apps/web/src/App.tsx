@@ -12,14 +12,15 @@ import {
 import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
-import { useClips, type DecryptedClip } from "./useClips";
-import { useSync } from "./useSync";
+import { ShareScreen, readSharedText } from "./ShareScreen";
+import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 export function App() {
   const [creds, setCreds] = useState(loadCredentials);
   const [keys, setKeys] = useState<VaultKeys | null>(null);
   const [link, setLink] = useState(readLinkFromLocation);
   const [invite, setInvite] = useState(readInviteFromLocation);
+  const [shared, setShared] = useState(readSharedText);
 
   const closeLink = useCallback(() => {
     window.history.replaceState(null, "", "/");
@@ -47,6 +48,22 @@ export function App() {
           onJoined={() => {
             setInvite(null);
             setCreds(loadCredentials());
+          }}
+        />
+      </Centered>
+    );
+  }
+
+  // Arriving from a share sheet: save first, browse second.
+  if (shared && creds) {
+    return (
+      <Centered>
+        <ShareScreen
+          text={shared}
+          credentials={creds}
+          onDone={() => {
+            window.history.replaceState(null, "", "/");
+            setShared(null);
           }}
         />
       </Centered>

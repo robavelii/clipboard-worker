@@ -14,7 +14,8 @@
     "@clipsync/crypto": "*",
     "@clipsync/client": "*",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@clipsync/react": "*"
   },
   "devDependencies": {
     "@types/react": "^19.2.2",
