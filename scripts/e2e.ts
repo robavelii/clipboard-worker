@@ -98,6 +98,16 @@ const fromLaptop = await laptopApi.listClips(10);
 check("paired device decrypts existing history",
   (await decryptText(laptopKeys, fromLaptop.clips.at(-1)!.envelope)) === TEXT);
 
+/** Polls until `predicate` holds, rather than sleeping a fixed interval. */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return predicate();
+}
+
 console.log("\n--- realtime sync ---");
 const socket = new WebSocket(await laptopApi.syncUrl());
 const received: ServerMessage[] = [];
@@ -115,7 +125,7 @@ await pcApi.createClip({
   type: "text", envelope: await encryptText(keys, SYNCED),
   contentHash: await dedupeHash(keys, SYNCED), size: Buffer.byteLength(SYNCED),
 });
-await new Promise((r) => setTimeout(r, 700));
+await waitFor(() => received.some((m) => m.type === "clip.created"));
 
 const pushed = received.find((m) => m.type === "clip.created");
 check("laptop receives the clip pushed by the pc", Boolean(pushed));
@@ -126,8 +136,10 @@ if (pushed && pushed.type === "clip.created") {
 }
 
 socket.send(PING_FRAME);
-await new Promise((r) => setTimeout(r, 300));
-check("keepalive is answered", received.some((m) => m.type === "pong"));
+// Waited for rather than slept on: the first round trip to a cold Durable
+// Object can take a few hundred milliseconds over a real network.
+check("keepalive is answered",
+  await waitFor(() => received.some((m) => m.type === "pong")));
 
 const devices = await pcApi.devices();
 const ids = new Set(devices.devices.map((d) => d.id));
