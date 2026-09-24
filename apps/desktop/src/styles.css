@@ -94,6 +94,7 @@ button.icon:hover { color: var(--text); }
   white-space: pre-wrap; word-break: break-word;
   max-height: 4.2em; overflow: hidden;
 }
+.clip .body.expanded { max-height: 60vh; overflow-y: auto; }
 .clip .body:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .clip .body:disabled { color: var(--muted); font-style: italic; cursor: default; }
 
