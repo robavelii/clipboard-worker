@@ -76,6 +76,9 @@ button.icon:hover { color: var(--text); }
 }
 
 .clip {
+  /* A flex item with overflow: hidden may shrink to nothing; without this a
+     long history is squeezed into the panel as hairlines instead of scrolling. */
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
