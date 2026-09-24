@@ -117,11 +117,30 @@ function Panel({
   keys: VaultKeys;
   config: AgentConfig;
 }) {
-  const { clips, loading, error, applyEvent, remove, togglePin } = useClips(
-    api,
-    keys,
-  );
+  const { clips, loading, error, applyEvent, remove, togglePin, reload } =
+    useClips(api, keys);
   const { status } = useSync(api, applyEvent);
+
+  // The panel signs in as the agent's device, and the Worker never echoes a
+  // clip back to the device that sent it. So nothing copied on this machine
+  // arrives over the socket: refetch whenever the panel is opened instead,
+  // and after a reconnect, which may have missed events from elsewhere.
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      debugLog("panel: focus", focused);
+      if (focused) void reload();
+    });
+    unlisten.catch((err) => debugLog("panel: focus listen failed", describe(err)));
+    return () => void unlisten.then((fn) => fn());
+  }, [reload]);
+
+  useEffect(() => {
+    if (status === "online") void reload();
+  }, [status, reload]);
+
+  useEffect(() => {
+    debugLog("panel:", { status, loading, clips: clips.length, error });
+  }, [status, loading, clips.length, error]);
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => {
