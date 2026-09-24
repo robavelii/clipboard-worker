@@ -1,7 +1,7 @@
 //! ClipSync tray app.
 //!
 //! The Rust side is deliberately thin: a tray icon, a panel that shows and
-//! hides, and one command to read the agent's config. Everything else --
+//! hides, and commands to read the agent's config and keep the panel's own. Everything else --
 //! fetching history, decrypting it, the live socket -- happens in the webview
 //! using the same TypeScript packages the CLI and web UI use, so there is no
 //! second implementation of the crypto to keep in step.
@@ -15,12 +15,21 @@ use tauri::{
     Manager, WebviewWindow,
 };
 
-/// `~/.config/clipsync/config.json`, written by `clipsync login`.
-fn config_path() -> Option<PathBuf> {
+/// `~/.config/clipsync`, where `clipsync login` writes `config.json`.
+fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("clipsync").join("config.json"))
+    Some(base.join("clipsync"))
+}
+
+fn config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("config.json"))
+}
+
+/// The panel's own device credentials, beside the agent's.
+fn tray_config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("tray.json"))
 }
 
 /// Append a line to a debug log.
@@ -43,8 +52,9 @@ fn log_debug(line: String) {
 
 /// Hand the agent's credentials to the webview.
 ///
-/// Reusing the CLI's config is what makes this app need no enrolment of its
-/// own: if `clipsync` works on this machine, so does the tray.
+/// The panel uses them for the vault key and to enrol itself as a device on
+/// first run, so there is nothing to set up: if `clipsync` works on this
+/// machine, so does the tray.
 #[tauri::command]
 fn load_agent_config() -> Result<String, String> {
     let path = config_path().ok_or("cannot locate the config directory")?;
@@ -66,6 +76,36 @@ fn toggle(window: &WebviewWindow) {
     }
 }
 
+/// The panel's own credentials, or `None` before it has enrolled.
+#[tauri::command]
+fn load_tray_config() -> Result<Option<String>, String> {
+    let path = tray_config_path().ok_or("cannot locate the config directory")?;
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {} ({e})", path.display())),
+    }
+}
+
+/// Store the panel's credentials, readable by this user only -- the file
+/// holds a bearer token, like the agent's config.
+#[tauri::command]
+fn save_tray_config(json: String) -> Result<(), String> {
+    let path = tray_config_path().ok_or("cannot locate the config directory")?;
+    let fail = |e: std::io::Error| format!("cannot write {} ({e})", path.display());
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(fail)?;
+    use std::io::Write;
+    file.write_all(json.as_bytes()).map_err(fail)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -78,7 +118,12 @@ pub fn run() {
         // makes its requests natively, where CORS does not apply.
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .invoke_handler(tauri::generate_handler![load_agent_config, log_debug])
+        .invoke_handler(tauri::generate_handler![
+            load_agent_config,
+            load_tray_config,
+            save_tray_config,
+            log_debug
+        ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open ClipSync", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

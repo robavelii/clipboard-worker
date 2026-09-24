@@ -176,16 +176,31 @@ letting you discover the mistake later.
 | `clipsync pair <code> --url <url>` | Join with a pairing code (manual) |
 | `clipsync pair-code` | Mint a code for another device |
 | `clipsync run` | Watch the clipboard and sync (the daemon) |
-| `clipsync history [-n 20]` | Recent clips, decrypted locally |
+| `clipsync history [-n 20] [--full]` | Recent clips, decrypted locally; `--full` prints them untruncated |
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
 | `clipsync passphrase` | Change the passphrase |
-| `clipsync-desktop` | Tray panel (see above) |
+| `clipsync-desktop` | Tray panel (see below) |
 | `clipsync devices [--revoke <id>]` | List or revoke devices |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Forget local credentials |
 
 `clipsync run` does not push whatever happened to be on the clipboard when it
 started; pass `--push-current` if you want that.
+
+### The tray panel
+
+`clipsync-desktop` is a tray icon with a searchable history: click a clip to
+copy it, pin it or delete it. It needs no setup beyond `clipsync login`. It
+takes the vault key from the agent's config and, on first run, enrols itself as
+a second device named after this one, `rob (tray)` for instance, saving its
+token to `~/.config/clipsync/tray.json`.
+
+It is a separate device so that clips copied on this machine appear in it live.
+Revoking it from another device stops the panel rather than letting it quietly
+re-enrol; delete `tray.json` and reopen to enrol it again.
+
+On Ubuntu the tray icon opens the panel from its menu (right-click, **Open
+ClipSync**).
 
 ### Running it as a service
 
