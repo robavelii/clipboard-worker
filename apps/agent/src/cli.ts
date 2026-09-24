@@ -39,7 +39,7 @@ Usage
   clipsync pair <code> --url <url> [--name <device>]    Join using a pairing code (manual)
   clipsync pair-code                                    Mint a code for another device
   clipsync run [--push-current] [--verbose]             Watch the clipboard and sync
-  clipsync history [-n <count>]                         Show recent clips
+  clipsync history [-n <count>] [--full]                Show recent clips (--full: untruncated)
   clipsync copy <clip-id>                               Copy a clip to this clipboard
   clipsync passphrase                                   Change the passphrase
   clipsync devices [--revoke <id>]                      List or revoke devices
@@ -310,7 +310,7 @@ async function cmdRun(opts: {
   await daemon.start();
 }
 
-async function cmdHistory(limit: number): Promise<void> {
+async function cmdHistory(limit: number, full = false): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
   const keys = await resolveVaultKeys(config, api);
@@ -325,16 +325,25 @@ async function cmdHistory(limit: number): Promise<void> {
   const names = new Map(devices.map((d) => [d.id, d.name]));
 
   for (const clip of clips) {
-    let text: string;
+    let text: string | null;
     try {
-      text = preview(await decryptText(keys, clip.envelope));
+      text = await decryptText(keys, clip.envelope);
     } catch {
-      text = "<cannot decrypt — different passphrase>";
+      text = null;
     }
     const origin = names.get(clip.deviceId) ?? clip.deviceId;
-    console.log(
-      `${clip.pinned ? "*" : " "} ${clip.id}  ${relativeTime(clip.createdAt).padStart(8)}  ${origin.padEnd(12)}  ${text}`,
-    );
+    const head = `${clip.pinned ? "*" : " "} ${clip.id}  ${relativeTime(clip.createdAt).padStart(8)}  ${origin.padEnd(12)}`;
+    if (text === null) {
+      console.log(`${head}  <cannot decrypt — different passphrase>`);
+    } else if (full) {
+      // The whole clip on its own lines, so long links stay intact and can be
+      // selected straight from the terminal.
+      console.log(`${head}\n${text.replace(/^/gm, "    ")}\n`);
+    } else {
+      // Use whatever the terminal has left after the header, not a fixed 64.
+      const width = Math.max(32, (process.stdout.columns || 120) - head.length - 2);
+      console.log(`${head}  ${preview(text, width)}`);
+    }
   }
 }
 
@@ -445,6 +454,7 @@ async function main(): Promise<void> {
       name: { type: "string" },
       revoke: { type: "string" },
       number: { type: "string", short: "n" },
+      full: { type: "boolean", short: "f" },
       "push-current": { type: "boolean" },
       verbose: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
@@ -477,7 +487,7 @@ async function main(): Promise<void> {
         verbose: values.verbose,
       });
     case "history":
-      return cmdHistory(Number(values.number) || 20);
+      return cmdHistory(Number(values.number) || 20, values.full);
     case "copy":
       return cmdCopy(arg);
     case "passphrase":

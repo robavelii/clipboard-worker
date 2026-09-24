@@ -127,6 +127,9 @@ export function useClips(api: ApiClient, keys: VaultKeys) {
     [api, load],
   );
 
+  // Stable, so callers can use it as an effect dependency.
+  const reload = useCallback(() => load(), [load]);
+
   return {
     clips,
     loading,
@@ -136,6 +139,6 @@ export function useClips(api: ApiClient, keys: VaultKeys) {
     applyEvent,
     remove,
     togglePin,
-    reload: () => load(),
+    reload,
   };
 }

@@ -23,6 +23,11 @@ function debugLog(...parts: unknown[]): void {
   void invoke("log_debug", { line }).catch(() => {});
 }
 
+/** Roughly what overflows the three collapsed lines of a clip. */
+function isLong(text: string | null): boolean {
+  return text !== null && (text.length > 120 || text.split("\n").length > 3);
+}
+
 /** WebKit reports every failed fetch as "Load failed", which says nothing. */
 function describe(err: unknown): string {
   if (err instanceof Error) {
@@ -117,12 +122,40 @@ function Panel({
   keys: VaultKeys;
   config: AgentConfig;
 }) {
-  const { clips, loading, error, applyEvent, remove, togglePin } = useClips(
-    api,
-    keys,
-  );
+  const { clips, loading, error, applyEvent, remove, togglePin, reload } =
+    useClips(api, keys);
   const { status } = useSync(api, applyEvent);
+
+  // The panel signs in as the agent's device, and the Worker never echoes a
+  // clip back to the device that sent it. So nothing copied on this machine
+  // arrives over the socket: refetch whenever the panel is opened instead,
+  // and after a reconnect, which may have missed events from elsewhere.
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      debugLog("panel: focus", focused);
+      if (focused) void reload();
+    });
+    unlisten.catch((err) => debugLog("panel: focus listen failed", describe(err)));
+    return () => void unlisten.then((fn) => fn());
+  }, [reload]);
+
+  useEffect(() => {
+    if (status === "online") void reload();
+  }, [status, reload]);
+
+  useEffect(() => {
+    debugLog("panel:", { status, loading, clips: clips.length, error });
+  }, [status, loading, clips.length, error]);
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -182,14 +215,19 @@ function Panel({
         {visible.map((clip) => (
           <li key={clip.id} className={clip.pinned ? "clip pinned" : "clip"}>
             <button
-              className="body"
+              className={expanded.has(clip.id) ? "body expanded" : "body"}
               onClick={() => void copy(clip)}
               disabled={clip.text === null}
-              title="Click to copy"
+              title={clip.text ?? undefined}
             >
               {clip.text ?? "Encrypted with a different passphrase"}
             </button>
             <div className="actions">
+              {isLong(clip.text) && (
+                <button onClick={() => toggleExpanded(clip.id)}>
+                  {expanded.has(clip.id) ? "less" : "more"}
+                </button>
+              )}
               <button onClick={() => void togglePin(clip.id, !clip.pinned)}>
                 {clip.pinned ? "unpin" : "pin"}
               </button>

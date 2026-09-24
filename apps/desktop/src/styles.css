@@ -76,6 +76,9 @@ button.icon:hover { color: var(--text); }
 }
 
 .clip {
+  /* A flex item with overflow: hidden may shrink to nothing; without this a
+     long history is squeezed into the panel as hairlines instead of scrolling. */
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
@@ -91,6 +94,7 @@ button.icon:hover { color: var(--text); }
   white-space: pre-wrap; word-break: break-word;
   max-height: 4.2em; overflow: hidden;
 }
+.clip .body.expanded { max-height: 60vh; overflow-y: auto; }
 .clip .body:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .clip .body:disabled { color: var(--muted); font-style: italic; cursor: default; }
 

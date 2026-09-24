@@ -167,8 +167,14 @@ function Workspace({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return clips;
-    return clips.filter((c) => c.text?.toLowerCase().includes(needle));
+    const matching = needle
+      ? clips.filter((c) => c.text?.toLowerCase().includes(needle))
+      : clips;
+    // Pinned first, as in the tray panel: pinning is how you keep something
+    // from scrolling away under newer clips.
+    return [...matching].sort(
+      (a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
+    );
   }, [clips, query]);
 
   return (
