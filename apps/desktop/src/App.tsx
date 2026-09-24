@@ -7,7 +7,7 @@
  * same crypto and the same hooks the web UI uses.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -200,9 +200,19 @@ function Panel({
   // Live events keep the list current while the socket is up. Refetch on
   // open and on reconnect as well, to cover whatever arrived while the
   // machine slept or the socket was down.
+  //
+  // Each open also starts a fresh pick: search focused and selected, so
+  // typing replaces the last query, and the newest clip highlighted.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [selected, setSelected] = useState(0);
+
   useEffect(() => {
     const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (focused) void reload();
+      if (!focused) return;
+      void reload();
+      setSelected(0);
+      searchRef.current?.focus();
+      searchRef.current?.select();
     });
     unlisten.catch((err) => debugLog("panel: focus listen failed", describe(err)));
     return () => void unlisten.then((fn) => fn());
@@ -212,6 +222,7 @@ function Panel({
     if (status === "online") void reload();
   }, [status, reload]);
   const [query, setQuery] = useState("");
+  useEffect(() => setSelected(0), [query]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
   const toggleExpanded = useCallback((id: string) => {
@@ -244,6 +255,25 @@ function Panel({
     }
   }, []);
 
+  // Keep the highlighted clip on screen as the arrows move it.
+  useEffect(() => {
+    document
+      .querySelector(".clip.selected")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selected, visible]);
+
+  const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      setSelected((i) => Math.max(0, Math.min(visible.length - 1, i + step)));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const clip = visible[selected];
+      if (clip) void copy(clip);
+    }
+  };
+
   return (
     <div className="panel">
       <header data-tauri-drag-region>
@@ -264,6 +294,8 @@ function Panel({
         className="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={onSearchKey}
+        ref={searchRef}
         placeholder="Search…"
         autoFocus
       />
@@ -277,8 +309,17 @@ function Panel({
       )}
 
       <ul className="clips">
-        {visible.map((clip) => (
-          <li key={clip.id} className={clip.pinned ? "clip pinned" : "clip"}>
+        {visible.map((clip, i) => (
+          <li
+            key={clip.id}
+            className={[
+              "clip",
+              clip.pinned && "pinned",
+              i === selected && "selected",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <button
               className={expanded.has(clip.id) ? "body expanded" : "body"}
               onClick={() => void copy(clip)}
@@ -302,7 +343,10 @@ function Panel({
         ))}
       </ul>
 
-      <footer>{tray.deviceName}</footer>
+      <footer>
+        <span>{tray.deviceName}</span>
+        <span>↑↓ select · Enter copy · Esc hide</span>
+      </footer>
     </div>
   );
 }

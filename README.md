@@ -199,8 +199,21 @@ It is a separate device so that clips copied on this machine appear in it live.
 Revoking it from another device stops the panel rather than letting it quietly
 re-enrol; delete `tray.json` and reopen to enrol it again.
 
-On Ubuntu the tray icon opens the panel from its menu (right-click, **Open
-ClipSync**).
+**Opening it.** Press `Ctrl+Alt+V` anywhere: the panel opens at the pointer
+with the newest clip highlighted. Type to search, `↑`/`↓` to move, `Enter` to
+copy and close, `Esc` to close. The tray menu (**Open ClipSync**) works too;
+on Ubuntu a left click on a tray icon does nothing.
+
+The shortcut is deliberately not `Ctrl+Shift+V`, which is paste in every Linux
+terminal. To use another, add it to `tray.json` and restart the panel:
+
+```json
+"shortcut": "Super+Shift+V"
+```
+
+Running `clipsync-desktop` while it is already running toggles the panel
+instead of starting a second one. On Wayland, where apps cannot grab global
+shortcuts, bind that command to a key in your desktop's keyboard settings.
 
 ### Running it as a service
 
