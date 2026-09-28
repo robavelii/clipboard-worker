@@ -17,14 +17,16 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type {
-  ClaimVaultAuthRequest,
-  ClaimVaultAuthResponse,
-  PutVaultKeyRequest,
-  RotateVaultRequest,
-  RotateVaultResponse,
-  SealedVaultKeyResponse,
-  VaultKeyResponse,
+import {
+  STALE_EPOCH_ERROR,
+  type ApiError,
+  type ClaimVaultAuthRequest,
+  type ClaimVaultAuthResponse,
+  type PutVaultKeyRequest,
+  type RotateVaultRequest,
+  type RotateVaultResponse,
+  type SealedVaultKeyResponse,
+  type VaultKeyResponse,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { getUser } from "../db";
@@ -175,9 +177,13 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     if (!results[0]?.meta.changes) {
       const user = await getUser(c.env.DB);
       if (user && user.key_epoch !== fromEpoch) {
-        throw new HTTPException(409, {
-          message: `the vault is at epoch ${user.key_epoch}, not ${fromEpoch} -- it was re-keyed meanwhile`,
-        });
+        return c.json<ApiError>(
+          {
+            error: STALE_EPOCH_ERROR,
+            message: `the vault is at epoch ${user.key_epoch}, not ${fromEpoch} -- it was re-keyed meanwhile`,
+          },
+          409,
+        );
       }
       throw new HTTPException(403, { message: "that is not the current passphrase" });
     }
@@ -246,13 +252,27 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       });
     }
 
+    const epoch = body.keyEpoch;
+    if (epoch !== undefined && !Number.isSafeInteger(epoch)) {
+      throw new HTTPException(400, { message: "keyEpoch must be an integer" });
+    }
     const rotated = await c.env.DB.prepare(
       `UPDATE users SET wrapped_vault_key = ?, auth_hash = ?
-        WHERE id = ? AND auth_hash = ?`,
+        WHERE id = ? AND auth_hash = ? AND (?5 IS NULL OR key_epoch = ?5)`,
     )
-      .bind(wrapped, authHash, userId, await sha256(body.authProof))
+      .bind(wrapped, authHash, userId, await sha256(body.authProof), epoch ?? null)
       .run();
     if (!rotated.meta.changes) {
+      const user = await getUser(c.env.DB);
+      if (epoch !== undefined && user && user.key_epoch !== epoch) {
+        return c.json<ApiError>(
+          {
+            error: STALE_EPOCH_ERROR,
+            message: `the vault was re-keyed (now epoch ${user.key_epoch}) -- nothing was changed`,
+          },
+          409,
+        );
+      }
       throw new HTTPException(403, {
         message: "that is not the current passphrase",
       });

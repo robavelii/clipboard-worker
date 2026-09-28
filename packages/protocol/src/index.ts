@@ -112,6 +112,12 @@ export interface PutVaultKeyRequest {
    * already set; a device holding only the vault key cannot produce it.
    */
   authProof?: string;
+  /**
+   * The epoch of the key being re-wrapped. When set, the write lands only if
+   * the vault is still at it, so a passphrase change racing a re-key cannot
+   * put the old key back (409 stale_epoch).
+   */
+  keyEpoch?: number;
 }
 
 /** Register the passphrase proof on an account that predates it. */

@@ -134,6 +134,26 @@ describe("POST /api/vault/rotate", () => {
     expect(key.keyEpoch).toBe(0);
   });
 
+  it("keeps a passphrase change that raced a re-key from putting the old key back", async () => {
+    const { owner } = await account();
+    expect((await rotate(owner.token)).status).toBe(200);
+    // Re-wraps the epoch-0 key it read before the rotation landed.
+    const res = await api("/api/vault/key", {
+      method: "PUT",
+      token: owner.token,
+      body: {
+        wrappedVaultKey: WRAPPED,
+        authHash: await authHashOf(PROOF),
+        authProof: PROOF,
+        keyEpoch: 0,
+      },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "stale_epoch" });
+    const key = (await (await api("/api/vault/key", { token: owner.token })).json()) as VaultKeyResponse;
+    expect(key.wrappedVaultKey).toBe(WRAPPED_2);
+  });
+
   it("refuses to rotate from an epoch the account has left", async () => {
     const { owner } = await account();
     expect((await rotate(owner.token)).status).toBe(200);
