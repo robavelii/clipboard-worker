@@ -20,6 +20,7 @@ import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
 import { ShareScreen, readSharedText } from "./ShareScreen";
 import { Compose } from "./Compose";
+import { FileView } from "./FileView";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 export function App() {
@@ -405,6 +406,9 @@ function Workspace({
           <ClipRow
             key={clip.id}
             clip={clip}
+            api={api}
+            keys={keys}
+            account={account}
             origin={deviceNames.get(clip.deviceId) ?? "unknown device"}
             onDelete={() => void remove(clip.id)}
             onTogglePin={() => void togglePin(clip.id, !clip.pinned)}
@@ -423,11 +427,17 @@ function Workspace({
 
 function ClipRow({
   clip,
+  api,
+  keys,
+  account,
   origin,
   onDelete,
   onTogglePin,
 }: {
   clip: DecryptedClip;
+  api: ApiClient;
+  keys: RingKeys;
+  account: string;
   origin: string;
   onDelete: () => void;
   onTogglePin: () => void;
@@ -443,9 +453,13 @@ function ClipRow({
 
   return (
     <li className={clip.pinned ? "clip pinned" : "clip"}>
-      <pre className={clip.text === null ? "locked" : undefined}>
-        {clip.text ?? "Cannot decrypt on this device"}
-      </pre>
+      {clip.file ? (
+        <FileView api={api} keys={keys} account={account} clip={clip} />
+      ) : (
+        <pre className={clip.text === null ? "locked" : undefined}>
+          {clip.text ?? "Cannot decrypt on this device"}
+        </pre>
+      )}
       <div className="meta">
         <span>{origin}</span>
         <span>·</span>
@@ -456,9 +470,11 @@ function ClipRow({
         <button onClick={onTogglePin} title="Pinned clips never expire">
           {clip.pinned ? "Unpin" : "Pin"}
         </button>
-        <button onClick={() => void copy()} disabled={clip.text === null}>
-          {copied ? "Copied" : "Copy"}
-        </button>
+        {!clip.file && (
+          <button onClick={() => void copy()} disabled={clip.text === null}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        )}
         <button className="danger" onClick={onDelete}>
           Delete
         </button>

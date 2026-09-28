@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Clip, SyncEvent } from "@clipsync/protocol";
 import type { ApiClient } from "@clipsync/client";
-import { decryptClip, type RingKeys } from "@clipsync/client/ring";
+import { readClip, type FileMeta, type RingKeys } from "@clipsync/client/ring";
 
 const PAGE_SIZE = 100;
 
@@ -16,9 +16,11 @@ export interface DecryptedClip extends Clip {
   /**
    * null when this clip does not open: encrypted under a different
    * passphrase, under a key epoch this device does not hold, or not the
-   * clip its row claims (see readClip).
+   * clip its row claims (see readClip). For an image or file, its name.
    */
   text: string | null;
+  /** An image or file's metadata, for fetching its bytes; null for text. */
+  file: FileMeta | null;
 }
 
 async function decryptAll(
@@ -29,9 +31,10 @@ async function decryptAll(
   return Promise.all(
     clips.map(async (clip) => {
       try {
-        return { ...clip, text: await decryptClip(keys, clip, account) };
+        const opened = await readClip(keys, clip, account);
+        return { ...clip, text: opened.text, file: opened.file };
       } catch {
-        return { ...clip, text: null };
+        return { ...clip, text: null, file: null };
       }
     }),
   );
