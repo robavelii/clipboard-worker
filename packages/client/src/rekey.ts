@@ -7,6 +7,7 @@
 
 import {
   authHashOf,
+  DeviceSealError,
   dedupeHash,
   encryptText,
   generateVaultKey,
@@ -74,11 +75,16 @@ export async function refreshVaultRing(
   const { epoch, sealed } = await api.sealedVaultKey();
   if (ring.keys[String(epoch)]) return ring;
   if (!sealed || !keypair) throw new NoSealedKeyError(epoch);
-  return withKey(
-    ring,
-    epoch,
-    await openVaultKeyForDevice(keypair, deviceId, epoch, sealed),
-  );
+  let vaultKey: string;
+  try {
+    vaultKey = await openVaultKeyForDevice(keypair, deviceId, epoch, sealed);
+  } catch (err) {
+    // Sealed to a keypair this device no longer has: a browser that lost its
+    // IndexedDB, a config rewritten since. As stranded as having no copy.
+    if (err instanceof DeviceSealError) throw new NoSealedKeyError(epoch);
+    throw err;
+  }
+  return withKey(ring, epoch, vaultKey);
 }
 
 export interface ReencryptResult {
