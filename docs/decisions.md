@@ -162,9 +162,17 @@ not even need to know it happened, because they hold the vault key rather than
 the passphrase.
 
 The same indirection improves linking: a device that joins by QR receives the
-vault key alone. It can read and write clips but cannot derive the KEK, so it
-cannot change the passphrase. Previously linking handed over the passphrase
-itself, which gave every linked device full control of the account.
+vault key alone, and never learns the passphrase. Previously linking handed
+over the passphrase itself.
+
+*Correction (audit, 2026-09):* this section originally went on to say such a
+device "cannot derive the KEK, so it cannot change the passphrase". The first
+half is true and the second does not follow. Anyone holding the vault key can
+wrap it under a KEK of their own choosing, and `PUT /api/vault/key` accepts a
+wrapped key from any enrolled device -- so a linked device can replace the
+passphrase and lock the owner out of every passphrase unlock. The fix is for
+the server to require proof of the current passphrase before accepting a new
+wrapped key; see docs/roadmap.md.
 
 **Migrating without re-encrypting.** Existing accounts have clips encrypted
 under keys derived from `PBKDF2(passphrase, salt)`. Making *that value* the

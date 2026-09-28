@@ -243,8 +243,10 @@ the ciphertext and a SHA-256 of the secret — enough to check who may claim the
 invite, not enough to open it. Invites last five minutes and are single-use.
 
 **Device linking.** Transfers the vault key, not the passphrase, so a linked
-device can read the clipboard but cannot change the passphrase that guards it.
-ECDH over P-256, with both public keys bound into the HKDF
+device never learns the passphrase. It can still *replace* it, though: holding
+the vault key is enough to wrap it under a new passphrase, and the server
+accepts a new wrapped key from any enrolled device. Closing that is planned —
+see [docs/roadmap.md](docs/roadmap.md). ECDH over P-256, with both public keys bound into the HKDF
 info so a swapped transcript derives a different key and fails closed. The
 server sees two public keys and one ciphertext. The joining device's key
 travels out of band and both ends display a fingerprint of it, which is what
@@ -264,8 +266,6 @@ encryption addresses — but it does mean local disk compromise is game over. Se
 
 The server also learns metadata it cannot avoid: how many clips you make, when,
 from which device, and roughly how large they are.
-
-## Retention
 
 ## Changing the passphrase
 
@@ -326,9 +326,10 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-Fifty-three checks against a running `npm run dev`: bootstrap, pairing,
+Sixty-three checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
-revocation, the full linking handshake including a refused key substitution,
+revocation including cutting off an open socket, the full linking handshake
+including a refused key substitution,
 scan-to-join including a refused claim that knows only the invite id,
 passphrase rotation leaving old clips readable, and an explicit assertion that
 no plaintext appears in any API response.
@@ -338,6 +339,10 @@ no plaintext appears in any API response.
 Images and file sync (needs R2), a global `Ctrl+Shift+V` picker,
 semantic search, and non-Linux clipboard backends. `packages/crypto` and the
 `ClipType` union are the two places that will need to change first for images.
+
+[docs/roadmap.md](docs/roadmap.md) sets the order: the trust-boundary fixes
+from the September 2026 [audit](docs/audit.md) come first, and images after,
+because re-keying the vault gets more expensive with every byte under it.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or
