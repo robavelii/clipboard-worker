@@ -8,7 +8,8 @@
  * Key hierarchy:
  *
  *   passphrase --PBKDF2(salt, 600k)--> master --HKDF("kek")--> KEK
- *                                                                |
+ *                                          |                     |
+ *                                          `--HKDF("auth")--> passphrase proof
  *                                                     unwraps    v
  *   vault key (32 random bytes) <------------- wrapped vault key (server-held)
  *        |--HKDF("enc")-----> AES-GCM-256 key
@@ -88,7 +89,10 @@ async function pbkdf2Master(
 }
 
 async function hkdfSource(bits: ArrayBuffer): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", bits, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.importKey("raw", bits, "HKDF", false, [
+    "deriveKey",
+    "deriveBits",
+  ]);
 }
 
 function hkdfParams(salt: Uint8Array<ArrayBuffer>, info: string) {
@@ -103,6 +107,15 @@ export interface OpenedVault {
    * keeps every previously stored clip decryptable.
    */
   readonly legacyVaultKey: VaultKey;
+  /**
+   * Proves knowledge of the passphrase to the server, which stores only
+   * {@link authHashOf} of it. Required to replace the wrapped vault key, so a
+   * device holding the vault key but not the passphrase cannot change it.
+   *
+   * A separate HKDF branch from the KEK: the server sees this value during a
+   * rotation, and it opens nothing.
+   */
+  readonly authProof: string;
 }
 
 /**
@@ -127,10 +140,26 @@ export async function openVault(
     ["encrypt", "decrypt"],
   );
 
+  const authBits = await crypto.subtle.deriveBits(
+    hkdfParams(salt, "clipsync:auth:v1"),
+    master,
+    256,
+  );
+
   return {
     kek,
     legacyVaultKey: toBase64Url(new Uint8Array(masterBits)),
+    authProof: toBase64Url(new Uint8Array(authBits)),
   };
+}
+
+/**
+ * What the server stores for a passphrase proof: SHA-256 of the proof string,
+ * base64url -- the same digest the Worker uses for every credential at rest.
+ */
+export async function authHashOf(authProof: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(authProof));
+  return toBase64Url(new Uint8Array(digest));
 }
 
 /** Seal the vault key for storage on the server. */

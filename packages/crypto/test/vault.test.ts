@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   DecryptError,
+  authHashOf,
+  fromBase64Url,
+  toBase64Url,
   decryptText,
   deriveKeys,
   encryptText,
@@ -88,5 +91,43 @@ describe("migration from passphrase-derived keys", () => {
     const b = await vaultKeysFrom(other.legacyVaultKey, SALT);
     const clip = await encryptText(a, "secret");
     await expect(decryptText(b, clip)).rejects.toBeInstanceOf(DecryptError);
+  });
+});
+
+describe("passphrase proof", () => {
+  it("is stable for one passphrase and differs across passphrases", async () => {
+    const again = await openVault(PASSPHRASE, SALT);
+    const other = await openVault("not the passphrase", SALT);
+    expect(again.authProof).toBe(opened.authProof);
+    expect(other.authProof).not.toBe(opened.authProof);
+  });
+
+  it("is independent of the key material it sits beside", async () => {
+    // A migrated account's vault key is the PBKDF2 master itself; the proof
+    // goes to the server at rotation, so it must not be that value.
+    expect(opened.authProof).not.toBe(opened.legacyVaultKey);
+
+    // Nor can it stand in for the KEK: as a key it opens nothing.
+    const wrapped = await wrapVaultKey(opened.kek, generateVaultKey());
+    const asKey = await crypto.subtle.importKey(
+      "raw",
+      fromBase64Url(opened.authProof),
+      { name: "AES-GCM" },
+      false,
+      ["decrypt"],
+    );
+    await expect(unwrapVaultKey(asKey, wrapped)).rejects.toBeInstanceOf(
+      DecryptError,
+    );
+  });
+
+  it("hashes the way the Worker does: SHA-256 of the string, base64url", async () => {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(opened.authProof),
+    );
+    expect(await authHashOf(opened.authProof)).toBe(
+      toBase64Url(new Uint8Array(digest)),
+    );
   });
 });
