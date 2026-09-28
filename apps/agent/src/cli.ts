@@ -455,7 +455,7 @@ async function cmdHistory(limit: number, full = false): Promise<void> {
   for (const clip of clips) {
     let text: string | null;
     try {
-      text = await decryptClip(keys, clip);
+      text = await decryptClip(keys, clip, config.userId);
     } catch {
       text = null;
     }
@@ -464,7 +464,9 @@ async function cmdHistory(limit: number, full = false): Promise<void> {
     if (text === null) {
       console.log(
         `${head}  <cannot decrypt — ${
-          keys.byEpoch.has(clip.keyEpoch) ? "different passphrase" : `no key for epoch ${clip.keyEpoch}`
+          keys.byEpoch.has(clip.keyEpoch)
+            ? "does not decrypt or verify here"
+            : `no key for epoch ${clip.keyEpoch}`
         }>`,
       );
     } else if (full) {
@@ -487,7 +489,7 @@ async function cmdCopy(id: string | undefined): Promise<void> {
   const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
 
   const clip = await api.getClip(id);
-  const text = await decryptClip(keys, clip);
+  const text = await decryptClip(keys, clip, config.userId);
   await (await detectClipboard()).write(text);
   console.log(`Copied ${text.length} chars to the clipboard.`);
 }
@@ -546,14 +548,13 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
   if (opts.finish) {
     const { reencrypted, unreadable } = await reencryptHistory(
       api,
-      ring,
-      config.kdfSalt,
+      { account: config.userId, kdfSalt: config.kdfSalt, ring },
       progress,
     );
     if (reencrypted) console.log();
     console.log(`Re-encrypted ${plural(reencrypted, "clip")}.`);
     if (unreadable) {
-      console.log(`${clipCount(unreadable)} under a key this device does not hold; left as they are.`);
+      console.log(`${clipCount(unreadable)} that this device cannot read or verify; left as they are.`);
     }
     return;
   }
@@ -567,10 +568,12 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
 
   let result;
   try {
-    result = await rekeyVault(api, config.kdfSalt, passphrase, ring, {
-      onRotated: save,
-      onProgress: progress,
-    });
+    result = await rekeyVault(
+      api,
+      { account: config.userId, kdfSalt: config.kdfSalt, ring },
+      passphrase,
+      { onRotated: save, onProgress: progress },
+    );
   } catch (err) {
     if (err instanceof DecryptError) {
       throw new Error("that is not the passphrase -- nothing was changed");
@@ -583,7 +586,7 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
   console.log(`Re-encrypted ${plural(result.reencrypted, "clip")}.`);
   if (result.unreadable) {
     console.log(
-      `${clipCount(result.unreadable)} under a key this device does not hold. Run\n` +
+      `${clipCount(result.unreadable)} that this device cannot read or verify. Run\n` +
         "`clipsync rekey --finish` on a device that can read them.",
     );
   }
