@@ -393,6 +393,8 @@ check("revocation closes the device's open socket",
   `socket state ${socket.readyState}`);
 check("the close says why", revokedCloseCode === REVOKED_CLOSE_CODE,
   `got close code ${revokedCloseCode}`);
+check("the device is told it was revoked before the close",
+  received.some((m) => m.type === "revoked"));
 
 const AFTER_REVOKE = `clip made after revocation # ${RUN}`;
 await pcApi.createClip({

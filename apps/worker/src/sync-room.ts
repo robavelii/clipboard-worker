@@ -92,13 +92,21 @@ export class SyncRoom extends DurableObject<Env> {
    * Revoking the token only stops *new* connections: a socket opened before
    * the revocation would otherwise keep receiving every clip, and the device
    * on the other end still holds the vault key that opens them.
+   *
+   * The explicit `revoked` frame goes first because the close alone is not a
+   * dependable signal. Under local workerd, a socket that has never sent a
+   * frame receives the close frame but the connection is never torn down, so
+   * the client sits in CLOSING without a close event -- cut off, which is
+   * what matters, but unaware of it. A message is delivered either way.
    */
   disconnect(deviceId: string): number {
+    const frame = JSON.stringify({ type: "revoked" });
     let closed = 0;
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment | null;
       if (att?.deviceId !== deviceId) continue;
       try {
+        ws.send(frame);
         ws.close(REVOKED_CLOSE_CODE, "device revoked");
       } catch {
         // Already closing; nothing more to do.

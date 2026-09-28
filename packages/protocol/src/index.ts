@@ -266,6 +266,9 @@ export const PING_FRAME = JSON.stringify({ type: "ping" });
  * Close code the server uses when it drops a revoked device's socket. In the
  * 4000-4999 range reserved for applications, so a client can tell "you were
  * revoked, stop" apart from an ordinary disconnect it should retry.
+ *
+ * Clients should also act on the `revoked` frame sent just before the close:
+ * a close event is not reliably observable (see SyncRoom.disconnect).
  */
 export const REVOKED_CLOSE_CODE = 4001;
 
@@ -273,8 +276,10 @@ export const REVOKED_CLOSE_CODE = 4001;
 export type ServerMessage =
   | SyncEvent
   | { type: "pong" }
-  | { type: "ready"; deviceId: string; connected: string[] };
+  | { type: "ready"; deviceId: string; connected: string[] }
+  /** This device was revoked. The socket closes next; do not reconnect. */
+  | { type: "revoked" };
 
 export function isSyncEvent(msg: ServerMessage): msg is SyncEvent {
-  return msg.type !== "pong" && msg.type !== "ready";
+  return msg.type !== "pong" && msg.type !== "ready" && msg.type !== "revoked";
 }

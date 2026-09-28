@@ -7,14 +7,23 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { PING_FRAME, type ServerMessage, type SyncEvent } from "@clipsync/protocol";
-import type { ApiClient } from "@clipsync/client";
+import {
+  PING_FRAME,
+  REVOKED_CLOSE_CODE,
+  type ServerMessage,
+  type SyncEvent,
+} from "@clipsync/protocol";
+import { ApiRequestError, type ApiClient } from "@clipsync/client";
 
 const PING_INTERVAL_MS = 30_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
-export type SyncStatus = "connecting" | "online" | "offline";
+/**
+ * `revoked` is terminal: the server has cut this device off, and reconnecting
+ * would only spin on a token that no longer works.
+ */
+export type SyncStatus = "connecting" | "online" | "offline" | "revoked";
 
 export function useSync(
   api: ApiClient | null,
@@ -35,6 +44,14 @@ export function useSync(
     let reconnectTimer: number | undefined;
     let delay = RECONNECT_MIN_MS;
     let cancelled = false;
+
+    const revoked = () => {
+      cancelled = true;
+      window.clearInterval(pingTimer);
+      window.clearTimeout(reconnectTimer);
+      setStatus("revoked");
+      socket?.close();
+    };
 
     const connect = async () => {
       if (cancelled) return;
@@ -61,6 +78,10 @@ export function useSync(
           }
 
           if (msg.type === "pong") return;
+          if (msg.type === "revoked") {
+            revoked();
+            return;
+          }
           if (msg.type === "ready") {
             setConnected(msg.connected);
             return;
@@ -76,12 +97,22 @@ export function useSync(
           handler.current(msg);
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           window.clearInterval(pingTimer);
+          if (cancelled) return;
+          if (event.code === REVOKED_CLOSE_CODE) {
+            revoked();
+            return;
+          }
           setStatus("offline");
           scheduleReconnect();
         };
-      } catch {
+      } catch (err) {
+        // Minting a ticket answers 401 once the token is revoked.
+        if (err instanceof ApiRequestError && err.status === 401) {
+          revoked();
+          return;
+        }
         setStatus("offline");
         scheduleReconnect();
       }
