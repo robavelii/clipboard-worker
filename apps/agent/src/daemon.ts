@@ -25,6 +25,7 @@ import {
   MAX_ENVELOPE_BYTES,
   PING_FRAME,
   REVOKED_CLOSE_CODE,
+  R2_BUDGET_ERROR,
   STALE_EPOCH_ERROR,
   type Clip,
   type ServerMessage,
@@ -32,8 +33,10 @@ import {
 import {
   DecryptError,
   dedupeHash,
+  sha256Hex,
   type DeviceKeypair,
 } from "@clipsync/crypto";
+import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { NoSealedKeyError } from "@clipsync/client/rekey";
 import {
@@ -71,6 +74,25 @@ const CATCH_UP_WINDOW_MS = 10 * 60 * 1000;
  * disagree and for catch-up, whose own window is the same.
  */
 const REPLAY_WINDOW_MS = CATCH_UP_WINDOW_MS;
+
+/**
+ * Images are looked for only when the clipboard holds no text, and only on
+ * every third poll (about 2 s): reading one means fetching and hashing the
+ * whole picture, which is not worth doing ten times a second.
+ */
+const IMAGE_POLL_EVERY = 3;
+
+/**
+ * Images synced through the clipboard, in bytes. Anything bigger stays in
+ * history for the web UI or `clipsync get`, rather than every device
+ * downloading it unasked.
+ */
+const MAX_CLIPBOARD_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
+
+/** Echo-guard tags for images: their digest, apart from text's HMAC tags. */
+const imageTag = (sha256: string) => `img:${sha256}`;
 
 export interface DaemonOptions {
   /** Push whatever is already on the clipboard when the agent starts. */
@@ -126,6 +148,10 @@ export class Daemon {
   /** Whether a socket has been ready before: the next ready is a reconnect. */
   private connectedBefore = false;
 
+  /** Whether images sync through the clipboard (CLIPSYNC_IMAGES=off stops it). */
+  private readonly images: boolean;
+  private imageTick = 0;
+
   /** One poll at a time: a slow read must not stack another behind it. */
   private polling = false;
 
@@ -140,6 +166,7 @@ export class Daemon {
     private readonly options: DaemonOptions = {},
   ) {
     this.api = new ApiClient(config.baseUrl, config.token);
+    this.images = !/^(0|off|false|no)$/i.test(process.env.CLIPSYNC_IMAGES ?? "");
   }
 
   async start(): Promise<void> {
@@ -173,6 +200,9 @@ export class Daemon {
       } else {
         this.lastHandled = await dedupeHash(currentKeys(this.keys), current);
       }
+    } else {
+      const image = await this.readImage();
+      if (image) this.lastHandled = imageTag(await sha256Hex(image));
     }
 
     this.connect();
@@ -191,6 +221,16 @@ export class Daemon {
   }
 
   /* ---------------------------- local -> cloud --------------------------- */
+
+  private async readImage(): Promise<Uint8Array | null> {
+    if (!this.images || !this.clipboard.readImage) return null;
+    try {
+      return await this.clipboard.readImage();
+    } catch (err) {
+      if (this.options.verbose) log("clipboard image read failed:", err);
+      return null;
+    }
+  }
 
   private async readClipboard(): Promise<string> {
     try {
@@ -216,7 +256,10 @@ export class Daemon {
     try {
       const generation = this.applied;
       const text = await this.readClipboard();
-      if (!text) return;
+      if (!text) {
+        await this.pollImage(generation);
+        return;
+      }
 
       const hash = await dedupeHash(currentKeys(this.keys), text);
       // Stale: a remote clip landed while this read was in flight, so the
@@ -236,6 +279,56 @@ export class Daemon {
       await this.push(text, hash);
     } finally {
       this.polling = false;
+    }
+  }
+
+  /** The image half of poll(): the same guards, keyed by the image's digest. */
+  private async pollImage(generation: number): Promise<void> {
+    if (!this.images || !this.clipboard.readImage) return;
+    if (++this.imageTick % IMAGE_POLL_EVERY !== 0) return;
+    const png = await this.readImage();
+    if (!png || generation !== this.applied) return;
+
+    const tag = imageTag(await sha256Hex(png));
+    if (tag === this.lastHandled) {
+      this.candidate = null;
+      return;
+    }
+    if (tag !== this.candidate) {
+      this.candidate = tag;
+      this.localChangedAt = Date.now();
+      return;
+    }
+    this.candidate = null;
+    await this.pushImage(png, tag);
+  }
+
+  private async pushImage(png: Uint8Array, tag: string): Promise<void> {
+    this.lastHandled = tag;
+    if (png.length > MAX_CLIPBOARD_IMAGE_BYTES) {
+      log(`skipped a ${kb(png.length)} image -- over the clipboard limit; use clipsync send`);
+      return;
+    }
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const res = await uploadFile(this.api, this.keys, this.config.userId, this.config.deviceId, {
+        name: `image-${stamp}.png`,
+        mime: "image/png",
+        bytes: png,
+      });
+      if (!res.deduped) log(`pushed an image (${kb(png.length)})`);
+    } catch (err) {
+      if (this.isRevocation(err)) return;
+      this.lastHandled = null;
+      if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
+        await this.refresh();
+        return;
+      }
+      // Past the R2 budget the next poll would only be refused again.
+      if (err instanceof ApiRequestError && err.code === R2_BUDGET_ERROR) {
+        this.lastHandled = tag;
+      }
+      log("image push failed:", err instanceof Error ? err.message : err);
     }
   }
 
@@ -272,35 +365,47 @@ export class Daemon {
 
   /* ---------------------------- cloud -> local --------------------------- */
 
+  /**
+   * Open a clip, picking up a re-key first if it was written under a key
+   * this device does not hold yet (the vault.rotated event may still be on
+   * its way, or was missed). null for a clip too old to be a new copy.
+   */
+  private async openFresh(clip: Clip, from: string): Promise<OpenedClip | null> {
+    let opened: OpenedClip;
+    try {
+      opened = await readClip(this.keys, clip, this.config.userId);
+    } catch (err) {
+      if (!(err instanceof DecryptError) || clip.keyEpoch <= this.keys.current) {
+        throw err;
+      }
+      await this.refresh();
+      opened = await readClip(this.keys, clip, this.config.userId);
+    }
+    // The copy time is authenticated (v2), so an old clip cannot be passed
+    // off as a new copy: the server could otherwise replay last week's clip
+    // onto every clipboard. v1 clips carry no time to check.
+    if (opened.copiedAt !== null && Date.now() - opened.copiedAt > REPLAY_WINDOW_MS) {
+      const minutes = Math.round((Date.now() - opened.copiedAt) / 60_000);
+      log(`ignored a clip from ${from} copied ${minutes} min ago -- too old to be a new copy`);
+      return null;
+    }
+    return opened;
+  }
+
   private async apply(clip: Clip, from: string): Promise<void> {
-    // Images and files stay in history (`clipsync get`, the web UI): the
-    // clipboard tools here carry text, and fetching the bytes would spend
-    // the R2 budget on every device for something nobody asked to paste.
+    if (clip.type === "image" && this.images && this.clipboard.writeImage) {
+      await this.applyImage(clip, from);
+      return;
+    }
+    // Files, and images where they do not sync, stay in history (`clipsync
+    // get`, the web UI) rather than every device downloading them unasked.
     if (clip.type !== "text") {
       if (this.options.verbose) log(`${clip.type} from ${from} -- in history, not applied`);
       return;
     }
     try {
-      let opened: OpenedClip;
-      try {
-        opened = await readClip(this.keys, clip, this.config.userId);
-      } catch (err) {
-        // Written under a key this device has not picked up yet: the
-        // vault.rotated event may still be on its way, or was missed.
-        if (!(err instanceof DecryptError) || clip.keyEpoch <= this.keys.current) {
-          throw err;
-        }
-        await this.refresh();
-        opened = await readClip(this.keys, clip, this.config.userId);
-      }
-      // The copy time is authenticated (v2), so an old clip cannot be passed
-      // off as a new copy: the server could otherwise replay last week's
-      // clip onto every clipboard. v1 clips carry no time to check.
-      if (opened.copiedAt !== null && Date.now() - opened.copiedAt > REPLAY_WINDOW_MS) {
-        const minutes = Math.round((Date.now() - opened.copiedAt) / 60_000);
-        log(`ignored a clip from ${from} copied ${minutes} min ago -- too old to be a new copy`);
-        return;
-      }
+      const opened = await this.openFresh(clip, from);
+      if (!opened) return;
       const { text } = opened;
       // Set the guards before writing: the write itself triggers a clipboard
       // change that the poller will see, and a poll already in flight holds
@@ -313,6 +418,33 @@ export class Daemon {
       log(`applied ${text.length} chars from ${from}`);
     } catch (err) {
       log("apply failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  private async applyImage(clip: Clip, from: string): Promise<void> {
+    try {
+      const opened = await this.openFresh(clip, from);
+      const meta = opened?.file;
+      if (!meta) return;
+      if (meta.mime !== "image/png" || meta.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+        log(`image from ${from} (${kb(meta.size)}) is in history, not applied`);
+        return;
+      }
+      // Already here: this device copied it, or has applied it before.
+      if (imageTag(meta.sha256) === this.lastHandled) return;
+
+      const { bytes } = await downloadFile(this.api, this.keys, clip, this.config.userId);
+      this.lastHandled = imageTag(meta.sha256);
+      this.applied++;
+      this.candidate = null;
+      await this.clipboard.writeImage!(bytes);
+      // What the clipboard hands back may not be these bytes -- Windows
+      // re-encodes PNGs -- and the poller must recognise that as this image.
+      const back = await this.readImage();
+      if (back) this.lastHandled = imageTag(await sha256Hex(back));
+      log(`applied an image (${kb(bytes.length)}) from ${from}`);
+    } catch (err) {
+      log("image apply failed:", err instanceof Error ? err.message : err);
     }
   }
 
@@ -337,6 +469,7 @@ export class Daemon {
       if (newest.keyEpoch === this.keys.current && newest.contentHash === this.lastHandled) {
         return;
       }
+      // (An image already on the clipboard is recognised by applyImage.)
       await this.apply(newest, `${newest.deviceId} (missed while offline)`);
     } catch (err) {
       if (this.isRevocation(err)) return;
@@ -476,7 +609,8 @@ export class Daemon {
         // than let the next poll push the clipboard back as if it were new.
         this.applied++;
         this.candidate = null;
-        if (this.lastHandled !== null) {
+        // Image tags are digests, not keyed: they survive a re-key as they are.
+        if (this.lastHandled !== null && !this.lastHandled.startsWith("img:")) {
           const current = await this.readClipboard();
           this.lastHandled = current
             ? await dedupeHash(currentKeys(this.keys), current)

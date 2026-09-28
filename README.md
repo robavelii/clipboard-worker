@@ -21,8 +21,8 @@ an opaque ciphertext envelope.
 
 v0.1 — text, images and files, real-time sync, encrypted history, device
 pairing and revocation. The agent runs on Linux, macOS and Windows; the tray
-panel on Linux. Images and files go through the web UI and `clipsync send` /
-`clipsync get`; the agent does not put them on the clipboard.
+panel on Linux. Copied images (PNG, up to 5 MB) sync through the clipboard like
+text; other files go through the web UI and `clipsync send` / `clipsync get`.
 
 ## Quick start (local)
 
@@ -291,6 +291,13 @@ $run  = New-ScheduledTaskAction -Execute powershell.exe `
 Register-ScheduledTask -TaskName ClipSync -Action $run -Trigger (New-ScheduledTaskTrigger -AtLogOn)
 ```
 
+**Images.** A copied image (PNG, up to 5 MB) syncs through the clipboard like
+text, encrypted and stored the way `clipsync send` stores a file. Bigger ones
+stay in history for the web UI or `clipsync get`. The agent looks for an
+image only when the clipboard holds no text, every couple of seconds.
+`CLIPSYNC_IMAGES=off` turns this off. On macOS it uses `osascript` and on
+Windows the PowerShell helper; neither has been tried on a real machine yet.
+
 `CLIPSYNC_CLIPBOARD` (`wayland`, `x11`, `macos` or `windows`) overrides the
 backend the agent picks, if it guesses wrong.
 
@@ -500,8 +507,8 @@ assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
-Images and files on the agent's clipboard (they sync through the web UI and
-the CLI for now), sharing files into the web app from a phone's share sheet,
+Files other than images on the clipboard (they sync through the web UI and
+the CLI), sharing files into the web app from a phone's share sheet,
 semantic search, a Windows installer, and the tray panel on macOS and
 Windows.
 

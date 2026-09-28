@@ -9,11 +9,17 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface ClipboardBackend {
   readonly name: string;
   read(): Promise<string>;
   write(text: string): Promise<void>;
+  /** PNG bytes when the clipboard holds an image, else null. */
+  readImage?(): Promise<Uint8Array | null>;
+  writeImage?(png: Uint8Array): Promise<void>;
   /** Release anything the backend holds open. */
   close?(): void;
 }
@@ -31,7 +37,7 @@ export interface ClipboardBackend {
 const READ_TIMEOUT_MS = 5_000;
 
 interface RunOptions {
-  stdin?: string;
+  stdin?: string | Uint8Array;
   timeoutMs?: number;
   /**
    * Reads wait for `close`, when all of stdout is in. Writes wait for `exit`
@@ -47,24 +53,28 @@ function run(
   cmd: string,
   args: string[],
   { stdin, timeoutMs, settleOn = "close", env }: RunOptions = {},
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; bytes: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: "pipe", timeout: timeoutMs, env });
-    let stdout = "";
+    // Kept as bytes: an image read is binary, and text is decoded once at the
+    // end rather than per chunk, which could split a UTF-8 sequence.
+    const out: Buffer[] = [];
     let stderr = "";
 
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
+    child.stdout.on("data", (d: Buffer) => out.push(d));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
     child.on("error", reject);
     // A null code means the process was killed -- by the timeout, typically.
     // That is a failed read, not an empty clipboard.
-    child.on(settleOn, (code: number | null, signal: NodeJS.Signals | null) =>
+    child.on(settleOn, (code: number | null, signal: NodeJS.Signals | null) => {
+      const bytes = Buffer.concat(out);
       resolve({
         code: code ?? -1,
-        stdout,
+        stdout: bytes.toString("utf8"),
+        bytes,
         stderr: signal ? `${stderr}killed by ${signal}` : stderr,
-      }),
-    );
+      });
+    });
 
     if (stdin !== undefined) {
       child.stdin.end(stdin);
@@ -103,11 +113,39 @@ const wayland: ClipboardBackend = {
     const { code, stderr } = await run("wl-copy", [], { stdin: text, settleOn: "exit" });
     if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
   },
+  async readImage() {
+    const types = await run("wl-paste", ["--list-types"], { timeoutMs: READ_TIMEOUT_MS });
+    if (types.code !== 0 || !/^image\/png$/m.test(types.stdout)) return null;
+    const { code, bytes } = await run("wl-paste", ["--type", "image/png"], { timeoutMs: READ_TIMEOUT_MS });
+    return code === 0 && bytes.length ? new Uint8Array(bytes) : null;
+  },
+  async writeImage(png) {
+    const { code, stderr } = await run("wl-copy", ["--type", "image/png"], {
+      stdin: png,
+      settleOn: "exit",
+    });
+    if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
+  },
 };
+
+/** Targets an X11 selection owner offers text under. */
+const X11_TEXT_TARGETS = /^(UTF8_STRING|STRING|TEXT|COMPOUND_TEXT|text\/plain(;.*)?)$/m;
+
+async function x11Targets(): Promise<string | null> {
+  const { code, stdout } = await run("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  return code === 0 ? stdout : null;
+}
 
 const x11: ClipboardBackend = {
   name: "xclip",
   async read() {
+    // Ask what the owner offers first. An owner that answers every request
+    // with whatever it holds -- xclip itself does, after putting an image on
+    // the clipboard -- would otherwise hand back a PNG as "text".
+    const targets = await x11Targets();
+    if (targets !== null && !X11_TEXT_TARGETS.test(targets)) return "";
     const { code, stdout, stderr } = await run("xclip", ["-selection", "clipboard", "-o"], {
       timeoutMs: READ_TIMEOUT_MS,
     });
@@ -120,6 +158,21 @@ const x11: ClipboardBackend = {
   async write(text) {
     const { code, stderr } = await run("xclip", ["-selection", "clipboard", "-i"], {
       stdin: text,
+      settleOn: "exit",
+    });
+    if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
+  },
+  async readImage() {
+    const targets = await x11Targets();
+    if (targets === null || !/^image\/png$/m.test(targets)) return null;
+    const { code, bytes } = await run("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"], {
+      timeoutMs: READ_TIMEOUT_MS,
+    });
+    return code === 0 && bytes.length ? new Uint8Array(bytes) : null;
+  },
+  async writeImage(png) {
+    const { code, stderr } = await run("xclip", ["-selection", "clipboard", "-t", "image/png", "-i"], {
+      stdin: png,
       settleOn: "exit",
     });
     if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
@@ -156,6 +209,31 @@ export const macos: ClipboardBackend = {
     });
     if (code !== 0) throw new Error(`pbcopy failed: ${stderr.trim()}`);
   },
+  // pbcopy and pbpaste carry text only; AppleScript reaches the pasteboard's
+  // PNG flavour. It prints data as «data PNGf<hex>» and reads it from a file.
+  async readImage() {
+    const { code, stdout } = await run("osascript", ["-e", "the clipboard as «class PNGf»"], {
+      timeoutMs: READ_TIMEOUT_MS,
+      env: utf8Env(),
+    });
+    const hex = /«data PNGf([0-9A-Fa-f]+)»/.exec(stdout)?.[1];
+    return code === 0 && hex ? new Uint8Array(Buffer.from(hex, "hex")) : null;
+  },
+  async writeImage(png) {
+    const dir = await mkdtemp(join(tmpdir(), "clipsync-"));
+    const file = join(dir, "clip.png");
+    try {
+      await writeFile(file, png, { mode: 0o600 });
+      const { code, stderr } = await run(
+        "osascript",
+        ["-e", `set the clipboard to (read (POSIX file "${file}") as «class PNGf»)`],
+        { settleOn: "exit", env: utf8Env() },
+      );
+      if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
 };
 
 /* ------------------------------- Windows ------------------------------- */
@@ -167,6 +245,8 @@ export const macos: ClipboardBackend = {
  *
  *   R          ->  OK <base64 of the clipboard text>
  *   W <base64> ->  OK
+ *   I          ->  OK <base64 of the clipboard image as PNG>, or OK and nothing
+ *   J <base64> ->  OK, having put that PNG on the clipboard
  *   anything that fails -> ERR <message>
  *
  * Works in Windows PowerShell 5.1 (every Windows 10 and 11) and PowerShell 7.
@@ -184,6 +264,19 @@ while ($null -ne ($line = $in.ReadLine())) {
       $out.WriteLine('OK ' + [Convert]::ToBase64String($utf8.GetBytes([string]$text)))
     } elseif ($line.StartsWith('W ')) {
       Set-Clipboard -Value $utf8.GetString([Convert]::FromBase64String($line.Substring(2)))
+      $out.WriteLine('OK')
+    } elseif ($line -eq 'I') {
+      Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+      $img = [System.Windows.Forms.Clipboard]::GetImage()
+      if ($null -eq $img) { $out.WriteLine('OK ') } else {
+        $ms = New-Object System.IO.MemoryStream
+        $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $out.WriteLine('OK ' + [Convert]::ToBase64String($ms.ToArray()))
+      }
+    } elseif ($line.StartsWith('J ')) {
+      Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+      $ms = New-Object System.IO.MemoryStream(,[Convert]::FromBase64String($line.Substring(2)))
+      [System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromStream($ms))
       $out.WriteLine('OK')
     } else {
       $out.WriteLine('ERR unknown request')
@@ -314,6 +407,15 @@ export function powershellBackend(
     },
     async write(text) {
       expectOk(await request(`W ${Buffer.from(text, "utf8").toString("base64")}`, writeMs));
+    },
+    // Windows re-encodes what it hands back, so these bytes are not the ones
+    // written; the daemon re-reads after writing an image for that reason.
+    async readImage() {
+      const payload = expectOk(await request("I", readMs));
+      return payload ? new Uint8Array(Buffer.from(payload, "base64")) : null;
+    },
+    async writeImage(png) {
+      expectOk(await request(`J ${Buffer.from(png).toString("base64")}`, writeMs));
     },
     close: stop,
   };

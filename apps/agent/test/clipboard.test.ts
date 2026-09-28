@@ -2,7 +2,8 @@ import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { macos, powershellBackend, type ClipboardBackend } from "../src/clipboard";
+import { execFileSync } from "node:child_process";
+import { detectClipboard, macos, powershellBackend, type ClipboardBackend } from "../src/clipboard";
 
 let dir: string;
 const saved = { ...process.env };
@@ -144,4 +145,39 @@ describe.skipIf(!process.env.CLIPSYNC_TEST_PWSH || !process.env.DISPLAY)("PowerS
       b.close?.();
     }
   }, 60_000);
+});
+
+// Needs an X display and xclip, so it runs where they exist (a desktop, or
+// Xvfb) and is skipped in CI.
+const hasXclip = (() => {
+  try {
+    execFileSync("which", ["xclip"]);
+    return Boolean(process.env.DISPLAY);
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasXclip)("X11 backend", () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3, 255]);
+
+  it("round-trips an image", async () => {
+    process.env.CLIPSYNC_CLIPBOARD = "x11";
+    const clip = await detectClipboard();
+    await clip.writeImage!(png);
+    expect([...(await clip.readImage!())!]).toEqual([...png]);
+  });
+
+  // xclip, owning the selection with an image, answers a text request with
+  // the image's bytes. Without the TARGETS check the agent would push a PNG
+  // back as text after applying one.
+  it("reads no text while the clipboard holds only an image", async () => {
+    process.env.CLIPSYNC_CLIPBOARD = "x11";
+    const clip = await detectClipboard();
+    await clip.writeImage!(png);
+    expect(await clip.read()).toBe("");
+    await clip.write("plain text");
+    expect(await clip.read()).toBe("plain text");
+    expect(await clip.readImage!()).toBeNull();
+  });
 });
