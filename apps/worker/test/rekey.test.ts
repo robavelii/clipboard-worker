@@ -15,6 +15,7 @@ import { api, bootstrap } from "./helpers";
 const WRAPPED = "k1.aXYtaXYtaXYtaXY.Y2lwaGVydGV4dA";
 const WRAPPED_2 = "k1.b3RoZXItaXYtaXY.bmV3LWNpcGhlcnRleHQ";
 const PROOF = "b3duZXItcHJvb2Ytb3duZXItcHJvb2Ytb3duZXItcHI";
+const OTHER_PROOF = "b3RoZXItcHJvb2Ytb3RoZXItcHJvb2Ytb3RoZXItcHI";
 const PUBLIC_KEY = `B${"Q".repeat(86)}`;
 
 /** Two devices on an account whose key is wrapped under PROOF's passphrase. */
@@ -127,7 +128,7 @@ describe("POST /api/vault/rotate", () => {
   it("requires the current passphrase", async () => {
     const { owner, phone } = await account();
     const res = await rotate(phone.token, {
-      authProof: "b3RoZXItcHJvb2Ytb3RoZXItcHJvb2Ytb3RoZXItcHI",
+      authProof: OTHER_PROOF,
     });
     expect(res.status).toBe(403);
     const key = (await (await api("/api/vault/key", { token: owner.token })).json()) as VaultKeyResponse;
