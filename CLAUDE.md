@@ -20,7 +20,7 @@ npm workspaces monorepo; run from the root.
 ```bash
 npm install
 npm run typecheck              # every workspace; the worker's runs `wrangler types` first
-npm test                       # crypto + Worker unit tests (vitest 4)
+npm test                       # crypto, Worker and agent unit tests (vitest 4)
 npm test -w @clipsync/crypto -- test/link.test.ts      # one file
 npm test -w @clipsync/crypto -- -t "wrong passphrase"  # one test by name
 npm test -w @clipsync/worker -- test/vault.test.ts     # Worker tests: run in workerd via @cloudflare/vitest-pool-workers
@@ -128,12 +128,15 @@ It polls the clipboard every 600 ms. Echo suppression is the whole design proble
 3. the `applied` generation counter drops a read that was in flight when a remote clip was written;
 4. the settle rule: push only after the content holds for two consecutive polls.
 
+Clipboard backends (`apps/agent/src/clipboard.ts`): `wl-clipboard` or `xclip` on Linux, `pbpaste`/`pbcopy` on macOS (forced to a UTF-8 locale, since launchd starts jobs without one), and on Windows one long-lived PowerShell helper that answers `R`/`W <base64>` requests on stdin. That avoids starting PowerShell every poll; it also normalises CRLF to LF on read, or applied clips would echo back. `CLIPSYNC_CLIPBOARD` forces a backend. The real helper script runs in the agent tests when `CLIPSYNC_TEST_PWSH` points at a `pwsh` and `DISPLAY` is set (PowerShell 7 on Linux uses xclip).
+
 Reads time out after 5 s; writes don't, and settle on the tool's `exit`, not `close`: `xclip -i`/`wl-copy` fork a selection-holding child that keeps the inherited stdio open until the next copy.
 
 After a reconnect (not on first start) the daemon applies the newest clip if it is another device's, under 10 minutes old, newer than the last local copy and not already on the clipboard (decisions §23). Exit codes, which the systemd unit depends on:
 
 - **75:** the bundle was rebuilt on disk; restart onto it (`RestartForceExitStatus=75`).
 - **78:** the device was revoked, or re-keyed without a copy for it; never restart (`RestartPreventExitStatus=78`).
+- Under launchd (`CLIPSYNC_SUPERVISOR=launchd`, set by the plist `scripts/install-agent.sh` writes on macOS) that exit is 0 instead, because launchd's `KeepAlive` restarts every failure and cannot exclude one status.
 
 A re-key changes the key every dedupe hash is taken under, so `refresh()` re-primes `lastHandled` under the new key when the epoch moves.
 

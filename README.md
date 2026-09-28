@@ -20,7 +20,8 @@ an opaque ciphertext envelope.
 ## Status
 
 v0.1 — text clips, real-time sync, encrypted history, device pairing and
-revocation. Images and files are not implemented; see [Not built yet](#not-built-yet).
+revocation. The agent runs on Linux, macOS and Windows; the tray panel on
+Linux. Images and files are not implemented; see [Not built yet](#not-built-yet).
 
 ## Quick start (local)
 
@@ -257,6 +258,32 @@ WantedBy=graphical-session.target
 
 Logs: `journalctl --user -u clipsync -f`.
 
+**macOS.** The same script installs a launchd agent instead
+(`~/Library/LaunchAgents/clipsync.agent.plist`, logs in
+`~/Library/Logs/clipsync.log`) and skips the tray. The clipboard is read with
+`pbpaste`/`pbcopy`, which ship with macOS, under a UTF-8 locale: launchd
+starts jobs without one, and without it anything beyond ASCII comes out
+mangled. launchd cannot be told to leave one failure status alone, so under
+it the agent exits 0 when revoked (launchd leaves a clean exit alone) and 75
+onto a rebuilt bundle (which it restarts).
+
+**Windows.** The agent uses one long-lived PowerShell process for the
+clipboard (Windows PowerShell 5.1, which every Windows 10 and 11 has; set
+`CLIPSYNC_POWERSHELL=pwsh` for PowerShell 7). There is no installer yet. Run
+`node apps\agent\dist\clipsync.mjs run` in a terminal, or register a logon
+task. The task below has **not been tried on Windows yet**:
+
+```powershell
+$node = (Get-Command node).Source
+$cli  = "$PWD\apps\agent\dist\clipsync.mjs"
+$run  = New-ScheduledTaskAction -Execute powershell.exe `
+  -Argument "-WindowStyle Hidden -NoProfile -Command `"& '$node' '$cli' run`""
+Register-ScheduledTask -TaskName ClipSync -Action $run -Trigger (New-ScheduledTaskTrigger -AtLogOn)
+```
+
+`CLIPSYNC_CLIPBOARD` (`wayland`, `x11`, `macos` or `windows`) overrides the
+backend the agent picks, if it guesses wrong.
+
 ## Security model
 
 What the design actually protects against, and what it does not.
@@ -439,8 +466,8 @@ assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
-Images and file sync (needs R2), semantic search, and non-Linux clipboard
-backends. `packages/crypto` and the
+Images and file sync (needs R2), semantic search, a Windows installer, and
+the tray panel on macOS and Windows. `packages/crypto` and the
 `ClipType` union are the two places that will need to change first for images.
 
 Images come after the trust-boundary work — passphrase authority, re-keying on

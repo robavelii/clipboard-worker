@@ -187,6 +187,7 @@ export class Daemon {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.socket?.close(1000, "shutdown");
     this.socket = null;
+    this.clipboard?.close?.();
   }
 
   /* ---------------------------- local -> cloud --------------------------- */

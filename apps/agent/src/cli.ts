@@ -69,6 +69,16 @@ Usage
  */
 const EXIT_REVOKED = 78;
 
+/**
+ * Stop for good: revoked, or re-keyed out. systemd is told not to restart
+ * status 78 (RestartPreventExitStatus). launchd has no such setting -- its
+ * KeepAlive restarts any failure -- so under launchd this exits 0, which it
+ * leaves alone, and the plist sets CLIPSYNC_SUPERVISOR so the agent knows.
+ */
+function exitForGood(): never {
+  process.exit(process.env.CLIPSYNC_SUPERVISOR === "launchd" ? 0 : EXIT_REVOKED);
+}
+
 function currentPlatform(): Platform {
   switch (osPlatform()) {
     case "linux":
@@ -401,8 +411,8 @@ async function cmdRun(opts: {
     verbose: opts.verbose,
     // A distinct status, so the service unit can tell "revoked" from a crash
     // and not restart into the same 401 forever (RestartPreventExitStatus).
-    onRevoked: () => process.exit(EXIT_REVOKED),
-    onStranded: () => process.exit(EXIT_REVOKED),
+    onRevoked: exitForGood,
+    onStranded: exitForGood,
   });
 
   const shutdown = () => {
@@ -413,7 +423,9 @@ async function cmdRun(opts: {
   process.on("SIGTERM", shutdown);
 
   await daemon.start();
-  if (process.env.INVOCATION_ID) restartOnRebuild(daemon);
+  if (process.env.INVOCATION_ID || process.env.CLIPSYNC_SUPERVISOR === "launchd") {
+    restartOnRebuild(daemon);
+  }
 }
 
 /** Exit status systemd's Restart=on-failure acts on (EX_TEMPFAIL). */
@@ -425,8 +437,9 @@ const EXIT_RESTART = 75;
  * The service runs the bundle straight from the checkout, so without this a
  * rebuild changes nothing until someone remembers to restart it -- and a
  * daemon quietly running last week's code is indistinguishable from one
- * that is up to date. Only under systemd (INVOCATION_ID is set for every
- * unit it starts), where exiting means being restarted rather than stopped.
+ * that is up to date. Only under a supervisor that restarts it -- systemd
+ * (INVOCATION_ID is set for every unit it starts) or launchd (the plist sets
+ * CLIPSYNC_SUPERVISOR) -- where exiting means being restarted, not stopped.
  */
 function restartOnRebuild(daemon: Daemon): void {
   const bundle = fileURLToPath(import.meta.url);
