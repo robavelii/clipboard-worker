@@ -183,7 +183,7 @@ letting you discover the mistake later.
 | `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
 | `clipsync rekey [--finish]` | Move every device to a new vault key (see below) |
 | `clipsync status` | Config, clipboard backend, token validity |
-| `clipsync logout` | Forget local credentials |
+| `clipsync logout` | Revoke this machine's devices, then forget local credentials |
 
 `clipsync run` does not push whatever happened to be on the clipboard when it
 started; pass `--push-current` if you want that.
@@ -418,7 +418,7 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-About ninety checks against a running `npm run dev`: bootstrap, pairing,
+About ninety-five checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
 revocation including cutting off an open socket, the full linking handshake
 including a refused key substitution,

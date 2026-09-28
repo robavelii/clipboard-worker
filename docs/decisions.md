@@ -538,3 +538,44 @@ already hold.
 - A device that never registered a key (one that has not run since device
   keys existed) is left out of a re-key and told so; the agent then exits 78
   like a revoked one, and a browser falls back to the passphrase.
+
+## 23. Catching up, and leaving no device behind
+
+**Catch-up applies one clip, and only after a reconnect.** The server queues
+nothing for a socket that is down, so a laptop that slept through a copy on
+the phone missed it. After a reconnect the agent looks at the newest clip and
+applies it if it came from another device, is under ten minutes old, is newer
+than the last change it saw on the local clipboard, and is not already there.
+Replaying every missed clip would flick the clipboard through them for no
+benefit: history holds the rest. Not on first start, because a restart (a
+rebuild, a login) must not replace what was copied while the agent was down.
+The web UI simply reloads the list on reconnect and when the tab is shown
+again; it has no clipboard to overwrite.
+
+Trap: "newer than the last local change" compares the server's `created_at`
+with this machine's clock. A skew of a few seconds only matters for a copy
+made in those seconds, and ten minutes bounds the damage.
+
+**Revoke on failure rather than check first.** `login` and `pair` used to
+enrol and then find the passphrase wrong, leaving a device nobody held. The
+alternative -- check the passphrase before enrolling -- needs the salt and
+wrapped key before any credential exists, which is an unauthenticated
+endpoint that hands anyone the material to guess the passphrase offline.
+Instead a device that cannot unlock revokes itself (`DELETE
+/api/devices/me`). The pair code is spent either way; that was true before.
+
+`logout` and "Unpair" revoke first for the same reason: a token forgotten
+only locally left the device listed forever and sealed to by every re-key.
+An approved link nobody collected is revoked when its row expires, in the
+same batch that deletes the only copy of its token.
+
+**Paging on `(created_at, id)`.** The cursor was `created_at` alone, so a
+page boundary inside one millisecond skipped the rest of that millisecond.
+Re-encryption and bumps make shared timestamps common. The cursor is now
+`<createdAt>.<id>`; a bare timestamp from an older client still parses, with
+the old behaviour.
+
+Trap found on the way: the agent's clipboard write waited for the tool's
+stdio to `close`. `xclip -i` and `wl-copy` fork a child that holds the
+selection and those pipes until the next copy, so every write stayed pending
+until then. Writes now settle on `exit`.
