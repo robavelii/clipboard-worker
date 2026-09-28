@@ -167,10 +167,15 @@ export function App() {
             setRing(next);
           }}
           onForget={() => {
-            clearSession();
-            setNeedsPassphrase(false);
-            setRing(null);
-            setCreds(null);
+            void new ApiClient("", creds.token)
+              .revokeSelf()
+              .catch(() => undefined)
+              .finally(() => {
+                clearSession();
+                setNeedsPassphrase(false);
+                setRing(null);
+                setCreds(null);
+              });
           }}
         />
       </Centered>
@@ -188,9 +193,17 @@ export function App() {
       onRefreshRing={refreshRing}
       onUnlockAgain={() => setNeedsPassphrase(true)}
       onSignOut={() => {
-        clearSession();
-        setRing(null);
-        setCreds(null);
+        // Revoke before forgetting: otherwise the device stays listed and
+        // keeps being sealed to by every re-key. Offline, it unpairs anyway;
+        // another device can revoke what is left.
+        void new ApiClient("", creds.token)
+          .revokeSelf()
+          .catch(() => undefined)
+          .finally(() => {
+            clearSession();
+            setRing(null);
+            setCreds(null);
+          });
       }}
       onLock={() => {
         forgetVaultKey();
@@ -245,6 +258,20 @@ function Workspace({
     [applyEvent, keys, onRefreshRing],
   );
   const { status, connected } = useSync(api, onEvent);
+
+  // Nothing is queued for a socket that was down, and a phone suspends a
+  // background tab's socket freely: refetch whenever it comes back online
+  // and whenever the tab is looked at again, as the tray does on focus.
+  useEffect(() => {
+    if (status === "online") void reload();
+  }, [status, reload]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [reload]);
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [query, setQuery] = useState("");
