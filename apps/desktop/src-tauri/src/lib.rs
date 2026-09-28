@@ -38,17 +38,35 @@ fn tray_config_path() -> Option<PathBuf> {
 /// The webview has no console anyone can see once the app is packaged, and a
 /// failed `fetch` surfaces in WebKit as the uninformative "Load failed". This
 /// gives the panel somewhere to record what actually went wrong.
+///
+/// Under `$XDG_STATE_HOME/clipsync` (`~/.local/state/clipsync`), readable by
+/// this user only: the log names devices and servers, and `/tmp`, where it
+/// used to live, is shared with every other account on the machine.
 #[tauri::command]
 fn log_debug(line: String) {
-    let path = std::env::temp_dir().join("clipsync-desktop.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
+    let Some(dir) = state_dir() else { return };
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut f) = options.open(dir.join("desktop.log")) {
         use std::io::Write;
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// `$XDG_STATE_HOME/clipsync`, where the panel's debug log goes.
+fn state_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
+    Some(base.join("clipsync"))
 }
 
 /// Hand the agent's credentials to the webview.

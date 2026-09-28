@@ -276,7 +276,7 @@ export function App() {
     return (
       <div className="panel centered">
         <p className="error">{boot.message}</p>
-        <p className="muted small">Details in {"/tmp/clipsync-desktop.log"}</p>
+        <p className="muted small">Details in {"~/.local/state/clipsync/desktop.log"}</p>
       </div>
     );
   }
