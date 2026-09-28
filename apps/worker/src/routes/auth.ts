@@ -87,6 +87,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       user = {
         id: newId("usr"),
         wrapped_vault_key: null,
+        auth_hash: null,
         // Generated once, never rotated: rotating it would orphan every clip
         // already encrypted under the old derivation.
         kdf_salt: randomSalt(),
