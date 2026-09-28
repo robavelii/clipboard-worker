@@ -294,6 +294,11 @@ digests. Revoking a device invalidates its token immediately. The WebSocket uses
 a separate single-use 30-second ticket, because browsers cannot set headers on a
 handshake and a long-lived token in a URL ends up in logs.
 
+**Unauthenticated endpoints** — bootstrap, pairing, invite claims and link
+requests — are rate-limited per client address, and pending link requests are
+capped per address rather than globally, so no one can lock others out of
+linking. Invite proofs are hashed again before they are stored.
+
 **The web UI** is served with a strict Content-Security-Policy (this origin
 only, no inline script or style), refuses to be framed, and sends no referrer.
 It can keep the vault key in browser storage on a phone, so script injection

@@ -17,6 +17,7 @@ import type {
   WhoAmI,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
+import { rateLimit } from "../limits";
 import { getUser } from "../db";
 import { newId, newToken, sha256, timingSafeEqual } from "../ids";
 
@@ -61,7 +62,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
    * Create the account if it does not exist and enrol the calling device.
    * Repeatable: run it again on a machine that lost its token.
    */
-  .post("/bootstrap", async (c) => {
+  .post("/bootstrap", rateLimit("STRICT_LIMIT", "bootstrap"), async (c) => {
     const expected = c.env.ADMIN_SECRET;
     if (!expected) {
       throw new HTTPException(503, {

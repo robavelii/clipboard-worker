@@ -41,7 +41,7 @@ End-to-end suite: about 66 checks against the running local Worker, with real cr
 npm run e2e    # needs `npm run dev` running; ADMIN_SECRET must match CLIPSYNC_ADMIN_SECRET (default "local-dev-admin-secret")
 ```
 
-It is one script (`scripts/e2e.ts`), with no per-test filter. It re-runs against the same local database, so fixtures are tagged per run and looked up by id, never by list position. If link tests fail with "too many pending link requests", something filled the global pending-link cap; clear it:
+It is one script (`scripts/e2e.ts`), with no per-test filter. It re-runs against the same local database, so fixtures are tagged per run and looked up by id, never by list position. If link tests fail with "too many pending link requests", unapproved requests from earlier local runs filled the per-address cap (3 pending; all local requests share one address); clear them:
 
 ```bash
 cd apps/worker && npx wrangler d1 execute clipsync --local --command "DELETE FROM link_requests"
@@ -147,9 +147,12 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. `a
 - `workers_dev: false`: `wrangler.jsonc` binds the custom domain as the only public door.
 - `apps/worker/worker-configuration.d.ts` is generated (`wrangler types`), so don't edit it. Secrets the Worker reads are declared by hand in `apps/worker/src/secrets.d.ts`.
 
+### Abuse limits
+
+The unauthenticated endpoints (`bootstrap`, `pair`, invite `claim`, `link/request`) are rate-limited per client address through the `STRICT_LIMIT` / `UNAUTH_LIMIT` bindings (`src/limits.ts`, `wrangler.jsonc`), keyed by `CF-Connecting-IP`. That header is absent locally, and **limiting is skipped when it is missing**, so e2e and local runs are never throttled. Worker tests that exercise limits set it explicitly, with a fresh address per test (`freshAddress()`), because limiter state is not reset between tests. Invite proofs are hashed again at rest, so the `invites` table never holds what a claimant presents.
+
 ## Known open issues
 
 These are tracked in the shared audit and roadmap docs, not in this repo. Don't re-describe them in commits as new discoveries.
 
 - Revocation does not rotate the vault key.
-- No rate limiting on unauthenticated endpoints; the link-request cap is global.

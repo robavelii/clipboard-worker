@@ -456,3 +456,27 @@ the build, also found a bug that had nothing to do with it: approving a device
 link from the web UI had never worked, because the shared link helpers built
 URLs with `new URL(path, "")`, which throws for the same-origin base the web
 UI uses.
+
+## 21. Limits keyed by address, skipped without one
+
+Four endpoints must work without a token: bootstrap, pair-code redemption,
+invite claims and link requests. Each had some protection of its own (a secret,
+single use, a short expiry) but nothing stopped repetition, and the link
+endpoint's only flood guard -- a global cap of 20 pending requests -- let
+anyone block `clipsync link` for everyone with 20 anonymous POSTs.
+
+They are now rate-limited through Workers rate-limiting bindings, keyed by
+`CF-Connecting-IP` plus the endpoint, so spending one endpoint's budget does
+not spend another's. Bootstrap, which guards the admin secret, gets 5 a
+minute; the others 10. Pending link requests are capped per address (3), with
+a global ceiling only to bound the table.
+
+**Why missing addresses are not limited.** Cloudflare sets that header on
+every request that reaches the Worker, and a client cannot override it; it is
+absent only in local development. Keying missing addresses together would
+throttle the e2e suite and any repeated manual run for no protection, since
+nothing in production arrives without one.
+
+Invite proofs are also hashed once more at rest. The claimant presents
+`SHA-256(S)`, and the table used to store exactly that, so anyone who could
+read it during an invite's five minutes could claim a device token.

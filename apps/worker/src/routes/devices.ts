@@ -9,6 +9,7 @@ import type {
   PairRequest,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
+import { rateLimit } from "../limits";
 import { getUser, toDevice, type DeviceRow } from "../db";
 import { newPairCode, normalisePairCode, sha256 } from "../ids";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
@@ -40,7 +41,7 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
    * Redeem a pairing code. Unauthenticated by necessity -- the code *is* the
    * credential, so it is single-use and short-lived.
    */
-  .post("/pair", async (c) => {
+  .post("/pair", rateLimit("UNAUTH_LIMIT", "pair"), async (c) => {
     const body = await c.req.json<PairRequest>().catch(() => null);
     if (!body || typeof body.code !== "string") {
       throw new HTTPException(400, { message: "code is required" });

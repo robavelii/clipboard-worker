@@ -22,14 +22,20 @@ import type {
   LinkStatusResponse,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
+import { clientAddress, rateLimit } from "../limits";
 import { getUser } from "../db";
 import { newId, newToken, sha256 } from "../ids";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
 
 const LINK_TTL_MS = 10 * 60 * 1000;
 
-/** Cheap flood guard: this endpoint is necessarily unauthenticated. */
-const MAX_PENDING = 20;
+/**
+ * Flood guards: this endpoint is necessarily unauthenticated. Capped per
+ * address so one client cannot block linking for everyone, with a generous
+ * global ceiling to bound the table.
+ */
+const MAX_PENDING_PER_ADDRESS = 3;
+const MAX_PENDING_TOTAL = 500;
 
 /** Raw P-256 point is 65 bytes -> 87 base64url characters. */
 const PUBLIC_KEY_LENGTH = 87;
@@ -64,7 +70,7 @@ function assertPublicKey(value: unknown): string {
 export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
   /** Joining device: publish an ephemeral public key, get a pickup token. */
-  .post("/request", async (c) => {
+  .post("/request", rateLimit("UNAUTH_LIMIT", "link-request"), async (c) => {
     const body = await c.req.json<LinkRequest>().catch(() => null);
     if (!body) throw new HTTPException(400, { message: "body required" });
 
@@ -77,11 +83,20 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       .bind(now)
       .run();
 
+    // Hashed: the address is only ever compared, never needed back.
+    const requester = await sha256(clientAddress(c.req) ?? "local");
     const pending = await c.env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM link_requests WHERE approved_at IS NULL",
-    ).first<{ n: number }>();
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(requester = ?), 0) AS mine
+         FROM link_requests WHERE approved_at IS NULL`,
+    )
+      .bind(requester)
+      .first<{ total: number; mine: number }>();
 
-    if ((pending?.n ?? 0) >= MAX_PENDING) {
+    if (
+      (pending?.mine ?? 0) >= MAX_PENDING_PER_ADDRESS ||
+      (pending?.total ?? 0) >= MAX_PENDING_TOTAL
+    ) {
       throw new HTTPException(429, {
         message: "too many pending link requests -- try again shortly",
       });
@@ -93,8 +108,8 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
     await c.env.DB.prepare(
       `INSERT INTO link_requests
-         (id, public_key, device_name, platform, pickup_hash, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, public_key, device_name, platform, pickup_hash, created_at, expires_at, requester)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         id,
@@ -104,6 +119,7 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
         await sha256(pickupToken),
         now,
         expiresAt,
+        requester,
       )
       .run();
 
