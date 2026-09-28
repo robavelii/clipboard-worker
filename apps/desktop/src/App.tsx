@@ -105,6 +105,14 @@ interface AgentConfig {
   vaultKey?: string;
 }
 
+/**
+ * Shown whether the revocation is found at startup or arrives while the panel
+ * is running (the sync hook then reports status "revoked" and stops).
+ */
+function revokedMessage(deviceName: string): string {
+  return `The panel's device "${deviceName}" was revoked. To use it again, delete ~/.config/clipsync/tray.json and reopen.`;
+}
+
 type Boot =
   | { state: "loading" }
   | { state: "error"; message: string }
@@ -139,9 +147,7 @@ export function App() {
           // Revoked from another device. Enrolling again here would quietly
           // undo the revocation, so leave that decision to the user.
           if (err instanceof ApiRequestError && err.status === 401) {
-            throw new Error(
-              `The panel's device "${tray.deviceName}" was revoked. To use it again, delete ~/.config/clipsync/tray.json and reopen.`,
-            );
+            throw new Error(revokedMessage(tray.deviceName));
           }
           throw err;
         }
@@ -283,6 +289,10 @@ function Panel({
           ×
         </button>
       </header>
+
+      {status === "revoked" && (
+        <p className="error">{revokedMessage(tray.deviceName)}</p>
+      )}
 
       <input
         className="search"

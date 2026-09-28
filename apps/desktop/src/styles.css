@@ -50,6 +50,7 @@ header {
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .dot.online { background: var(--accent); }
 .dot.offline { background: var(--danger); }
+.dot.revoked { background: var(--danger); }
 .dot.connecting { background: var(--muted); }
 
 button.icon {
