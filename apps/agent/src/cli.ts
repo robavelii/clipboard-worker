@@ -133,9 +133,18 @@ async function enrol(
   }
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** "1 clip is" / "3 clips are". */
+function clipCount(count: number): string {
+  return `${plural(count, "clip")} ${count === 1 ? "is" : "are"}`;
+}
+
 /** Progress for re-encryption, on one rewritten line. */
 function progress(count: number): void {
-  process.stdout.write(`\r  re-encrypted ${count} clip${count === 1 ? "" : "s"}`);
+  process.stdout.write(`\r  re-encrypted ${plural(count, "clip")}`);
 }
 
 /* ------------------------------ commands ------------------------------- */
@@ -515,9 +524,9 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
       progress,
     );
     if (reencrypted) console.log();
-    console.log(`Re-encrypted ${reencrypted} clip${reencrypted === 1 ? "" : "s"}.`);
+    console.log(`Re-encrypted ${plural(reencrypted, "clip")}.`);
     if (unreadable) {
-      console.log(`${unreadable} are under a key this device does not hold; left as they are.`);
+      console.log(`${clipCount(unreadable)} under a key this device does not hold; left as they are.`);
     }
     return;
   }
@@ -544,12 +553,10 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
   if (result.reencrypted) console.log();
 
   console.log(`\nVault re-keyed (epoch ${result.epoch}).`);
-  console.log(
-    `Re-encrypted ${result.reencrypted} clip${result.reencrypted === 1 ? "" : "s"}.`,
-  );
+  console.log(`Re-encrypted ${plural(result.reencrypted, "clip")}.`);
   if (result.unreadable) {
     console.log(
-      `${result.unreadable} are under a key this device does not hold. Run\n` +
+      `${clipCount(result.unreadable)} under a key this device does not hold. Run\n` +
         "`clipsync rekey --finish` on a device that can read them.",
     );
   }
