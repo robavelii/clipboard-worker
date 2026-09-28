@@ -221,28 +221,37 @@ shortcuts, bind that command to a key in your desktop's keyboard settings.
 scripts/install-agent.sh
 ```
 
-Puts `clipsync` on your PATH and installs a systemd user service that starts
-with your desktop session. Needs no root; `scripts/install-agent.sh --uninstall`
-reverses it. The unit it writes looks like this:
+Builds the agent and, when a Rust toolchain is present, the tray app; puts
+`clipsync` and `clipsync-desktop` on your PATH; installs a systemd user service
+and a tray autostart entry; then restarts both so they run the code just built.
+Re-run it after pulling changes. `--no-tray` skips the tray build, which takes
+a few minutes, and `--uninstall` reverses everything. Needs no root.
+
+The service runs the bundle straight from the checkout, and restarts itself
+when that bundle is rebuilt: `npm run build -w @clipsync/agent` is enough to
+put a change into the running agent. `clipsync status` prints the commit the
+CLI was built from, the service logs it on startup, and hovering the device
+name in the tray panel shows the panel's.
 
 ```ini
-# ~/.config/systemd/user/clipsync.service
+# ~/.config/systemd/user/clipsync.service (abridged)
 [Unit]
-Description=ClipSync clipboard agent
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
-ExecStart=%h/path/to/clipsync/apps/agent/dist/clipsync.mjs run
+ExecStart=/path/to/node /path/to/clipsync/apps/agent/dist/clipsync.mjs run
 Restart=on-failure
 RestartSec=5
+# Exit 75 is the agent handing over to a rebuilt bundle, not a crash.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 ```
 
-```bash
-systemctl --user enable --now clipsync
-```
+Logs: `journalctl --user -u clipsync -f`.
 
 ## Security model
 

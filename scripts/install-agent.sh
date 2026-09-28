@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 #
-# Installs the clipsync agent for the current user: a launcher on PATH and a
-# systemd user service so it starts with the desktop session.
+# Builds and installs the clipsync agent for the current user: a launcher on
+# PATH and a systemd user service so it starts with the desktop session, plus
+# the tray app when a Rust toolchain is available.
 #
-# Nothing here needs root. Everything lands under $HOME and is undone by
-# `scripts/install-agent.sh --uninstall`.
+# Re-run it after pulling changes: it rebuilds, then restarts whatever is
+# running, so nothing is left on the old code.
+#
+#   --no-tray     skip building the tray app (it takes a few minutes)
+#   --uninstall   remove everything this script installed
+#
+# Nothing here needs root. Everything lands under $HOME.
 
 set -euo pipefail
 
@@ -27,11 +33,21 @@ uninstall() {
   exit 0
 }
 
-[ "${1:-}" = "--uninstall" ] && uninstall
+BUILD_TRAY=1
+for arg in "$@"; do
+  case "$arg" in
+    --uninstall) uninstall ;;
+    --no-tray) BUILD_TRAY=0 ;;
+    *) echo "error: unknown option $arg" >&2; exit 1 ;;
+  esac
+done
 
-if [ ! -f "$CLI" ]; then
-  echo "error: $CLI not found -- run 'npm run build' first" >&2
-  exit 1
+echo "building  agent"
+(cd "$REPO" && npm run --silent build -w @clipsync/agent)
+
+if [ "$BUILD_TRAY" = 1 ] && command -v cargo >/dev/null; then
+  echo "building  tray app (a few minutes on the first run)"
+  (cd "$REPO" && npm run --silent build -w @clipsync/desktop >/dev/null)
 fi
 
 # systemd does not read your shell profile, so a version-manager shim on PATH
@@ -68,6 +84,10 @@ Type=simple
 ExecStart=$NODE $CLI run
 Restart=on-failure
 RestartSec=5
+# The agent exits 75 when its bundle is rebuilt, to be restarted onto the new
+# code. That is a handover, not a failure.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 
 [Install]
 WantedBy=graphical-session.target
@@ -79,7 +99,10 @@ echo "service   $UNIT"
 systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY 2>/dev/null || true
 
 systemctl --user daemon-reload
-systemctl --user enable --now clipsync.service
+systemctl --user enable clipsync.service
+# restart, not start: an agent that is already running would otherwise keep
+# the code it was started with.
+systemctl --user restart clipsync.service
 
 # The tray app is optional: it needs a Rust toolchain to build, and the agent
 # is fully usable without it.
@@ -100,6 +123,15 @@ Categories=Utility;
 X-GNOME-Autostart-enabled=true
 DESKTOPFILE
   echo "autostart $AUTOSTART"
+
+  # Relaunch onto the new build. Killing first matters: launching the app
+  # while it runs only toggles the existing panel.
+  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    pkill -f "$DESKTOP_BIN" 2>/dev/null || true
+    sleep 1
+    setsid -f "$DESKTOP_BIN" >/dev/null 2>&1
+    echo "tray      restarted"
+  fi
 else
   echo "tray      not built — run 'npm run build -w @clipsync/desktop' for the tray app"
 fi

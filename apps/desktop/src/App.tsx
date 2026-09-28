@@ -116,7 +116,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        debugLog("boot: reading agent config");
+        debugLog(`boot: build ${__CLIPSYNC_BUILD__}, reading agent config`);
         const config = JSON.parse(
           await invoke<string>("load_agent_config"),
         ) as AgentConfig;
@@ -344,7 +344,7 @@ function Panel({
       </ul>
 
       <footer>
-        <span>{tray.deviceName}</span>
+        <span title={`build ${__CLIPSYNC_BUILD__}`}>{tray.deviceName}</span>
         <span>↑↓ select · Enter copy · Esc hide</span>
       </footer>
     </div>

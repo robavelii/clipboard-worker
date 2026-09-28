@@ -37,7 +37,7 @@ export interface DaemonOptions {
   verbose?: boolean;
 }
 
-function log(...args: unknown[]): void {
+export function log(...args: unknown[]): void {
   console.log(`[${new Date().toISOString()}]`, ...args);
 }
 
@@ -67,7 +67,7 @@ export class Daemon {
     this.clipboard = await detectClipboard();
 
     log(
-      `clipsync agent ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
+      `clipsync agent ${__CLIPSYNC_BUILD__} ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
     );
 
     // Prime the echo guard so a restart does not re-upload the clipboard the
