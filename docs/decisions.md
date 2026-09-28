@@ -172,7 +172,7 @@ wrap it under a KEK of their own choosing, and `PUT /api/vault/key` accepts a
 wrapped key from any enrolled device -- so a linked device can replace the
 passphrase and lock the owner out of every passphrase unlock. The fix is for
 the server to require proof of the current passphrase before accepting a new
-wrapped key; see docs/roadmap.md.
+wrapped key.
 
 **Migrating without re-encrypting.** Existing accounts have clips encrypted
 under keys derived from `PBKDF2(passphrase, salt)`. Making *that value* the
