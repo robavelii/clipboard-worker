@@ -48,6 +48,9 @@ export class Daemon {
 
   /** Hash of the content this agent last uploaded or applied. */
   private lastHandled: string | null = null;
+  /** New content seen on the last poll, waiting to prove it has settled. */
+  private candidate: string | null = null;
+  private polling = false;
 
   private socket: WebSocket | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -106,14 +109,38 @@ export class Daemon {
     }
   }
 
+  /**
+   * Push clipboard content once it has held for two consecutive polls.
+   *
+   * Some copies are several writes in quick succession -- clipboard managers
+   * re-owning the selection, apps that set plain text and then rich text, a
+   * quick copy corrected by a second one. Waiting one interval (0.6-1.2s in
+   * all) means only the value that stuck is uploaded, rather than every
+   * intermediate one landing on the other devices and in history.
+   */
   private async poll(): Promise<void> {
-    const text = await this.readClipboard();
-    if (!text) return;
+    // A slow xclip or hash must not let the next tick start a second read.
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const text = await this.readClipboard();
+      if (!text) return;
 
-    const hash = await dedupeHash(this.keys, text);
-    if (hash === this.lastHandled) return;
+      const hash = await dedupeHash(this.keys, text);
+      if (hash === this.lastHandled) {
+        this.candidate = null;
+        return;
+      }
+      if (hash !== this.candidate) {
+        this.candidate = hash;
+        return;
+      }
 
-    await this.push(text, hash);
+      this.candidate = null;
+      await this.push(text, hash);
+    } finally {
+      this.polling = false;
+    }
   }
 
   private async push(text: string, knownHash?: string): Promise<void> {
