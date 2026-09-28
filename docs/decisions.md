@@ -436,3 +436,23 @@ as possible. A registration that finds a different proof already there is
 reported rather than hidden: it is exactly what a device that got there first
 would look like. Re-keying (a fresh vault key sealed to each device) is what
 fully removes a device; this only stops one from taking over.
+
+## 20. A strict CSP on the web UI
+
+The web UI can keep the vault key in `localStorage` (decision 13), which makes
+script injection the one bug that turns into reading someone's clipboard. A
+Content-Security-Policy is the cheap defence, and it only helps if it is
+strict: a policy with `'unsafe-inline'` stops almost nothing that matters.
+
+The build already allowed the strict form -- Vite emits no inline script or
+style, and no component sets a `style` attribute -- so the policy allows this
+origin and nothing else, served from `apps/web/public/_headers` by Workers
+static assets. `frame-ancestors 'none'` and `X-Frame-Options` stop the unlock
+screen being framed for clickjacking, and `no-referrer` keeps paths out of
+anything the page links to.
+
+Walking every screen under the policy in a real browser, rather than trusting
+the build, also found a bug that had nothing to do with it: approving a device
+link from the web UI had never worked, because the shared link helpers built
+URLs with `new URL(path, "")`, which throws for the same-origin base the web
+UI uses.

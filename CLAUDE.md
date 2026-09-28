@@ -129,7 +129,7 @@ Reads time out after 5 s; writes don't, because `xclip -i`/`wl-copy` fork a sele
 
 ### Web UI (`apps/web`)
 
-Same origin as the API, so there are **no CORS headers anywhere, by design**. Routing is by path in `App.tsx`: `/join#` (invite), `/link#` (approval), `/share` (share target). The service worker exists for PWA installability and to answer `/share` navigations *without forwarding the query string*, so shared plaintext never leaves the phone. The iOS Shortcut uses `/share#text=`. The service worker deliberately caches nothing.
+Same origin as the API, so there are **no CORS headers anywhere, by design**. `apps/web/public/_headers` sets a strict CSP (`'self'` only, no `unsafe-inline`), `frame-ancestors 'none'` and `no-referrer`. The build has no inline script or style and no component sets a `style` attribute; keep it that way, or the CSP blocks it. API calls from the web UI pass `""` as the base URL: shared client code must resolve paths the way `ApiClient` does, since `new URL(path, "")` throws. Routing is by path in `App.tsx`: `/join#` (invite), `/link#` (approval), `/share` (share target). The service worker exists for PWA installability and to answer `/share` navigations *without forwarding the query string*, so shared plaintext never leaves the phone. The iOS Shortcut uses `/share#text=`. The service worker deliberately caches nothing.
 
 ### Tray app (`apps/desktop`)
 
@@ -152,5 +152,4 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. Ro
 These are tracked in the shared audit and roadmap docs, not in this repo. Don't re-describe them in commits as new discoveries.
 
 - Revocation does not rotate the vault key.
-- No CSP on the web UI.
 - No rate limiting on unauthenticated endpoints; the link-request cap is global.
