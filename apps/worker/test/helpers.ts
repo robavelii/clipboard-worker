@@ -36,3 +36,15 @@ export function freshAddress(): string {
   addressCounter += 1;
   return `198.51.${Math.floor(Math.random() * 200)}.${addressCounter}`;
 }
+
+/**
+ * A v2 envelope as the server sees it: a readable header naming `device`,
+ * then an IV and ciphertext the server cannot check.
+ */
+export function v2Envelope(device: string, type = "text", tag = "x"): string {
+  const header = btoa(JSON.stringify({ d: device, t: Date.now(), k: type }))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return `v2.${header}.aXYtaXYtaXYtaXY.${tag}`;
+}

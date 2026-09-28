@@ -15,19 +15,21 @@ const PAGE_SIZE = 100;
 export interface DecryptedClip extends Clip {
   /**
    * null when this clip does not open: encrypted under a different
-   * passphrase, or under a key epoch this device does not hold.
+   * passphrase, under a key epoch this device does not hold, or not the
+   * clip its row claims (see readClip).
    */
   text: string | null;
 }
 
 async function decryptAll(
   keys: RingKeys,
+  account: string,
   clips: Clip[],
 ): Promise<DecryptedClip[]> {
   return Promise.all(
     clips.map(async (clip) => {
       try {
-        return { ...clip, text: await decryptClip(keys, clip) };
+        return { ...clip, text: await decryptClip(keys, clip, account) };
       } catch {
         return { ...clip, text: null };
       }
@@ -62,7 +64,7 @@ export function sortForDisplay(clips: DecryptedClip[]): DecryptedClip[] {
  * list: clips that arrived under the new key before this device held it
  * open on the second pass.
  */
-export function useClips(api: ApiClient, keys: RingKeys) {
+export function useClips(api: ApiClient, keys: RingKeys, account: string) {
   const [clips, setClips] = useState<DecryptedClip[]>([]);
   const [cursor, setCursor] = useState<string | number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,8 +80,8 @@ export function useClips(api: ApiClient, keys: RingKeys) {
           api.listClips(PAGE_SIZE, before),
           before ? null : api.listPinned(),
         ]);
-        const decrypted = await decryptAll(keys, page.clips);
-        const decryptedPins = pinned ? await decryptAll(keys, pinned.clips) : [];
+        const decrypted = await decryptAll(keys, account, page.clips);
+        const decryptedPins = pinned ? await decryptAll(keys, account, pinned.clips) : [];
         setClips((prev) =>
           before
             ? mergeClips(prev, decrypted)
@@ -93,7 +95,7 @@ export function useClips(api: ApiClient, keys: RingKeys) {
         setLoading(false);
       }
     },
-    [api, keys],
+    [api, keys, account],
   );
 
   useEffect(() => {
@@ -106,7 +108,7 @@ export function useClips(api: ApiClient, keys: RingKeys) {
       switch (event.type) {
         case "clip.created":
           void (async () => {
-            const [decrypted] = await decryptAll(keys, [event.clip]);
+            const [decrypted] = await decryptAll(keys, account, [event.clip]);
             setClips((prev) =>
               prev.some((c) => c.id === decrypted!.id)
                 ? prev
@@ -116,7 +118,7 @@ export function useClips(api: ApiClient, keys: RingKeys) {
           break;
         case "clip.bumped":
           void (async () => {
-            const [decrypted] = await decryptAll(keys, [event.clip]);
+            const [decrypted] = await decryptAll(keys, account, [event.clip]);
             // Remove then prepend: the clip already exists somewhere in the
             // list and has to move, not appear twice.
             setClips((prev) => [
@@ -139,7 +141,7 @@ export function useClips(api: ApiClient, keys: RingKeys) {
           break;
       }
     },
-    [keys],
+    [keys, account],
   );
 
   const remove = useCallback(

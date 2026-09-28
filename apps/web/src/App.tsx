@@ -188,6 +188,7 @@ export function App() {
     <Workspace
       keys={keys}
       token={creds.token}
+      account={creds.userId}
       deviceId={creds.deviceId}
       stranded={stranded}
       onRefreshRing={refreshRing}
@@ -220,6 +221,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function Workspace({
   keys,
   token,
+  account,
   deviceId,
   stranded,
   onRefreshRing,
@@ -229,6 +231,8 @@ function Workspace({
 }: {
   keys: RingKeys;
   token: string;
+  /** The user id envelopes are bound to. */
+  account: string;
   deviceId: string;
   stranded: boolean;
   onRefreshRing: () => Promise<void>;
@@ -238,7 +242,7 @@ function Workspace({
 }) {
   const api = useMemo(() => new ApiClient("", token), [token]);
   const { clips, loading, error, hasMore, loadMore, applyEvent, remove, togglePin, reload } =
-    useClips(api, keys);
+    useClips(api, keys, account);
   const onEvent = useCallback(
     (event: SyncEvent) => {
       if (event.type === "vault.rotated") {
@@ -379,7 +383,14 @@ function Workspace({
         </div>
       )}
 
-      <Compose api={api} keys={keys} onSent={reload} onStale={onRefreshRing} />
+      <Compose
+        api={api}
+        keys={keys}
+        account={account}
+        deviceId={deviceId}
+        onSent={reload}
+        onStale={onRefreshRing}
+      />
 
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}

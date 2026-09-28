@@ -8,8 +8,6 @@
 import {
   authHashOf,
   DeviceSealError,
-  dedupeHash,
-  encryptText,
   generateVaultKey,
   openVault,
   openVaultKeyForDevice,
@@ -26,9 +24,9 @@ import {
 import { ApiRequestError, type ApiClient } from "./index";
 import {
   currentKey,
-  currentKeys,
-  decryptClip,
+  readClip,
   ringKeysFrom,
+  sealText,
   withKey,
   type VaultRing,
 } from "./ring";
@@ -90,7 +88,7 @@ export async function refreshVaultRing(
 export interface ReencryptResult {
   /** Clips moved to the current key by this call. */
   reencrypted: number;
-  /** Clips under a key this device does not hold, left where they were. */
+  /** Clips this device cannot read or verify, left where they were. */
   unreadable: number;
 }
 
@@ -102,14 +100,19 @@ export interface ReencryptResult {
  * device racing this one moves nothing twice. Passes repeat until one moves
  * nothing, because a clip bumped to the top mid-run lands behind the cursor.
  */
+export interface VaultContext {
+  /** The account id envelopes are bound to (credentials' userId). */
+  account: string;
+  kdfSalt: string;
+  ring: VaultRing;
+}
+
 export async function reencryptHistory(
   api: ApiClient,
-  ring: VaultRing,
-  kdfSalt: string,
+  { account, kdfSalt, ring }: VaultContext,
   onProgress?: (reencrypted: number) => void,
 ): Promise<ReencryptResult> {
   const keys = await ringKeysFrom(ring, kdfSalt);
-  const target = currentKeys(keys);
   const unreadable = new Set<string>();
   let reencrypted = 0;
 
@@ -123,12 +126,22 @@ export async function reencryptHistory(
       const items: ReencryptItem[] = [];
       for (const clip of page.clips) {
         try {
-          const text = await decryptClip(keys, clip);
+          const opened = await readClip(keys, clip, account);
+          // Kept as the device and time it was stored under. For a v1 clip
+          // that is the server's word, which re-encryption now vouches for:
+          // the price of upgrading history to authenticated envelopes.
+          const sealed = await sealText(
+            keys,
+            account,
+            clip.deviceId,
+            opened.text,
+            opened.copiedAt ?? clip.createdAt,
+          );
           items.push({
             id: clip.id,
             fromEpoch: clip.keyEpoch,
-            envelope: await encryptText(target, text),
-            contentHash: await dedupeHash(target, text),
+            envelope: sealed.envelope,
+            contentHash: sealed.contentHash,
           });
         } catch {
           unreadable.add(clip.id);
@@ -174,9 +187,8 @@ export interface RekeyResult extends ReencryptResult {
  */
 export async function rekeyVault(
   api: ApiClient,
-  kdfSalt: string,
+  { account, kdfSalt, ring }: VaultContext,
   passphrase: string,
-  ring: VaultRing,
   { onRotated, onProgress }: RekeyOptions = {},
 ): Promise<RekeyResult> {
   const { wrappedVaultKey, keyEpoch } = await api.vaultKey();
@@ -226,7 +238,7 @@ export async function rekeyVault(
 
   const next = withKey(ring, rotated.epoch, newKey);
   await onRotated?.(next);
-  const history = await reencryptHistory(api, next, kdfSalt, onProgress);
+  const history = await reencryptHistory(api, { account, kdfSalt, ring: next }, onProgress);
   return {
     ...history,
     ring: next,

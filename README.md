@@ -276,6 +276,16 @@ That indirection is why `clipsync passphrase` re-wraps 32 bytes instead of
 re-encrypting your whole history, and why a device linked by QR can read the
 clipboard without ever learning the passphrase.
 
+**Authenticated envelopes.** Each clip's ciphertext is bound to your account
+and to a small header saying which device copied it, when, and what kind of
+clip it is. The server can read that header, since it knows those things
+anyway, but it cannot change it or move a ciphertext into another clip's
+place. Devices refuse any clip whose header, row or dedupe tag disagree. The
+agent also refuses a clip whose authenticated copy time is more than ten
+minutes old, so the server cannot replay an old clip onto your clipboard as
+a new copy. Clips stored before this change carry no header until a re-key
+re-encrypts them.
+
 **Scan-to-join.** The vault key is sealed under a 256-bit secret that exists
 only in the QR and reaches the scanner through its camera. The server stores
 the ciphertext and a SHA-256 of the secret — enough to check who may claim the

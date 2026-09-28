@@ -279,6 +279,106 @@ export async function decryptText(
   }
 }
 
+/* --------------------------- clip envelope v2 -------------------------- */
+
+export const CLIP_ENVELOPE_V2 = "v2";
+
+/**
+ * What a v2 envelope says about its clip, authenticated with it. Readable by
+ * the server (it knows all of this anyway), but bound to the ciphertext, so
+ * the server cannot pass one clip off as another's copy, from another device,
+ * at another time.
+ */
+export interface ClipHeader {
+  /** The device that copied it. */
+  device: string;
+  /** When it was copied, by that device's clock, in ms. */
+  copiedAt: number;
+  /** The clip type, so text cannot be relabelled as anything else. */
+  type: string;
+}
+
+interface WireHeader {
+  d: string;
+  t: number;
+  k: string;
+}
+
+function clipAad(account: string, header: string): Uint8Array<ArrayBuffer> {
+  // Copied into a plain ArrayBuffer: TextEncoder's result type varies with
+  // the TypeScript lib, and WebCrypto's parameter type does not.
+  return new Uint8Array(enc.encode(`clipsync:clip:v2:${account}:${header}`));
+}
+
+/**
+ * Seal a clip payload as `v2.<header>.<iv>.<ciphertext>`, all base64url.
+ *
+ * AES-GCM's associated data is the account id and the header exactly as
+ * encoded, so a changed byte in either -- or the envelope moved to another
+ * account -- fails authentication like a wrong key.
+ */
+export async function sealClip(
+  keys: VaultKeys,
+  account: string,
+  header: ClipHeader,
+  payload: Uint8Array,
+): Promise<string> {
+  const wire: WireHeader = { d: header.device, t: header.copiedAt, k: header.type };
+  const encodedHeader = toBase64Url(enc.encode(JSON.stringify(wire)));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: clipAad(account, encodedHeader) },
+    keys.enc,
+    new Uint8Array(payload),
+  );
+  return `${CLIP_ENVELOPE_V2}.${encodedHeader}.${toBase64Url(iv)}.${toBase64Url(new Uint8Array(ct))}`;
+}
+
+/**
+ * The header of a v2 envelope, unauthenticated -- for the server's
+ * consistency checks. Clients use {@link openClip}, which authenticates it.
+ * null for anything that is not a well-formed v2 envelope.
+ */
+export function peekClipHeader(envelope: string): ClipHeader | null {
+  const parts = envelope.split(".");
+  if (parts.length !== 4 || parts[0] !== CLIP_ENVELOPE_V2) return null;
+  try {
+    const wire = JSON.parse(dec.decode(fromBase64Url(parts[1]!))) as Partial<WireHeader>;
+    if (
+      typeof wire.d !== "string" ||
+      typeof wire.t !== "number" ||
+      !Number.isSafeInteger(wire.t) ||
+      typeof wire.k !== "string"
+    ) {
+      return null;
+    }
+    return { device: wire.d, copiedAt: wire.t, type: wire.k };
+  } catch {
+    return null;
+  }
+}
+
+/** Reverse of {@link sealClip}: the authenticated header and the payload. */
+export async function openClip(
+  keys: VaultKeys,
+  account: string,
+  envelope: string,
+): Promise<{ header: ClipHeader; payload: Uint8Array }> {
+  const header = peekClipHeader(envelope);
+  if (!header) throw new DecryptError("unsupported envelope format");
+  const [, encodedHeader, iv, ct] = envelope.split(".") as [string, string, string, string];
+  try {
+    const pt = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: fromBase64Url(iv), additionalData: clipAad(account, encodedHeader) },
+      keys.enc,
+      fromBase64Url(ct),
+    );
+    return { header, payload: new Uint8Array(pt) };
+  } catch {
+    throw new DecryptError("cannot decrypt -- wrong key, another account, or tampered data");
+  }
+}
+
 /**
  * Server-visible dedupe tag. An HMAC rather than a plain digest so that nobody
  * holding the database can confirm a guess at the clipboard contents.

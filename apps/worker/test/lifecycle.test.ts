@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { Clip, ListClipsResponse, SyncEvent, TicketResponse } from "@clipsync/protocol";
 import worker from "../src/index";
-import { api, bootstrap } from "./helpers";
+import { api, bootstrap, v2Envelope } from "./helpers";
 
 const PUBLIC_KEY = `B${"Q".repeat(86)}`;
 
@@ -184,5 +184,48 @@ describe("the expiry cron", () => {
     const { results } = await env.DB.prepare("SELECT id FROM clips ORDER BY id").all<{ id: string }>();
     expect(results.map((r) => r.id)).toEqual(["clip_live", "clip_pinned"]);
     expect(received).toMatchObject([{ type: "clip.deleted", clipId: "clip_expired" }]);
+  });
+});
+
+describe("v2 envelopes", () => {
+  async function post(token: string, envelope: string, contentHash = `h-${Math.random()}`) {
+    return api("/api/clips", {
+      method: "POST",
+      token,
+      body: { type: "text", envelope, contentHash, size: 1, keyEpoch: 0 },
+    });
+  }
+
+  it("are stored when they name the writing device", async () => {
+    const owner = await bootstrap("owner");
+    const envelope = v2Envelope(owner.deviceId);
+    const res = await post(owner.token, envelope);
+    expect(res.status).toBe(200);
+    const { id } = (await res.json()) as { id: string };
+    const clip = (await (await api(`/api/clips/${id}`, { token: owner.token })).json()) as Clip;
+    expect(clip.envelope).toBe(envelope);
+  });
+
+  it("are refused when they name another device or type, or do not parse", async () => {
+    const owner = await bootstrap("owner");
+    const phone = await bootstrap("phone");
+    expect((await post(owner.token, v2Envelope(phone.deviceId))).status).toBe(400);
+    expect((await post(owner.token, v2Envelope(owner.deviceId, "image"))).status).toBe(400);
+    // A header that is not JSON.
+    const notJson = btoa("not-json").replace(/=+$/, "");
+    expect((await post(owner.token, `v2.${notJson}.aXY.Y3Q`)).status).toBe(400);
+    expect((await post(owner.token, "v9.aXY.Y3Q")).status).toBe(400);
+  });
+
+  it("replace the stored envelope when a copy is bumped", async () => {
+    const owner = await bootstrap("owner");
+    const phone = await bootstrap("phone");
+    const first = (await (await post(owner.token, v2Envelope(owner.deviceId, "text", "a"), "same")).json()) as { id: string };
+    await post(owner.token, v2Envelope(owner.deviceId, "text", "other"), "other");
+    const again = v2Envelope(phone.deviceId, "text", "b");
+    const bumped = (await (await post(phone.token, again, "same")).json()) as { id: string; deduped: boolean };
+    expect(bumped).toMatchObject({ id: first.id, deduped: true });
+    const clip = (await (await api(`/api/clips/${first.id}`, { token: owner.token })).json()) as Clip;
+    expect(clip).toMatchObject({ envelope: again, deviceId: phone.deviceId });
   });
 });

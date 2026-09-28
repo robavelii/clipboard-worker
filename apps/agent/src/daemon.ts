@@ -32,14 +32,15 @@ import {
 import {
   DecryptError,
   dedupeHash,
-  encryptText,
   type DeviceKeypair,
 } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { NoSealedKeyError } from "@clipsync/client/rekey";
 import {
   currentKeys,
-  decryptClip,
+  readClip,
+  sealText,
+  type OpenedClip,
   ringKeysFrom,
   type RingKeys,
   type VaultRing,
@@ -64,6 +65,12 @@ const RECONNECT_MAX_MS = 30_000;
  * whatever is on the clipboard now.
  */
 const CATCH_UP_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * The oldest authenticated copy time a clip may carry and still be applied.
+ * A real copy reaches here in seconds; the slack is for clocks that
+ * disagree and for catch-up, whose own window is the same.
+ */
+const REPLAY_WINDOW_MS = CATCH_UP_WINDOW_MS;
 
 export interface DaemonOptions {
   /** Push whatever is already on the clipboard when the agent starts. */
@@ -239,19 +246,13 @@ export class Daemon {
     this.lastHandled = hash;
 
     try {
-      const envelope = await encryptText(currentKeys(keys), text);
-      if (envelope.length > MAX_ENVELOPE_BYTES) {
+      const sealed = await sealText(keys, this.config.userId, this.config.deviceId, text);
+      if (sealed.envelope.length > MAX_ENVELOPE_BYTES) {
         log(`skipped ${text.length} chars — larger than the ${MAX_ENVELOPE_BYTES}B limit`);
         return;
       }
 
-      const res = await this.api.createClip({
-        type: "text",
-        envelope,
-        contentHash: hash,
-        size: Buffer.byteLength(text, "utf8"),
-        keyEpoch: keys.current,
-      });
+      const res = await this.api.createClip(sealed);
 
       if (!res.deduped) log(`pushed ${text.length} chars`);
     } catch (err) {
@@ -272,9 +273,9 @@ export class Daemon {
 
   private async apply(clip: Clip, from: string): Promise<void> {
     try {
-      let text: string;
+      let opened: OpenedClip;
       try {
-        text = await decryptClip(this.keys, clip);
+        opened = await readClip(this.keys, clip, this.config.userId);
       } catch (err) {
         // Written under a key this device has not picked up yet: the
         // vault.rotated event may still be on its way, or was missed.
@@ -282,8 +283,17 @@ export class Daemon {
           throw err;
         }
         await this.refresh();
-        text = await decryptClip(this.keys, clip);
+        opened = await readClip(this.keys, clip, this.config.userId);
       }
+      // The copy time is authenticated (v2), so an old clip cannot be passed
+      // off as a new copy: the server could otherwise replay last week's
+      // clip onto every clipboard. v1 clips carry no time to check.
+      if (opened.copiedAt !== null && Date.now() - opened.copiedAt > REPLAY_WINDOW_MS) {
+        const minutes = Math.round((Date.now() - opened.copiedAt) / 60_000);
+        log(`ignored a clip from ${from} copied ${minutes} min ago -- too old to be a new copy`);
+        return;
+      }
+      const { text } = opened;
       // Set the guards before writing: the write itself triggers a clipboard
       // change that the poller will see, and a poll already in flight holds
       // the content this write replaces.

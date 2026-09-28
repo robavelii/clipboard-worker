@@ -22,8 +22,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { NoSealedKeyError } from "@clipsync/client/rekey";
-import { currentKeys, ringKeysFrom, type VaultRing } from "@clipsync/client/ring";
-import { dedupeHash, encryptText } from "@clipsync/crypto";
+import { ringKeysFrom, sealText, type VaultRing } from "@clipsync/client/ring";
 import { STALE_EPOCH_ERROR, type Credentials } from "@clipsync/protocol";
 import { cachedRing, syncRing, unlockWithPassphrase } from "./session";
 
@@ -68,14 +67,10 @@ export function ShareScreen({
       setState({ phase: "saving" });
       const api = new ApiClient("", credentials.token);
       const send = async (ring: VaultRing) => {
-        const keys = currentKeys(await ringKeysFrom(ring, credentials.kdfSalt));
-        await api.createClip({
-          type: "text",
-          envelope: await encryptText(keys, text),
-          contentHash: await dedupeHash(keys, text),
-          size: new TextEncoder().encode(text).length,
-          keyEpoch: ring.current,
-        });
+        const keys = await ringKeysFrom(ring, credentials.kdfSalt);
+        await api.createClip(
+          await sealText(keys, credentials.userId, credentials.deviceId, text),
+        );
       };
       try {
         try {
