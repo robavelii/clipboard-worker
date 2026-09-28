@@ -140,6 +140,11 @@ export class ApiClient {
     return this.request(`/api/clips?${qs}`);
   }
 
+  /** Every pinned clip, however old; see the list route. */
+  listPinned(): Promise<ListClipsResponse> {
+    return this.request("/api/clips?pinned=1");
+  }
+
   getClip(id: string): Promise<Clip> {
     return this.request(`/api/clips/${encodeURIComponent(id)}`);
   }

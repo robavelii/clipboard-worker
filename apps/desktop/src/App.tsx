@@ -1,17 +1,19 @@
 /**
  * The tray panel.
  *
- * Needs no enrolment of its own: it reads the agent's config, which means if
- * `clipsync` works on this machine the panel does too. Everything below that
- * is the same client, the same crypto and the same hooks the web UI uses.
+ * Needs no setup of its own: it takes the vault key from the agent's config
+ * and enrols itself as a device on first run, so if `clipsync` works on this
+ * machine the panel does too. Everything below that is the same client, the
+ * same crypto and the same hooks the web UI uses.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { ApiClient } from "@clipsync/client";
+import { ApiClient, ApiRequestError } from "@clipsync/client";
+import type { Platform } from "@clipsync/protocol";
 import { vaultKeysFrom, type VaultKeys } from "@clipsync/crypto";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
@@ -38,6 +40,63 @@ function describe(err: unknown): string {
   return String(err);
 }
 
+/** The panel's own device, enrolled on first run; see enrolTray. */
+interface TrayConfig {
+  baseUrl: string;
+  deviceId: string;
+  deviceName: string;
+  token: string;
+}
+
+function currentPlatform(): Platform {
+  const ua = navigator.userAgent;
+  if (/Mac OS X/.test(ua)) return "macos";
+  if (/Windows/.test(ua)) return "windows";
+  if (/Linux/.test(ua)) return "linux";
+  return "other";
+}
+
+/**
+ * Enrol the panel as a device of its own, vouched for by the agent.
+ *
+ * The Worker never echoes an event to the device that sent it, so a panel
+ * sharing the agent's device would never see anything copied on this
+ * machine. A separate device gets those events live like any other.
+ *
+ * The agent mints a pairing code and the panel redeems it at once -- the
+ * same flow as `clipsync pair`, minus the typing. No passphrase is needed:
+ * the vault key comes from the agent's config.
+ */
+async function enrolTray(agent: AgentConfig): Promise<TrayConfig> {
+  const agentApi = new ApiClient(agent.baseUrl, agent.token, tauriFetch);
+  const { code } = await agentApi.pairCode();
+  const deviceName = `${agent.deviceName} (tray)`.slice(0, 64);
+  const creds = await new ApiClient(agent.baseUrl, undefined, tauriFetch).pair(
+    code,
+    deviceName,
+    currentPlatform(),
+  );
+  const tray: TrayConfig = {
+    baseUrl: agent.baseUrl,
+    deviceId: creds.deviceId,
+    deviceName,
+    token: creds.token,
+  };
+  await invoke("save_tray_config", { json: JSON.stringify(tray, null, 2) });
+  return tray;
+}
+
+/** The panel's credentials, enrolling first if it has none for this Worker. */
+async function trayConfigFor(agent: AgentConfig): Promise<TrayConfig> {
+  const saved = await invoke<string | null>("load_tray_config");
+  const tray = saved ? (JSON.parse(saved) as TrayConfig) : null;
+  // A tray enrolled against another Worker (after `clipsync login --url`
+  // elsewhere) holds a token this one has never heard of.
+  if (tray && tray.baseUrl === agent.baseUrl) return tray;
+  debugLog("boot: enrolling tray device");
+  return enrolTray(agent);
+}
+
 interface AgentConfig {
   baseUrl: string;
   token: string;
@@ -49,7 +108,7 @@ interface AgentConfig {
 type Boot =
   | { state: "loading" }
   | { state: "error"; message: string }
-  | { state: "ready"; api: ApiClient; keys: VaultKeys; config: AgentConfig };
+  | { state: "ready"; api: ApiClient; keys: VaultKeys; tray: TrayConfig };
 
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
@@ -57,7 +116,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        debugLog("boot: reading agent config");
+        debugLog(`boot: build ${__CLIPSYNC_BUILD__}, reading agent config`);
         const config = JSON.parse(
           await invoke<string>("load_agent_config"),
         ) as AgentConfig;
@@ -69,18 +128,30 @@ export function App() {
           );
         }
 
-        const api = new ApiClient(config.baseUrl, config.token, tauriFetch);
+        const tray = await trayConfigFor(config);
+        const api = new ApiClient(tray.baseUrl, tray.token, tauriFetch);
 
         // Prove the network path before rendering a list that would otherwise
         // fail with WebKit's opaque "Load failed".
-        await api.me();
-        debugLog("boot: worker reachable");
+        try {
+          await api.me();
+        } catch (err) {
+          // Revoked from another device. Enrolling again here would quietly
+          // undo the revocation, so leave that decision to the user.
+          if (err instanceof ApiRequestError && err.status === 401) {
+            throw new Error(
+              `The panel's device "${tray.deviceName}" was revoked. To use it again, delete ~/.config/clipsync/tray.json and reopen.`,
+            );
+          }
+          throw err;
+        }
+        debugLog("boot: worker reachable", { device: tray.deviceId });
 
         setBoot({
           state: "ready",
           api,
           keys: await vaultKeysFrom(config.vaultKey, config.kdfSalt),
-          config,
+          tray,
         });
         debugLog("boot: ready");
       } catch (err) {
@@ -110,30 +181,38 @@ export function App() {
       </div>
     );
   }
-  return <Panel api={boot.api} keys={boot.keys} config={boot.config} />;
+  return <Panel api={boot.api} keys={boot.keys} tray={boot.tray} />;
 }
 
 function Panel({
   api,
   keys,
-  config,
+  tray,
 }: {
   api: ApiClient;
   keys: VaultKeys;
-  config: AgentConfig;
+  tray: TrayConfig;
 }) {
   const { clips, loading, error, applyEvent, remove, togglePin, reload } =
     useClips(api, keys);
   const { status } = useSync(api, applyEvent);
 
-  // The panel signs in as the agent's device, and the Worker never echoes a
-  // clip back to the device that sent it. So nothing copied on this machine
-  // arrives over the socket: refetch whenever the panel is opened instead,
-  // and after a reconnect, which may have missed events from elsewhere.
+  // Live events keep the list current while the socket is up. Refetch on
+  // open and on reconnect as well, to cover whatever arrived while the
+  // machine slept or the socket was down.
+  //
+  // Each open also starts a fresh pick: search focused and selected, so
+  // typing replaces the last query, and the newest clip highlighted.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [selected, setSelected] = useState(0);
+
   useEffect(() => {
     const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      debugLog("panel: focus", focused);
-      if (focused) void reload();
+      if (!focused) return;
+      void reload();
+      setSelected(0);
+      searchRef.current?.focus();
+      searchRef.current?.select();
     });
     unlisten.catch((err) => debugLog("panel: focus listen failed", describe(err)));
     return () => void unlisten.then((fn) => fn());
@@ -142,11 +221,8 @@ function Panel({
   useEffect(() => {
     if (status === "online") void reload();
   }, [status, reload]);
-
-  useEffect(() => {
-    debugLog("panel:", { status, loading, clips: clips.length, error });
-  }, [status, loading, clips.length, error]);
   const [query, setQuery] = useState("");
+  useEffect(() => setSelected(0), [query]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
   const toggleExpanded = useCallback((id: string) => {
@@ -159,14 +235,8 @@ function Panel({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const matching = needle
-      ? clips.filter((c) => c.text?.toLowerCase().includes(needle))
-      : clips;
-    // Pinned first: the panel is small, so what you chose to keep should not
-    // scroll away under whatever you copied a minute ago.
-    return [...matching].sort(
-      (a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
-    );
+    if (!needle) return clips;
+    return clips.filter((c) => c.text?.toLowerCase().includes(needle));
   }, [clips, query]);
 
   const copy = useCallback(async (clip: DecryptedClip) => {
@@ -178,6 +248,25 @@ function Panel({
       debugLog("copy failed", describe(err));
     }
   }, []);
+
+  // Keep the highlighted clip on screen as the arrows move it.
+  useEffect(() => {
+    document
+      .querySelector(".clip.selected")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selected, visible]);
+
+  const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      setSelected((i) => Math.max(0, Math.min(visible.length - 1, i + step)));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const clip = visible[selected];
+      if (clip) void copy(clip);
+    }
+  };
 
   return (
     <div className="panel">
@@ -199,6 +288,8 @@ function Panel({
         className="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={onSearchKey}
+        ref={searchRef}
         placeholder="Search…"
         autoFocus
       />
@@ -212,8 +303,17 @@ function Panel({
       )}
 
       <ul className="clips">
-        {visible.map((clip) => (
-          <li key={clip.id} className={clip.pinned ? "clip pinned" : "clip"}>
+        {visible.map((clip, i) => (
+          <li
+            key={clip.id}
+            className={[
+              "clip",
+              clip.pinned && "pinned",
+              i === selected && "selected",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <button
               className={expanded.has(clip.id) ? "body expanded" : "body"}
               onClick={() => void copy(clip)}
@@ -237,7 +337,10 @@ function Panel({
         ))}
       </ul>
 
-      <footer>{config.deviceName}</footer>
+      <footer>
+        <span title={`build ${__CLIPSYNC_BUILD__}`}>{tray.deviceName}</span>
+        <span>↑↓ select · Enter copy · Esc hide</span>
+      </footer>
     </div>
   );
 }

@@ -85,6 +85,7 @@ button.icon:hover { color: var(--text); }
   overflow: hidden;
 }
 .clip.pinned { border-left: 2px solid var(--accent); }
+.clip.selected { border-color: var(--accent); }
 
 .clip .body {
   display: block; width: 100%; text-align: left;
@@ -109,6 +110,7 @@ button.icon:hover { color: var(--text); }
 .actions button:hover { color: var(--text); }
 
 footer {
+  display: flex; justify-content: space-between; gap: 8px;
   padding: 5px 10px;
   border-top: 1px solid var(--border);
   font-size: 11px; color: var(--muted);

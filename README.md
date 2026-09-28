@@ -176,10 +176,10 @@ letting you discover the mistake later.
 | `clipsync pair <code> --url <url>` | Join with a pairing code (manual) |
 | `clipsync pair-code` | Mint a code for another device |
 | `clipsync run` | Watch the clipboard and sync (the daemon) |
-| `clipsync history [-n 20]` | Recent clips, decrypted locally |
+| `clipsync history [-n 20] [--full]` | Recent clips, decrypted locally; `--full` prints them untruncated |
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
 | `clipsync passphrase` | Change the passphrase |
-| `clipsync-desktop` | Tray panel (see above) |
+| `clipsync-desktop` | Tray panel (see below) |
 | `clipsync devices [--revoke <id>]` | List or revoke devices |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Forget local credentials |
@@ -187,34 +187,71 @@ letting you discover the mistake later.
 `clipsync run` does not push whatever happened to be on the clipboard when it
 started; pass `--push-current` if you want that.
 
+### The tray panel
+
+`clipsync-desktop` is a tray icon with a searchable history: click a clip to
+copy it, pin it or delete it. It needs no setup beyond `clipsync login`. It
+takes the vault key from the agent's config and, on first run, enrols itself as
+a second device named after this one, `rob (tray)` for instance, saving its
+token to `~/.config/clipsync/tray.json`.
+
+It is a separate device so that clips copied on this machine appear in it live.
+Revoking it from another device stops the panel rather than letting it quietly
+re-enrol; delete `tray.json` and reopen to enrol it again.
+
+**Opening it.** Press `Ctrl+Alt+V` anywhere: the panel opens at the pointer
+with the newest clip highlighted. Type to search, `↑`/`↓` to move, `Enter` to
+copy and close, `Esc` to close. The tray menu (**Open ClipSync**) works too;
+on Ubuntu a left click on a tray icon does nothing.
+
+The shortcut is deliberately not `Ctrl+Shift+V`, which is paste in every Linux
+terminal. To use another, add it to `tray.json` and restart the panel:
+
+```json
+"shortcut": "Super+Shift+V"
+```
+
+Running `clipsync-desktop` while it is already running toggles the panel
+instead of starting a second one. On Wayland, where apps cannot grab global
+shortcuts, bind that command to a key in your desktop's keyboard settings.
+
 ### Running it as a service
 
 ```bash
 scripts/install-agent.sh
 ```
 
-Puts `clipsync` on your PATH and installs a systemd user service that starts
-with your desktop session. Needs no root; `scripts/install-agent.sh --uninstall`
-reverses it. The unit it writes looks like this:
+Builds the agent and, when a Rust toolchain is present, the tray app; puts
+`clipsync` and `clipsync-desktop` on your PATH; installs a systemd user service
+and a tray autostart entry; then restarts both so they run the code just built.
+Re-run it after pulling changes. `--no-tray` skips the tray build, which takes
+a few minutes, and `--uninstall` reverses everything. Needs no root.
+
+The service runs the bundle straight from the checkout, and restarts itself
+when that bundle is rebuilt: `npm run build -w @clipsync/agent` is enough to
+put a change into the running agent. `clipsync status` prints the commit the
+CLI was built from, the service logs it on startup, and hovering the device
+name in the tray panel shows the panel's.
 
 ```ini
-# ~/.config/systemd/user/clipsync.service
+# ~/.config/systemd/user/clipsync.service (abridged)
 [Unit]
-Description=ClipSync clipboard agent
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
-ExecStart=%h/path/to/clipsync/apps/agent/dist/clipsync.mjs run
+ExecStart=/path/to/node /path/to/clipsync/apps/agent/dist/clipsync.mjs run
 Restart=on-failure
 RestartSec=5
+# Exit 75 is the agent handing over to a rebuilt bundle, not a crash.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 ```
 
-```bash
-systemctl --user enable --now clipsync
-```
+Logs: `journalctl --user -u clipsync -f`.
 
 ## Security model
 
