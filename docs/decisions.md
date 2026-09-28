@@ -170,9 +170,9 @@ device "cannot derive the KEK, so it cannot change the passphrase". The first
 half is true and the second does not follow. Anyone holding the vault key can
 wrap it under a KEK of their own choosing, and `PUT /api/vault/key` accepts a
 wrapped key from any enrolled device -- so a linked device can replace the
-passphrase and lock the owner out of every passphrase unlock. The fix is for
-the server to require proof of the current passphrase before accepting a new
-wrapped key.
+passphrase and lock the owner out of every passphrase unlock. Decision 19
+fixes it: the server now requires proof of the current passphrase before
+accepting a new wrapped key.
 
 **Migrating without re-encrypting.** Existing accounts have clips encrypted
 under keys derived from `PBKDF2(passphrase, salt)`. Making *that value* the
@@ -406,3 +406,33 @@ keep correct alongside the real one.
 and stops; it does not enrol again, although the agent's token would let it. An
 automatic re-enrol would make revoking it meaningless. Deleting `tray.json` is
 the deliberate way back.
+
+## 19. The passphrase needs proof to change
+
+Decision 11 said a device joined by link or invite "cannot change the
+passphrase". It could. The wrapped key is the vault key sealed under a KEK
+from the passphrase; a device holding the vault key can seal it under a KEK
+from a passphrase of its own choosing, and `PUT /api/vault/key` took a new
+wrapped key from any enrolled device. A phone added by QR could lock the owner
+out of the web UI and every `CLIPSYNC_PASSPHRASE` agent.
+
+The server cannot check the new wrapping -- it cannot open it -- so the check
+has to be on who asks. The passphrase now yields a third HKDF branch beside
+the KEK, a proof, and the server keeps SHA-256 of it. The first wrap sets it;
+every later wrap must present the current proof, in one conditional `UPDATE`,
+so a wrong proof and a lost race both write nothing.
+
+**Why storing the hash costs nothing.** The server already holds the wrapped
+key, which tests a passphrase guess offline at exactly the PBKDF2 cost the
+hash would. The proof itself reaches the server only during a rotation, and as
+an HKDF branch independent of the KEK it unwraps nothing. It is also derived
+separately from the legacy vault key, which is the PBKDF2 master itself, so
+sending it gives nothing away for migrated accounts either.
+
+**Existing accounts** have a wrapped key and no proof. The server cannot tell
+the owner's first proof from anyone else's, so the first one registered wins,
+and clients register on every passphrase unlock to close that window as early
+as possible. A registration that finds a different proof already there is
+reported rather than hidden: it is exactly what a device that got there first
+would look like. Re-keying (a fresh vault key sealed to each device) is what
+fully removes a device; this only stops one from taking over.

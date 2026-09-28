@@ -80,11 +80,13 @@ The shared packages exist so one implementation of each flow runs on all three s
 
 ```
 passphrase --PBKDF2(salt, 600k)--> master --HKDF("clipsync:kek:v1")--> KEK --wraps--> vault key (32 random bytes)
+                                          `--HKDF("clipsync:auth:v1")--> authProof (server keeps SHA-256 = users.auth_hash)
 vault key --HKDF("clipsync:enc:v1")----> AES-GCM-256 (clip envelopes "v1.<iv>.<ct>")
 vault key --HKDF("clipsync:dedupe:v1")-> HMAC-SHA256 (contentHash: dedupe tag, never a bare digest)
 ```
 
-- The server stores only the salt and the *wrapped* vault key (`k1.…`).
+- The server stores only the salt, the *wrapped* vault key (`k1.…`) and `auth_hash`.
+- **Replacing the wrapped key needs the current passphrase's `authProof`** (`PUT /api/vault/key`); only the first wrap is exempt. Devices joined by link or invite hold the vault key but not the passphrase, so they can read but never rotate (decisions §19). Accounts predating proofs register one on first passphrase unlock (`POST /api/vault/auth`, first use wins); `unlockVault` does this every time and reports `proofConflict`.
 - Devices hold the vault key, not the passphrase. Agent: `~/.config/clipsync/config.json` (0600). Web: sessionStorage, or localStorage if opted in.
 - **Legacy accounts** (created before the vault key existed) use `legacyVaultKey = PBKDF2 master` as their vault key, which keeps old clips decryptable. `unlockVault` in `packages/client/src/vault.ts` owns that rule; don't duplicate it.
 - Envelope prefixes are versioned (`v1`, `k1`, `l1`, `i1`). A format change is a new prefix, never an in-place change.
@@ -149,7 +151,6 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. Ro
 
 These are tracked in the shared audit and roadmap docs, not in this repo. Don't re-describe them in commits as new discoveries.
 
-- Any enrolled device can replace the wrapped vault key, and with it the passphrase (`PUT /api/vault/key` does no passphrase proof).
 - Revocation does not rotate the vault key.
 - No CSP on the web UI.
 - No rate limiting on unauthenticated endpoints; the link-request cap is global.
