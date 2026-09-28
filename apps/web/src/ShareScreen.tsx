@@ -1,10 +1,18 @@
 /**
  * Target for Android's share sheet and for the iOS Shortcut.
  *
- * Both arrive the same way -- a GET to /share with the text as a query
- * parameter -- because an iOS Shortcut cannot do AES-GCM and so cannot talk to
- * the API directly. It hands the text to this page, which encrypts it properly
- * before anything leaves the device.
+ * Both arrive at /share with the text in the URL, because an iOS Shortcut
+ * cannot do AES-GCM and so cannot talk to the API directly. It hands the text
+ * to this page, which encrypts it properly before anything leaves the device.
+ *
+ * The URL is the one place the text is plaintext, so it must not reach the
+ * server either:
+ *   - Android sends `?text=`; the service worker answers that navigation
+ *     without forwarding the query (see public/sw.js).
+ *   - The iOS Shortcut should open `/share#text=<text>`. A fragment is never
+ *     sent by the browser at all, service worker or not.
+ * Either way the text is scrubbed from the address bar once read, so it does
+ * not linger in browser history.
  *
  * This is also the only way a phone can *send* a clip: no browser may read the
  * clipboard in the background on either platform, so capture has to be an
@@ -17,11 +25,16 @@ import { dedupeHash, encryptText, vaultKeysFrom } from "@clipsync/crypto";
 import type { Credentials } from "@clipsync/protocol";
 import { cachedVaultKey, unlockWithPassphrase } from "./session";
 
-/** Android may send text, a url, or both; an iOS Shortcut sends text. */
+/**
+ * Android may send text, a url, or both, in the query; an iOS Shortcut sends
+ * text in the fragment.
+ */
 export function readSharedText(): string | null {
   if (window.location.pathname !== "/share") return null;
   const q = new URLSearchParams(window.location.search);
-  const parts = [q.get("title"), q.get("text"), q.get("url")]
+  const f = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const get = (key: string) => q.get(key) ?? f.get(key);
+  const parts = [get("title"), get("text"), get("url")]
     .map((v) => v?.trim())
     .filter((v): v is string => Boolean(v));
 
@@ -70,6 +83,11 @@ export function ShareScreen({
     },
     [credentials, text],
   );
+
+  // The text is held in state from here on; keep it out of browser history.
+  useEffect(() => {
+    window.history.replaceState(null, "", "/share");
+  }, []);
 
   useEffect(() => {
     const vaultKey = cachedVaultKey();

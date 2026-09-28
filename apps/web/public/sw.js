@@ -12,6 +12,21 @@
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
-self.addEventListener("fetch", () => {
-  // Pass through to the network. Present only to satisfy installability.
+
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+
+  // Android's share sheet opens GET /share?text=<plaintext>. Passed through,
+  // that query string -- the clip itself, unencrypted -- would travel to the
+  // edge and into whatever logs it keeps. So answer the navigation with the
+  // app shell fetched *without* the query: the page still reads the text from
+  // its own location, and the text never leaves the phone.
+  if (
+    event.request.mode === "navigate" &&
+    url.origin === self.location.origin &&
+    url.pathname === "/share"
+  ) {
+    event.respondWith(fetch("/", { credentials: "same-origin" }));
+  }
+  // Everything else passes through to the network.
 });

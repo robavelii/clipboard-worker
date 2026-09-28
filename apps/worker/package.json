@@ -11,7 +11,7 @@
     "db:migrate:local": "wrangler d1 migrations apply clipsync --local",
     "db:migrate": "wrangler d1 migrations apply clipsync --remote",
     "test": "echo 'worker is covered by `npm run e2e` against a running dev server'",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "wrangler types >/dev/null && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@clipsync/crypto": "*",

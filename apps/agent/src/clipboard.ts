@@ -14,20 +14,40 @@ export interface ClipboardBackend {
   write(text: string): Promise<void>;
 }
 
+/**
+ * Reads are bounded. `xclip -o` asks the selection owner for the data and
+ * waits for it, so an owner that has hung (a frozen app, a suspended VM
+ * window) hangs the read with it -- and the poller would otherwise stack a
+ * new stuck process every tick.
+ *
+ * Writes are not: both tools fork a child that holds the selection until
+ * something else is copied, and bounding that would cut the clipboard short.
+ */
+const READ_TIMEOUT_MS = 5_000;
+
 function run(
   cmd: string,
   args: string[],
   stdin?: string,
+  timeoutMs?: number,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "pipe" });
+    const child = spawn(cmd, args, { stdio: "pipe", timeout: timeoutMs });
     let stdout = "";
     let stderr = "";
 
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    // A null code means the process was killed -- by the timeout, typically.
+    // That is a failed read, not an empty clipboard.
+    child.on("close", (code, signal) =>
+      resolve({
+        code: code ?? -1,
+        stdout,
+        stderr: signal ? `${stderr}killed by ${signal}` : stderr,
+      }),
+    );
 
     if (stdin !== undefined) {
       child.stdin.end(stdin);
@@ -49,7 +69,12 @@ async function has(cmd: string): Promise<boolean> {
 const wayland: ClipboardBackend = {
   name: "wl-clipboard",
   async read() {
-    const { code, stdout, stderr } = await run("wl-paste", ["--no-newline"]);
+    const { code, stdout, stderr } = await run(
+      "wl-paste",
+      ["--no-newline"],
+      undefined,
+      READ_TIMEOUT_MS,
+    );
     // wl-paste exits non-zero when the clipboard holds no text (e.g. an
     // image was copied). That is an empty read, not a failure.
     if (code !== 0) {
@@ -67,11 +92,12 @@ const wayland: ClipboardBackend = {
 const x11: ClipboardBackend = {
   name: "xclip",
   async read() {
-    const { code, stdout, stderr } = await run("xclip", [
-      "-selection",
-      "clipboard",
-      "-o",
-    ]);
+    const { code, stdout, stderr } = await run(
+      "xclip",
+      ["-selection", "clipboard", "-o"],
+      undefined,
+      READ_TIMEOUT_MS,
+    );
     if (code !== 0) {
       if (/Error: target .* not available/i.test(stderr)) return "";
       throw new Error(`xclip failed: ${stderr.trim()}`);

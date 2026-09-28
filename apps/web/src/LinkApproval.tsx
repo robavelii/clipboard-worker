@@ -117,7 +117,7 @@ export function LinkApproval({
     return (
       <div className="card">
         <h1>Approving…</h1>
-        <p className="muted">Sealing your passphrase to that device.</p>
+        <p className="muted">Sealing your vault key to that device.</p>
       </div>
     );
   }
@@ -138,7 +138,7 @@ export function LinkApproval({
 
       <p className="muted small">
         Approving sends that device your vault key, encrypted so only it can
-        read it. It will be able to read your clipboard, but not to change
+        read it. It will be able to read and send clips without ever learning
         your passphrase. If the codes differ, do not approve.
       </p>
 

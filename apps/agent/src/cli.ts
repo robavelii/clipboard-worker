@@ -49,6 +49,9 @@ Usage
   clipsync logout                                       Forget local credentials
 `;
 
+/** EX_CONFIG from sysexits.h: the configuration no longer works. */
+const EXIT_REVOKED = 78;
+
 function currentPlatform(): Platform {
   switch (osPlatform()) {
     case "linux":
@@ -300,6 +303,9 @@ async function cmdRun(opts: {
   const daemon = new Daemon(config, {
     pushCurrent: opts.pushCurrent,
     verbose: opts.verbose,
+    // A distinct status, so the service unit can tell "revoked" from a crash
+    // and not restart into the same 401 forever (RestartPreventExitStatus).
+    onRevoked: () => process.exit(EXIT_REVOKED),
   });
 
   const shutdown = () => {

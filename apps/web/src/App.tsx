@@ -23,6 +23,17 @@ export function App() {
   const [invite, setInvite] = useState(readInviteFromLocation);
   const [shared, setShared] = useState(readSharedText);
 
+  // A share carried in the fragment (the iOS Shortcut's form) does not reload
+  // the page when it lands on a tab that is already at /share.
+  useEffect(() => {
+    const onHash = () => {
+      const text = readSharedText();
+      if (text) setShared(text);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
   const closeLink = useCallback(() => {
     window.history.replaceState(null, "", "/");
     setLink(null);
@@ -60,6 +71,7 @@ export function App() {
     return (
       <Centered>
         <ShareScreen
+          key={shared}
           text={shared}
           credentials={creds}
           onDone={() => {
