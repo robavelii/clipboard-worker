@@ -1,0 +1,60 @@
+# Typecheck and unit tests on every push and PR, plus the end-to-end suite
+# against a local Worker -- the same checks a contributor runs by hand.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  check:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  e2e:
+    name: End-to-end against a local Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Local-only secret; must match the suite's CLIPSYNC_ADMIN_SECRET default.
+      - run: echo 'ADMIN_SECRET="local-dev-admin-secret"' > apps/worker/.dev.vars
+      - run: npm run db:migrate:local
+      - name: Start the Worker
+        run: nohup npm run dev > wrangler.log 2>&1 &
+      - name: Wait for it to answer
+        run: |
+          for i in $(seq 1 90); do
+            curl -sf http://127.0.0.1:8787/api/health && exit 0
+            sleep 2
+          done
+          echo "Worker did not come up"; cat wrangler.log; exit 1
+      - run: npm run e2e
+      - name: Worker log
+        if: failure()
+        run: cat wrangler.log

@@ -20,9 +20,10 @@ npm workspaces monorepo; run from the root.
 ```bash
 npm install
 npm run typecheck              # every workspace; the worker's runs `wrangler types` first
-npm test                       # crypto unit tests (vitest; the only unit tests today)
+npm test                       # crypto + Worker unit tests (vitest 4)
 npm test -w @clipsync/crypto -- test/link.test.ts      # one file
 npm test -w @clipsync/crypto -- -t "wrong passphrase"  # one test by name
+npm test -w @clipsync/worker -- test/vault.test.ts     # Worker tests: run in workerd via @cloudflare/vitest-pool-workers
 npm run build                  # web UI + agent bundle (apps/agent/dist/clipsync.mjs)
 ```
 
@@ -55,6 +56,10 @@ scripts/install-agent.sh               # builds, installs systemd user service +
 ```
 
 Deploy (production): `npm run deploy`. Migrations: `npm run db:migrate` (remote).
+
+Worker unit tests (`apps/worker/test/`) call the real Worker through `SELF.fetch`, with a fresh D1 per test file and every migration applied (`test/apply-migrations.ts`). The pool bundles its own workerd, which trails wrangler's, so `vitest.config.ts` pins an older `compatibilityDate` for tests; bump it when the pool catches up.
+
+CI (`.github/workflows/ci.yml`) runs typecheck + unit tests, and the e2e suite against `npm run dev`, on every push to `main` and every PR.
 
 ## Architecture
 
@@ -148,4 +153,3 @@ These are tracked in the shared audit and roadmap docs, not in this repo. Don't 
 - Revocation does not rotate the vault key.
 - No CSP on the web UI.
 - No rate limiting on unauthenticated endpoints; the link-request cap is global.
-- No CI.
