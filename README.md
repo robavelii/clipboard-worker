@@ -180,7 +180,8 @@ letting you discover the mistake later.
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
 | `clipsync passphrase` | Change the passphrase |
 | `clipsync-desktop` | Tray panel (see below) |
-| `clipsync devices [--revoke <id>]` | List or revoke devices |
+| `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
+| `clipsync rekey [--finish]` | Move every device to a new vault key (see below) |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Forget local credentials |
 
@@ -191,9 +192,10 @@ started; pass `--push-current` if you want that.
 
 `clipsync-desktop` is a tray icon with a searchable history: click a clip to
 copy it, pin it or delete it. It needs no setup beyond `clipsync login`. It
-takes the vault key from the agent's config and, on first run, enrols itself as
+takes the vault keys from the agent's config and, on first run, enrols itself as
 a second device named after this one, `rob (tray)` for instance, saving its
-token to `~/.config/clipsync/tray.json`.
+token and its own device key to `~/.config/clipsync/tray.json`. After a re-key
+it fetches its own copy of the new key, whether or not the agent is running.
 
 It is a separate device so that clips copied on this machine appear in it live.
 Revoking it from another device stops the panel rather than letting it quietly
@@ -246,7 +248,7 @@ RestartSec=5
 # Exit 75 is the agent handing over to a rebuilt bundle, not a crash.
 SuccessExitStatus=75
 RestartForceExitStatus=75
-# Exit 78 means this device was revoked; restarting cannot fix that.
+# Exit 78: this device was revoked, or re-keyed out; restarting cannot fix that.
 RestartPreventExitStatus=78
 
 [Install]
@@ -290,7 +292,8 @@ closes the key-substitution attack. Link requests expire in ten minutes, the
 pickup token is single-use, and the claiming read deletes the row.
 
 **Tokens.** Device tokens are 256-bit random strings stored only as SHA-256
-digests. Revoking a device invalidates its token immediately. The WebSocket uses
+digests. Revoking a device invalidates its token immediately; re-keying
+afterwards (below) makes sure the vault key it kept opens nothing new. The WebSocket uses
 a separate single-use 30-second ticket, because browsers cannot set headers on a
 handshake and a long-lived token in a URL ends up in logs.
 
@@ -304,11 +307,20 @@ only, no inline script or style), refuses to be framed, and sends no referrer.
 It can keep the vault key in browser storage on a phone, so script injection
 is the attack those headers are there for.
 
-**Not protected.** The agent stores your passphrase in `~/.config/clipsync/config.json`
-at mode 0600 so it can start unattended. Anyone who can read that file can also
-read your clipboard directly, so this does not weaken the threat model the
-encryption addresses — but it does mean local disk compromise is game over. Set
-`CLIPSYNC_PASSPHRASE` instead if you would rather keep it out of the file.
+**Re-keying.** Every device holds a P-256 device key; the server has only the
+public half. A re-key generates a fresh vault key, wraps it under the
+passphrase, and seals a copy to each active device's public key, binding the
+device id and key epoch into the derivation so the server cannot hand one
+device another's copy or pass off an old key as new. Revoked devices get
+nothing. The server refuses writes under a key it has moved past.
+
+**Not protected.** The agent stores the vault keys and its device key in
+`~/.config/clipsync/config.json` at mode 0600 so it can start unattended.
+Anyone who can read that file can also read your clipboard directly, so this
+does not weaken the threat model the encryption addresses — but it does mean
+local disk compromise is game over. Set `CLIPSYNC_PASSPHRASE` instead if you
+would rather keep keys out of the file; the agent then unwraps the key at
+startup and picks up re-keys through the passphrase.
 
 The server also learns metadata it cannot avoid: how many clips you make, when,
 from which device, and roughly how large they are.
@@ -337,9 +349,32 @@ One caveat for accounts created before the vault key existed: their vault key
 *is* the old passphrase-derived value, so someone who knows the original
 passphrase can still recompute it. Changing the passphrase locks out the web UI
 and any `CLIPSYNC_PASSPHRASE` device, but it does not fully retire the old
-secret. Fully retiring it needs a re-key — a fresh random vault key and a
-re-encryption pass over history — which is not built yet. Accounts created
-after this change get a random vault key and do not have the problem.
+secret. `clipsync rekey` retires it: a fresh random vault key, and history
+re-encrypted under it. Accounts created after this change get a random vault
+key and do not have the problem.
+
+## Re-keying after a revoke
+
+```bash
+clipsync devices --revoke <id> --rekey     # or: clipsync rekey
+```
+
+Revoking a device stops its token at once, but it still holds the vault key it
+was given, and that key opens every clip it could get hold of — a copy of the
+database, say. A re-key moves the account to a new vault key and re-encrypts
+history under it, so the revoked device's key opens nothing written since and
+nothing already stored.
+
+It needs the passphrase. Every other device keeps working without anything to
+type: agents, the tray and browsers pick up their sealed copy of the new key
+as soon as they hear about it (or the next time they start). A device that
+never registered a device key — one that has not run since this was added —
+is listed at the end; it can still read old clips but not new ones, so enrol
+it again (a browser can just unlock with the passphrase).
+
+Re-encryption runs straight after the switch. If it is interrupted,
+`clipsync rekey --finish` resumes it, from any device holding the old key; it
+is safe to run twice.
 
 ## Retention
 
@@ -383,13 +418,14 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-Sixty-three checks against a running `npm run dev`: bootstrap, pairing,
+About ninety checks against a running `npm run dev`: bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
 revocation including cutting off an open socket, the full linking handshake
 including a refused key substitution,
 scan-to-join including a refused claim that knows only the invite id,
-passphrase rotation leaving old clips readable, and an explicit assertion that
-no plaintext appears in any API response.
+passphrase rotation leaving old clips readable, a re-key after revocation
+(sealed copies, re-encrypted history, stale writes refused), and an explicit
+assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
