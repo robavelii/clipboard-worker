@@ -35,7 +35,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-End-to-end suite: about 66 checks against the running local Worker, with real crypto and WebSockets, standing in for several devices:
+End-to-end suite: about 90 checks against the running local Worker, with real crypto and WebSockets, standing in for several devices:
 
 ```bash
 npm run e2e    # needs `npm run dev` running; ADMIN_SECRET must match CLIPSYNC_ADMIN_SECRET (default "local-dev-admin-secret")
@@ -83,11 +83,14 @@ passphrase --PBKDF2(salt, 600k)--> master --HKDF("clipsync:kek:v1")--> KEK --wra
                                           `--HKDF("clipsync:auth:v1")--> authProof (server keeps SHA-256 = users.auth_hash)
 vault key --HKDF("clipsync:enc:v1")----> AES-GCM-256 (clip envelopes "v1.<iv>.<ct>")
 vault key --HKDF("clipsync:dedupe:v1")-> HMAC-SHA256 (contentHash: dedupe tag, never a bare digest)
+device key (P-256) <--ECDH-- re-key seals each new vault key to it ("d1.", crypto/device.ts)
 ```
 
 - The server stores only the salt, the *wrapped* vault key (`k1.…`) and `auth_hash`.
 - **Replacing the wrapped key needs the current passphrase's `authProof`** (`PUT /api/vault/key`); only the first wrap is exempt. Devices joined by link or invite hold the vault key but not the passphrase, so they can read but never rotate (decisions §19). Accounts predating proofs register one on first passphrase unlock (`POST /api/vault/auth`, first use wins); `unlockVault` does this every time and reports `proofConflict`.
 - Devices hold the vault key, not the passphrase. Agent: `~/.config/clipsync/config.json` (0600). Web: sessionStorage, or localStorage if opted in.
+- **Key epochs** (decisions §22). `users.key_epoch` and `clips.key_epoch`; a device holds a ring of keys by epoch (`packages/client/src/ring.ts`), decrypts each clip with `decryptClip`, and writes only under the current key, naming it as `keyEpoch`. The server refuses a write under an older epoch with 409 `stale_epoch`, so every write path must pass `keyEpoch` and handle that by refreshing the ring.
+- **Device keys.** Every device registers a P-256 public key (`PUT /api/devices/me/key`). Agent and tray keep the keypair in their config file; the browser keeps a non-extractable one in IndexedDB. `rekeyVault` (`packages/client/src/rekey.ts`) rotates in one guarded batch (`POST /api/vault/rotate`: epoch bump, new wrapped key, a sealed copy per active device), then re-encrypts history with conditional writes (`POST /api/clips/reencrypt`), resumable via `reencryptHistory`. Devices pick up their copy (`GET /api/vault/sealed`) on `vault.rotated`, a 409, a clip under a newer epoch, or startup. No copy, or one they cannot open, is `NoSealedKeyError`: the agent exits 78, a browser falls back to the passphrase.
 - **Legacy accounts** (created before the vault key existed) use `legacyVaultKey = PBKDF2 master` as their vault key, which keeps old clips decryptable. `unlockVault` in `packages/client/src/vault.ts` owns that rule; don't duplicate it.
 - Envelope prefixes are versioned (`v1`, `k1`, `l1`, `i1`). A format change is a new prefix, never an in-place change.
 
@@ -109,7 +112,7 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 - SyncRoom uses the **Hibernation API**: all per-socket state lives in `serializeAttachment`, never in instance fields. Pings are answered by `setWebSocketAutoResponse` without waking the object.
 - Fan-out **excludes the origin device**. That is why the tray panel is enrolled as its own device ("<name> (tray)", token in `~/.config/clipsync/tray.json`). If it shared the agent's identity, it would never see local copies (decisions §18).
 - Dedupe is across the whole history. A repeat `contentHash` bumps the existing row (`clip.bumped`) instead of inserting. A repeat of the newest clip is a silent no-op.
-- Revocation: `DELETE /api/devices/:id` revokes the token, and `SyncRoom.disconnect` sends a `{type:"revoked"}` frame and closes with `REVOKED_CLOSE_CODE` (4001). Clients treat that frame, code 4001, or a 401 as terminal and stop reconnecting. The frame is needed because under local workerd an idle socket's close event may never fire.
+- Revocation: `DELETE /api/devices/:id` revokes the token (and drops its sealed keys), and `SyncRoom.disconnect` sends a `{type:"revoked"}` frame and closes with `REVOKED_CLOSE_CODE` (4001). Clients treat that frame, code 4001, or a 401 as terminal and stop reconnecting. The frame is needed because under local workerd an idle socket's close event may never fire.
 - `GET /api/clips?pinned=1` returns every pin unpaged. `useClips` merges it into the first page, and `sortForDisplay` puts pins first in both UIs.
 - Unpinned clips expire after 30 days (hourly cron, `apps/worker/src/index.ts`).
 
@@ -125,7 +128,9 @@ It polls the clipboard every 600 ms. Echo suppression is the whole design proble
 Reads time out after 5 s; writes don't, because `xclip -i`/`wl-copy` fork a selection-holding child. Exit codes, which the systemd unit depends on:
 
 - **75:** the bundle was rebuilt on disk; restart onto it (`RestartForceExitStatus=75`).
-- **78:** the device was revoked; never restart (`RestartPreventExitStatus=78`).
+- **78:** the device was revoked, or re-keyed without a copy for it; never restart (`RestartPreventExitStatus=78`).
+
+A re-key changes the key every dedupe hash is taken under, so `refresh()` re-primes `lastHandled` under the new key when the epoch moves.
 
 ### Web UI (`apps/web`)
 
@@ -155,4 +160,4 @@ The unauthenticated endpoints (`bootstrap`, `pair`, invite `claim`, `link/reques
 
 These are tracked in the shared audit and roadmap docs, not in this repo. Don't re-describe them in commits as new discoveries.
 
-- Revocation does not rotate the vault key.
+- Revocation does not re-key by itself: it takes `clipsync rekey` (or `devices --revoke <id> --rekey`), which needs the passphrase. Only the CLI offers it.

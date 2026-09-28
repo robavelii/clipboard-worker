@@ -111,7 +111,7 @@ export async function changePassphrase(
   currentPassphrase: string,
   newPassphrase: string,
 ): Promise<void> {
-  const { wrappedVaultKey } = await api.vaultKey();
+  const { wrappedVaultKey, keyEpoch } = await api.vaultKey();
   if (!wrappedVaultKey) {
     throw new Error("this account has no wrapped vault key yet -- unlock it once first");
   }
@@ -131,5 +131,6 @@ export async function changePassphrase(
     wrappedVaultKey: await wrapVaultKey(next.kek, vaultKey),
     authHash: await authHashOf(next.authProof),
     authProof: current.authProof,
+    keyEpoch,
   });
 }

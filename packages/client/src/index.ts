@@ -22,6 +22,13 @@ import type {
   ClaimInviteResponse,
   CreateInviteRequest,
   CreateInviteResponse,
+  ReencryptClipsRequest,
+  ReencryptClipsResponse,
+  ReencryptItem,
+  RotateVaultRequest,
+  RotateVaultResponse,
+  SealedVaultKeyResponse,
+  SetDeviceKeyRequest,
   TicketResponse,
   VaultKeyResponse,
   WhoAmI,
@@ -145,10 +152,49 @@ export class ApiClient {
     });
   }
 
-  listClips(limit = 50, before?: number): Promise<ListClipsResponse> {
+  /**
+   * @param options.epochBelow Only clips still under a vault key older than
+   *   this epoch: what is left to re-encrypt after a re-key.
+   */
+  listClips(
+    limit = 50,
+    before?: number,
+    options: { epochBelow?: number } = {},
+  ): Promise<ListClipsResponse> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (before) qs.set("before", String(before));
+    if (options.epochBelow !== undefined) {
+      qs.set("epochBelow", String(options.epochBelow));
+    }
     return this.request(`/api/clips?${qs}`);
+  }
+
+  /** Move clips to the current vault key; see the reencrypt route. */
+  reencryptClips(items: ReencryptItem[]): Promise<ReencryptClipsResponse> {
+    return this.request("/api/clips/reencrypt", {
+      method: "POST",
+      body: JSON.stringify({ items } satisfies ReencryptClipsRequest),
+    });
+  }
+
+  /** Register this device's long-term public key, for re-keys to seal to. */
+  setDeviceKey(publicKey: string): Promise<{ ok: boolean }> {
+    return this.request("/api/devices/me/key", {
+      method: "PUT",
+      body: JSON.stringify({ publicKey } satisfies SetDeviceKeyRequest),
+    });
+  }
+
+  /** This device's sealed copy of the current vault key, if one was made. */
+  sealedVaultKey(): Promise<SealedVaultKeyResponse> {
+    return this.request("/api/vault/sealed");
+  }
+
+  rotateVault(body: RotateVaultRequest): Promise<RotateVaultResponse> {
+    return this.request("/api/vault/rotate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   /** Every pinned clip, however old; see the list route. */

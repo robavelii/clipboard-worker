@@ -4,8 +4,8 @@ import { watchFile } from "node:fs";
 import { hostname, platform as osPlatform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { Platform } from "@clipsync/protocol";
-import { DecryptError, decryptText } from "@clipsync/crypto";
+import type { Credentials, Platform } from "@clipsync/protocol";
+import { DecryptError } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import {
   approveLink,
@@ -15,17 +15,28 @@ import {
   parseLinkUrl,
 } from "@clipsync/client/link";
 import { createInvite } from "@clipsync/client/invite";
+import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
+import {
+  currentKey,
+  decryptClip,
+  ringKeysFrom,
+  ringOf,
+  type VaultRing,
+} from "@clipsync/client/ring";
 import { fingerprint } from "@clipsync/crypto";
 import { toString as qrToString } from "qrcode";
 import { detectClipboard } from "./clipboard";
 import {
   clearConfig,
   configPath,
+  ensureDeviceKey,
+  freshRing,
   loadConfig,
   requireConfig,
-  resolveVaultKey,
-  resolveVaultKeys,
   saveConfig,
+  storedRing,
+  withRing,
+  type AgentConfig,
 } from "./config";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
@@ -44,12 +55,16 @@ Usage
   clipsync history [-n <count>] [--full]                Show recent clips (--full: untruncated)
   clipsync copy <clip-id>                               Copy a clip to this clipboard
   clipsync passphrase                                   Change the passphrase
-  clipsync devices [--revoke <id>]                      List or revoke devices
+  clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
+  clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
   clipsync logout                                       Forget local credentials
 `;
 
-/** EX_CONFIG from sysexits.h: the configuration no longer works. */
+/**
+ * EX_CONFIG from sysexits.h: the configuration no longer works -- the device
+ * was revoked, or the vault re-keyed without it.
+ */
 const EXIT_REVOKED = 78;
 
 function currentPlatform(): Platform {
@@ -92,6 +107,46 @@ function warnProofConflict(): void {
   );
 }
 
+/**
+ * Write a newly enrolled device's config, then register its device key so a
+ * re-key reaches it even before `clipsync run` first starts.
+ */
+async function enrol(
+  baseUrl: string,
+  deviceName: string,
+  creds: Credentials,
+  vaultKey: string,
+): Promise<void> {
+  const { createdAccount: _, ...rest } = creds;
+  const config: AgentConfig = withRing(
+    { baseUrl, deviceName, ...rest },
+    ringOf(vaultKey, creds.keyEpoch ?? 0),
+  );
+  await saveConfig(config);
+  try {
+    await ensureDeviceKey(config, new ApiClient(baseUrl, creds.token));
+  } catch (err) {
+    // `clipsync run` registers it again; not worth failing enrolment over.
+    console.warn(
+      `note: could not register this device's key yet (${err instanceof Error ? err.message : err})`,
+    );
+  }
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** "1 clip is" / "3 clips are". */
+function clipCount(count: number): string {
+  return `${plural(count, "clip")} ${count === 1 ? "is" : "are"}`;
+}
+
+/** Progress for re-encryption, on one rewritten line. */
+function progress(count: number): void {
+  process.stdout.write(`\r  re-encrypted ${plural(count, "clip")}`);
+}
+
 /* ------------------------------ commands ------------------------------- */
 
 async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
@@ -117,7 +172,7 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
     creds.createdAccount ?? false,
   );
 
-  await saveConfig({ baseUrl, deviceName, vaultKey, ...creds });
+  await enrol(baseUrl, deviceName, creds, vaultKey);
   if (migrated && !creds.createdAccount) {
     console.log("Upgraded this account to a wrapped vault key.");
   }
@@ -167,7 +222,7 @@ async function cmdPair(
     );
   }
 
-  await saveConfig({ baseUrl, deviceName, vaultKey, ...creds });
+  await enrol(baseUrl, deviceName, creds, vaultKey);
   console.log(`Paired "${deviceName}" (${creds.deviceId}).`);
   console.log(`\nNext: clipsync run`);
 }
@@ -213,7 +268,7 @@ async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
     },
   );
 
-  await saveConfig({ baseUrl, deviceName, vaultKey, ...credentials });
+  await enrol(baseUrl, deviceName, credentials, vaultKey);
   console.log(`\nLinked "${deviceName}" (${credentials.deviceId}).`);
   console.log(`This device holds the vault key, not your passphrase.`);
   console.log(`Credentials written to ${configPath()}.`);
@@ -235,9 +290,9 @@ async function cmdLink(opts: { url?: string; name?: string }): Promise<void> {
 async function cmdInvite(): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const vaultKey = await resolveVaultKey(config, api);
+  const { ring } = await freshRing(config, api);
 
-  const invite = await createInvite(api, config.baseUrl, vaultKey);
+  const invite = await createInvite(api, config.baseUrl, currentKey(ring));
 
   console.log(
     await qrToString(invite.url, {
@@ -293,7 +348,7 @@ async function cmdApprove(target: string | undefined): Promise<void> {
     config.token,
     parsed.linkId,
     parsed.publicKey,
-    await resolveVaultKey(config, api),
+    currentKey((await freshRing(config, api)).ring),
   );
   console.log(`Approved "${deviceName}". It can start syncing now.`);
 }
@@ -320,6 +375,7 @@ async function cmdRun(opts: {
     // A distinct status, so the service unit can tell "revoked" from a crash
     // and not restart into the same 401 forever (RestartPreventExitStatus).
     onRevoked: () => process.exit(EXIT_REVOKED),
+    onStranded: () => process.exit(EXIT_REVOKED),
   });
 
   const shutdown = () => {
@@ -358,7 +414,7 @@ function restartOnRebuild(daemon: Daemon): void {
 async function cmdHistory(limit: number, full = false): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const keys = await resolveVaultKeys(config, api);
+  const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
 
   const { clips } = await api.listClips(limit);
   if (!clips.length) {
@@ -372,14 +428,18 @@ async function cmdHistory(limit: number, full = false): Promise<void> {
   for (const clip of clips) {
     let text: string | null;
     try {
-      text = await decryptText(keys, clip.envelope);
+      text = await decryptClip(keys, clip);
     } catch {
       text = null;
     }
     const origin = names.get(clip.deviceId) ?? clip.deviceId;
     const head = `${clip.pinned ? "*" : " "} ${clip.id}  ${relativeTime(clip.createdAt).padStart(8)}  ${origin.padEnd(12)}`;
     if (text === null) {
-      console.log(`${head}  <cannot decrypt — different passphrase>`);
+      console.log(
+        `${head}  <cannot decrypt — ${
+          keys.byEpoch.has(clip.keyEpoch) ? "different passphrase" : `no key for epoch ${clip.keyEpoch}`
+        }>`,
+      );
     } else if (full) {
       // The whole clip on its own lines, so long links stay intact and can be
       // selected straight from the terminal.
@@ -397,21 +457,29 @@ async function cmdCopy(id: string | undefined): Promise<void> {
 
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const keys = await resolveVaultKeys(config, api);
+  const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
 
   const clip = await api.getClip(id);
-  const text = await decryptText(keys, clip.envelope);
+  const text = await decryptClip(keys, clip);
   await (await detectClipboard()).write(text);
   console.log(`Copied ${text.length} chars to the clipboard.`);
 }
 
-async function cmdDevices(opts: { revoke?: string }): Promise<void> {
+async function cmdDevices(opts: { revoke?: string; rekey?: boolean }): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
 
   if (opts.revoke) {
     await api.revokeDevice(opts.revoke);
     console.log(`Revoked ${opts.revoke}.`);
+    if (opts.rekey) {
+      console.log();
+      return cmdRekey({});
+    }
+    console.log(
+      "It can no longer sync, but it still holds the vault key. To make sure it\n" +
+        "can never read another clip: clipsync rekey",
+    );
     return;
   }
 
@@ -419,10 +487,85 @@ async function cmdDevices(opts: { revoke?: string }): Promise<void> {
   for (const device of devices) {
     const marker = device.online ? "online " : "offline";
     const self = device.id === config.deviceId ? " (this device)" : "";
+    // A device with no key registered would be left out of a re-key.
+    const keyless = device.publicKey ? "" : " (no device key)";
     console.log(
       `${marker}  ${device.name.padEnd(16)} ${device.platform.padEnd(8)} ` +
-        `seen ${relativeTime(device.lastSeen).padEnd(9)} ${device.id}${self}`,
+        `seen ${relativeTime(device.lastSeen).padEnd(9)} ${device.id}${self}${keyless}`,
     );
+  }
+}
+
+/**
+ * Move the account to a new vault key and re-encrypt history under it.
+ *
+ * Revoking a device stops its token, but the vault key it was given still
+ * opens every clip. After a re-key it opens none written since, and none
+ * already re-encrypted. Active devices get the new key sealed to their device
+ * key and switch over by themselves; ones without a device key are listed
+ * and must be enrolled again.
+ *
+ * `--finish` resumes re-encryption if it was interrupted, and needs no
+ * passphrase: it only moves clips between keys this device already holds.
+ */
+async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
+  const loaded = await requireConfig();
+  const api = new ApiClient(loaded.baseUrl, loaded.token);
+  const { config, ring } = await freshRing(loaded, api);
+  const save = async (next: VaultRing) => {
+    if (storedRing(config)) await saveConfig(withRing(config, next));
+  };
+
+  if (opts.finish) {
+    const { reencrypted, unreadable } = await reencryptHistory(
+      api,
+      ring,
+      config.kdfSalt,
+      progress,
+    );
+    if (reencrypted) console.log();
+    console.log(`Re-encrypted ${plural(reencrypted, "clip")}.`);
+    if (unreadable) {
+      console.log(`${clipCount(unreadable)} under a key this device does not hold; left as they are.`);
+    }
+    return;
+  }
+
+  console.log(
+    "Re-keying moves every device to a new vault key and re-encrypts your\n" +
+      "history under it. Revoked devices get nothing.\n",
+  );
+  const passphrase =
+    process.env.CLIPSYNC_PASSPHRASE ?? (await askSecret("Passphrase: "));
+
+  let result;
+  try {
+    result = await rekeyVault(api, config.kdfSalt, passphrase, ring, {
+      onRotated: save,
+      onProgress: progress,
+    });
+  } catch (err) {
+    if (err instanceof DecryptError) {
+      throw new Error("that is not the passphrase -- nothing was changed");
+    }
+    throw err;
+  }
+  if (result.reencrypted) console.log();
+
+  console.log(`\nVault re-keyed (epoch ${result.epoch}).`);
+  console.log(`Re-encrypted ${plural(result.reencrypted, "clip")}.`);
+  if (result.unreadable) {
+    console.log(
+      `${clipCount(result.unreadable)} under a key this device does not hold. Run\n` +
+        "`clipsync rekey --finish` on a device that can read them.",
+    );
+  }
+  if (result.unsealed.length) {
+    console.log("\nThese devices have no device key, so they did not get the new one.");
+    console.log("They can read old clips but not new ones; enrol them again:");
+    for (const device of result.unsealed) {
+      console.log(`  ${device.name} (${device.id})`);
+    }
   }
 }
 
@@ -476,12 +619,22 @@ async function cmdStatus(): Promise<void> {
   console.log(
     `vault key  ${
       config.vaultKey
-        ? "stored in config"
+        ? `stored in config, epoch ${config.keyEpoch ?? 0}`
         : config.passphrase
           ? "will upgrade from the stored passphrase on next use"
           : process.env.CLIPSYNC_PASSPHRASE
             ? "unwrapped from CLIPSYNC_PASSPHRASE at startup"
             : "missing"
+    }`,
+  );
+
+  console.log(
+    `device key ${
+      config.deviceKey
+        ? "stored in config"
+        : storedRing(config)
+          ? "not yet created -- `clipsync run` creates it"
+          : "none (CLIPSYNC_PASSPHRASE mode picks up re-keys through the passphrase)"
     }`,
   );
 
@@ -509,6 +662,8 @@ async function main(): Promise<void> {
       url: { type: "string" },
       name: { type: "string" },
       revoke: { type: "string" },
+      rekey: { type: "boolean" },
+      finish: { type: "boolean" },
       number: { type: "string", short: "n" },
       full: { type: "boolean", short: "f" },
       "push-current": { type: "boolean" },
@@ -549,7 +704,9 @@ async function main(): Promise<void> {
     case "passphrase":
       return cmdPassphrase();
     case "devices":
-      return cmdDevices({ revoke: values.revoke });
+      return cmdDevices({ revoke: values.revoke, rekey: values.rekey });
+    case "rekey":
+      return cmdRekey({ finish: values.finish });
     case "status":
       return cmdStatus();
     case "logout":

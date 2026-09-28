@@ -133,6 +133,7 @@ export const inviteRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
         token,
         kdfSalt: user.kdf_salt,
         wrappedVaultKey: user.wrapped_vault_key,
+        keyEpoch: user.key_epoch,
       },
     });
   });

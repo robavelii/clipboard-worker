@@ -7,24 +7,27 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Clip, SyncEvent } from "@clipsync/protocol";
-import { decryptText, type VaultKeys } from "@clipsync/crypto";
 import type { ApiClient } from "@clipsync/client";
+import { decryptClip, type RingKeys } from "@clipsync/client/ring";
 
 const PAGE_SIZE = 100;
 
 export interface DecryptedClip extends Clip {
-  /** null when this clip was encrypted under a different passphrase. */
+  /**
+   * null when this clip does not open: encrypted under a different
+   * passphrase, or under a key epoch this device does not hold.
+   */
   text: string | null;
 }
 
 async function decryptAll(
-  keys: VaultKeys,
+  keys: RingKeys,
   clips: Clip[],
 ): Promise<DecryptedClip[]> {
   return Promise.all(
     clips.map(async (clip) => {
       try {
-        return { ...clip, text: await decryptText(keys, clip.envelope) };
+        return { ...clip, text: await decryptClip(keys, clip) };
       } catch {
         return { ...clip, text: null };
       }
@@ -54,7 +57,12 @@ export function sortForDisplay(clips: DecryptedClip[]): DecryptedClip[] {
   );
 }
 
-export function useClips(api: ApiClient, keys: VaultKeys) {
+/**
+ * `keys` changes identity when a re-key adds an epoch, which reloads the
+ * list: clips that arrived under the new key before this device held it
+ * open on the second pass.
+ */
+export function useClips(api: ApiClient, keys: RingKeys) {
   const [clips, setClips] = useState<DecryptedClip[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);

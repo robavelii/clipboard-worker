@@ -7,10 +7,11 @@ import type {
   Device,
   PairCodeResponse,
   PairRequest,
+  SetDeviceKeyRequest,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { rateLimit } from "../limits";
-import { getUser, toDevice, type DeviceRow } from "../db";
+import { getUser, PUBLIC_KEY_PATTERN, toDevice, type DeviceRow } from "../db";
 import { newPairCode, normalisePairCode, sha256 } from "../ids";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
 
@@ -83,7 +84,32 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       token,
       kdfSalt: user.kdf_salt,
       wrappedVaultKey: user.wrapped_vault_key,
+      keyEpoch: user.key_epoch,
     });
+  })
+
+  /**
+   * Register this device's long-term public key, so a re-key can seal the new
+   * vault key to it. Replacing it is allowed: a browser that lost its
+   * IndexedDB, or an agent whose config was rewritten, needs a new one, and
+   * the token already proves this is the device.
+   */
+  .put("/me/key", requireDevice, async (c) => {
+    const body = await c.req
+      .json<Partial<SetDeviceKeyRequest>>()
+      .catch(() => ({}) as Partial<SetDeviceKeyRequest>);
+    if (
+      typeof body.publicKey !== "string" ||
+      !PUBLIC_KEY_PATTERN.test(body.publicKey)
+    ) {
+      throw new HTTPException(400, {
+        message: "publicKey must be a raw P-256 point in base64url",
+      });
+    }
+    await c.env.DB.prepare("UPDATE devices SET public_key = ? WHERE id = ?")
+      .bind(body.publicKey, c.var.device.deviceId)
+      .run();
+    return c.json({ ok: true });
   })
 
   .get("/", requireDevice, async (c) => {
@@ -116,14 +142,20 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       });
     }
 
-    const res = await c.env.DB.prepare(
-      `UPDATE devices SET revoked_at = ?
-        WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
-    )
-      .bind(Date.now(), id, c.var.device.userId)
-      .run();
+    const [res] = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE devices SET revoked_at = ?
+          WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+      ).bind(Date.now(), id, c.var.device.userId),
+      // Its copy of the current vault key goes too. It could not fetch it
+      // without a token anyway; this keeps the table to devices that can.
+      c.env.DB.prepare(
+        `DELETE FROM sealed_vault_keys WHERE device_id = ?
+           AND device_id IN (SELECT id FROM devices WHERE user_id = ?)`,
+      ).bind(id, c.var.device.userId),
+    ]);
 
-    if (!res.meta.changes) {
+    if (!res?.meta.changes) {
       throw new HTTPException(404, { message: "device not found" });
     }
 

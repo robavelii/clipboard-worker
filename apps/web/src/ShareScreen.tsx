@@ -20,10 +20,12 @@
  */
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ApiClient } from "@clipsync/client";
-import { dedupeHash, encryptText, vaultKeysFrom } from "@clipsync/crypto";
-import type { Credentials } from "@clipsync/protocol";
-import { cachedVaultKey, unlockWithPassphrase } from "./session";
+import { ApiClient, ApiRequestError } from "@clipsync/client";
+import { NoSealedKeyError } from "@clipsync/client/rekey";
+import { currentKeys, ringKeysFrom, type VaultRing } from "@clipsync/client/ring";
+import { dedupeHash, encryptText } from "@clipsync/crypto";
+import { STALE_EPOCH_ERROR, type Credentials } from "@clipsync/protocol";
+import { cachedRing, syncRing, unlockWithPassphrase } from "./session";
 
 /**
  * Android may send text, a url, or both, in the query; an iOS Shortcut sends
@@ -62,19 +64,34 @@ export function ShareScreen({
   const [passphrase, setPassphrase] = useState("");
 
   const save = useCallback(
-    async (vaultKey: string) => {
+    async (ring: VaultRing) => {
       setState({ phase: "saving" });
-      try {
-        const api = new ApiClient("", credentials.token);
-        const keys = await vaultKeysFrom(vaultKey, credentials.kdfSalt);
+      const api = new ApiClient("", credentials.token);
+      const send = async (ring: VaultRing) => {
+        const keys = currentKeys(await ringKeysFrom(ring, credentials.kdfSalt));
         await api.createClip({
           type: "text",
           envelope: await encryptText(keys, text),
           contentHash: await dedupeHash(keys, text),
           size: new TextEncoder().encode(text).length,
+          keyEpoch: ring.current,
         });
+      };
+      try {
+        try {
+          await send(ring);
+        } catch (err) {
+          // Re-keyed since this device last looked: fetch its copy, once.
+          if (!(err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR)) throw err;
+          await send(await syncRing(api, credentials.deviceId, ring));
+        }
         setState({ phase: "saved" });
       } catch (err) {
+        if (err instanceof NoSealedKeyError) {
+          // Left out of a re-key: the passphrase still unwraps the new key.
+          setState({ phase: "locked" });
+          return;
+        }
         setState({
           phase: "error",
           message: err instanceof Error ? err.message : String(err),
@@ -90,8 +107,8 @@ export function ShareScreen({
   }, []);
 
   useEffect(() => {
-    const vaultKey = cachedVaultKey();
-    if (vaultKey) void save(vaultKey);
+    const ring = cachedRing();
+    if (ring) void save(ring);
     else setState({ phase: "locked" });
   }, [save]);
 
@@ -99,14 +116,14 @@ export function ShareScreen({
     event.preventDefault();
     setState({ phase: "saving" });
     try {
-      const vaultKey = await unlockWithPassphrase(
+      const ring = await unlockWithPassphrase(
         new ApiClient("", credentials.token),
         passphrase,
         credentials.kdfSalt,
         credentials.wrappedVaultKey,
         true, // sharing opens a new tab each time; stay unlocked or it is unusable
       );
-      await save(vaultKey);
+      await save(ring);
     } catch {
       setState({ phase: "error", message: "That passphrase did not unlock this account." });
     }

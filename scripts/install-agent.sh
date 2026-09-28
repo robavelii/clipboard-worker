@@ -88,8 +88,8 @@ RestartSec=5
 # code. That is a handover, not a failure.
 SuccessExitStatus=75
 RestartForceExitStatus=75
-# The agent exits 78 when its device has been revoked. Restarting would only
-# retry a token that can never work again.
+# The agent exits 78 when its device has been revoked, or the vault re-keyed
+# without a copy for it. Restarting would only retry what can never work.
 RestartPreventExitStatus=78
 
 [Install]

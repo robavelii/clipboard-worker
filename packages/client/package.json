@@ -7,7 +7,9 @@
     ".": "./src/index.ts",
     "./link": "./src/link.ts",
     "./vault": "./src/vault.ts",
-    "./invite": "./src/invite.ts"
+    "./invite": "./src/invite.ts",
+    "./ring": "./src/ring.ts",
+    "./rekey": "./src/rekey.ts"
   },
   "dependencies": {
     "@clipsync/protocol": "*",

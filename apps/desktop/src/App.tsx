@@ -1,9 +1,10 @@
 /**
  * The tray panel.
  *
- * Needs no setup of its own: it takes the vault key from the agent's config
+ * Needs no setup of its own: it takes the vault keys from the agent's config
  * and enrols itself as a device on first run, so if `clipsync` works on this
- * machine the panel does too. Everything below that is the same client, the
+ * machine the panel does too. It registers a device key of its own, so a
+ * re-key reaches it whether or not the agent is running. Everything below that is the same client, the
  * same crypto and the same hooks the web UI uses.
  */
 
@@ -13,8 +14,22 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
-import type { Platform } from "@clipsync/protocol";
-import { vaultKeysFrom, type VaultKeys } from "@clipsync/crypto";
+import type { Platform, SyncEvent } from "@clipsync/protocol";
+import {
+  exportDeviceKeypair,
+  generateDeviceKeypair,
+  importDeviceKeypair,
+  type DeviceKeypair,
+  type StoredDeviceKeypair,
+} from "@clipsync/crypto";
+import { NoSealedKeyError, refreshVaultRing, registerDeviceKey } from "@clipsync/client/rekey";
+import {
+  ringKeysFrom,
+  ringOf,
+  withKey,
+  type RingKeys,
+  type VaultRing,
+} from "@clipsync/client/ring";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 /** Records to a file the packaged app can write; see log_debug in lib.rs. */
@@ -46,6 +61,16 @@ interface TrayConfig {
   deviceId: string;
   deviceName: string;
   token: string;
+  /** Its keypair; a re-key seals the new vault key to the public half. */
+  deviceKey?: StoredDeviceKeypair;
+  /** Vault keys the panel fetched itself after a re-key, by epoch. */
+  vaultKeys?: Record<string, string>;
+  /** Anything else in tray.json (the shortcut) is kept as it is. */
+  [other: string]: unknown;
+}
+
+async function saveTray(tray: TrayConfig): Promise<void> {
+  await invoke("save_tray_config", { json: JSON.stringify(tray, null, 2) });
 }
 
 function currentPlatform(): Platform {
@@ -82,7 +107,7 @@ async function enrolTray(agent: AgentConfig): Promise<TrayConfig> {
     deviceName,
     token: creds.token,
   };
-  await invoke("save_tray_config", { json: JSON.stringify(tray, null, 2) });
+  await saveTray(tray);
   return tray;
 }
 
@@ -102,7 +127,56 @@ interface AgentConfig {
   token: string;
   kdfSalt: string;
   deviceName: string;
+  /** The current key. Older agents write only this. */
   vaultKey?: string;
+  vaultKeys?: Record<string, string>;
+  keyEpoch?: number;
+}
+
+/** Every key the agent and the panel hold between them. */
+function ringFrom(agent: AgentConfig, tray: TrayConfig): VaultRing | null {
+  let ring: VaultRing | null = agent.vaultKeys && Object.keys(agent.vaultKeys).length
+    ? { current: agent.keyEpoch ?? 0, keys: agent.vaultKeys }
+    : agent.vaultKey
+      ? ringOf(agent.vaultKey, agent.keyEpoch ?? 0)
+      : null;
+  if (!ring) return null;
+  for (const [epoch, key] of Object.entries(tray.vaultKeys ?? {})) {
+    ring = withKey(ring, Number(epoch), key);
+  }
+  return ring;
+}
+
+/** The panel's keypair, created and saved on first use. */
+async function trayKeypair(tray: TrayConfig): Promise<{ tray: TrayConfig; keypair: DeviceKeypair }> {
+  if (tray.deviceKey) {
+    return { tray, keypair: await importDeviceKeypair(tray.deviceKey) };
+  }
+  const keypair = await generateDeviceKeypair(true);
+  const next = { ...tray, deviceKey: await exportDeviceKeypair(keypair) };
+  await saveTray(next);
+  return { tray: next, keypair };
+}
+
+/**
+ * Pick up a re-key through the panel's own sealed copy, saving it to
+ * tray.json. The agent's config catches up whenever the agent next runs.
+ */
+async function refreshTrayRing(
+  api: ApiClient,
+  tray: TrayConfig,
+  keypair: DeviceKeypair,
+  ring: VaultRing,
+): Promise<{ tray: TrayConfig; ring: VaultRing }> {
+  const next = await refreshVaultRing(api, keypair, tray.deviceId, ring);
+  if (next === ring) return { tray, ring };
+  const saved = { ...tray, vaultKeys: { ...tray.vaultKeys, [String(next.current)]: next.keys[String(next.current)]! } };
+  await saveTray(saved);
+  return { tray: saved, ring: next };
+}
+
+function strandedMessage(): string {
+  return "The vault was re-keyed without a copy for this panel. Delete ~/.config/clipsync/tray.json and reopen to enrol it again.";
 }
 
 /**
@@ -116,7 +190,14 @@ function revokedMessage(deviceName: string): string {
 type Boot =
   | { state: "loading" }
   | { state: "error"; message: string }
-  | { state: "ready"; api: ApiClient; keys: VaultKeys; tray: TrayConfig };
+  | {
+      state: "ready";
+      api: ApiClient;
+      ring: VaultRing;
+      kdfSalt: string;
+      keypair: DeviceKeypair;
+      tray: TrayConfig;
+    };
 
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
@@ -130,13 +211,13 @@ export function App() {
         ) as AgentConfig;
         debugLog("boot: config ok", { baseUrl: config.baseUrl, device: config.deviceName });
 
-        if (!config.vaultKey) {
+        let tray = await trayConfigFor(config);
+        let ring = ringFrom(config, tray);
+        if (!ring) {
           throw new Error(
             "This machine's agent has no vault key yet. Run `clipsync status` once, then reopen.",
           );
         }
-
-        const tray = await trayConfigFor(config);
         const api = new ApiClient(tray.baseUrl, tray.token, tauriFetch);
 
         // Prove the network path before rendering a list that would otherwise
@@ -153,10 +234,22 @@ export function App() {
         }
         debugLog("boot: worker reachable", { device: tray.deviceId });
 
+        const ensured = await trayKeypair(tray);
+        tray = ensured.tray;
+        await registerDeviceKey(api, ensured.keypair.publicKey);
+        try {
+          ({ tray, ring } = await refreshTrayRing(api, tray, ensured.keypair, ring));
+        } catch (err) {
+          if (err instanceof NoSealedKeyError) throw new Error(strandedMessage());
+          throw err;
+        }
+
         setBoot({
           state: "ready",
           api,
-          keys: await vaultKeysFrom(config.vaultKey, config.kdfSalt),
+          ring,
+          kdfSalt: config.kdfSalt,
+          keypair: ensured.keypair,
           tray,
         });
         debugLog("boot: ready");
@@ -187,21 +280,83 @@ export function App() {
       </div>
     );
   }
-  return <Panel api={boot.api} keys={boot.keys} tray={boot.tray} />;
+  return <Keyed boot={boot} onStranded={() => setBoot({ state: "error", message: strandedMessage() })} />;
+}
+
+/** Holds the ring, and moves it on when the vault is re-keyed. */
+function Keyed({
+  boot,
+  onStranded,
+}: {
+  boot: Extract<Boot, { state: "ready" }>;
+  onStranded: () => void;
+}) {
+  const [ring, setRing] = useState(boot.ring);
+  const [keys, setKeys] = useState<RingKeys | null>(null);
+  const held = useRef({ ring: boot.ring, tray: boot.tray });
+  const refreshing = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void ringKeysFrom(ring, boot.kdfSalt).then((next) => live && setKeys(next));
+    return () => {
+      live = false;
+    };
+  }, [ring, boot.kdfSalt]);
+
+  const refresh = useCallback((): Promise<void> => {
+    refreshing.current ??= (async () => {
+      try {
+        const next = await refreshTrayRing(boot.api, held.current.tray, boot.keypair, held.current.ring);
+        if (next.ring !== held.current.ring) {
+          held.current = next;
+          setRing(next.ring);
+          debugLog("panel: vault re-keyed", { epoch: next.ring.current });
+        }
+      } catch (err) {
+        if (err instanceof NoSealedKeyError) onStranded();
+        else debugLog("panel: key refresh failed", describe(err));
+      } finally {
+        refreshing.current = null;
+      }
+    })();
+    return refreshing.current;
+  }, [boot, onStranded]);
+
+  if (!keys) return <div className="panel centered muted">Loading…</div>;
+  return <Panel api={boot.api} keys={keys} tray={boot.tray} onRefreshRing={refresh} />;
 }
 
 function Panel({
   api,
   keys,
   tray,
+  onRefreshRing,
 }: {
   api: ApiClient;
-  keys: VaultKeys;
+  keys: RingKeys;
   tray: TrayConfig;
+  onRefreshRing: () => Promise<void>;
 }) {
   const { clips, loading, error, applyEvent, remove, togglePin, reload } =
     useClips(api, keys);
-  const { status } = useSync(api, applyEvent);
+  const onEvent = useCallback(
+    (event: SyncEvent) => {
+      if (event.type === "vault.rotated") {
+        void onRefreshRing();
+        return;
+      }
+      if (
+        (event.type === "clip.created" || event.type === "clip.bumped") &&
+        event.clip.keyEpoch > keys.current
+      ) {
+        void onRefreshRing();
+      }
+      applyEvent(event);
+    },
+    [applyEvent, keys, onRefreshRing],
+  );
+  const { status } = useSync(api, onEvent);
 
   // Live events keep the list current while the socket is up. Refetch on
   // open and on reconnect as well, to cover whatever arrived while the
@@ -330,7 +485,7 @@ function Panel({
               disabled={clip.text === null}
               title={clip.text ?? undefined}
             >
-              {clip.text ?? "Encrypted with a different passphrase"}
+              {clip.text ?? "Cannot decrypt on this device"}
             </button>
             <div className="actions">
               {isLong(clip.text) && (

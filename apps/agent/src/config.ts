@@ -2,8 +2,21 @@
 
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { ApiClient } from "@clipsync/client";
+import { registerDeviceKey, refreshVaultRing } from "@clipsync/client/rekey";
+import {
+  currentKey,
+  ringOf,
+  withKey,
+  type VaultRing,
+} from "@clipsync/client/ring";
 import { unlockVault } from "@clipsync/client/vault";
-import { vaultKeysFrom, type VaultKeys } from "@clipsync/crypto";
+import {
+  exportDeviceKeypair,
+  generateDeviceKeypair,
+  importDeviceKeypair,
+  type DeviceKeypair,
+  type StoredDeviceKeypair,
+} from "@clipsync/crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -15,7 +28,7 @@ export interface AgentConfig {
   token: string;
   kdfSalt: string;
   /**
-   * The vault key, not the passphrase.
+   * The current vault key, not the passphrase.
    *
    * Stored so the agent can start unattended. End-to-end encryption defends
    * against a compromise of the *server*; a key in a 0600 file on a machine
@@ -28,11 +41,24 @@ export interface AgentConfig {
    *
    * Set CLIPSYNC_PASSPHRASE instead to keep nothing on disk; the agent then
    * unwraps the key from the server at startup.
+   *
+   * Kept equal to the current entry of `vaultKeys`, which older tray builds
+   * read.
    */
   vaultKey?: string;
+  /** Every vault key this device holds, by epoch. See @clipsync/client/ring. */
+  vaultKeys?: Record<string, string>;
+  /** The epoch new clips are written under. */
+  keyEpoch?: number;
+  /**
+   * This device's long-term keypair; a re-key seals the new vault key to its
+   * public half. Not kept in CLIPSYNC_PASSPHRASE mode, which stores no key
+   * material and picks up a re-key through the passphrase instead.
+   */
+  deviceKey?: StoredDeviceKeypair;
   /**
    * Written by versions that stored the passphrase instead of the vault key.
-   * {@link resolveVaultKeys} upgrades such a config in place on first run and
+   * {@link resolveVaultRing} upgrades such a config in place on first run and
    * clears this field, so an agent that is already running keeps working
    * across the upgrade without anyone re-enrolling.
    */
@@ -80,51 +106,127 @@ export async function clearConfig(): Promise<void> {
   await rm(configPath(), { force: true });
 }
 
-/**
- * Resolve the keys that encrypt clips.
- *
- * Prefers the stored vault key. Falls back to CLIPSYNC_PASSPHRASE, which costs
- * one PBKDF2 at startup and a round trip to fetch the wrapped key.
- */
-export async function resolveVaultKeys(
-  config: AgentConfig,
-  api: ApiClient,
-): Promise<VaultKeys> {
-  if (config.vaultKey) {
-    return vaultKeysFrom(config.vaultKey, config.kdfSalt);
+/** The ring stored in this config, or null in CLIPSYNC_PASSPHRASE mode. */
+export function storedRing(config: AgentConfig): VaultRing | null {
+  if (config.vaultKeys && Object.keys(config.vaultKeys).length) {
+    return { current: config.keyEpoch ?? 0, keys: config.vaultKeys };
   }
-  const vaultKey = await resolveVaultKey(config, api);
-  return vaultKeysFrom(vaultKey, config.kdfSalt);
+  if (config.vaultKey) return ringOf(config.vaultKey, config.keyEpoch ?? 0);
+  return null;
+}
+
+/** `config` holding `ring`, with `vaultKey` kept as the current key. */
+export function withRing(config: AgentConfig, ring: VaultRing): AgentConfig {
+  return {
+    ...config,
+    vaultKeys: ring.keys,
+    keyEpoch: ring.current,
+    vaultKey: currentKey(ring),
+  };
+}
+
+function passphraseFor(config: AgentConfig): string | undefined {
+  return process.env.CLIPSYNC_PASSPHRASE ?? config.passphrase;
+}
+
+/** The current key only: the passphrase unwraps nothing older. */
+async function ringFromPassphrase(
+  api: ApiClient,
+  passphrase: string,
+): Promise<VaultRing> {
+  const { kdfSalt, wrappedVaultKey, keyEpoch } = await api.vaultKey();
+  const { vaultKey } = await unlockVault(api, passphrase, kdfSalt, wrappedVaultKey);
+  return ringOf(vaultKey, keyEpoch);
 }
 
 /**
- * The raw vault key, needed to re-wrap it under a new passphrase.
+ * The vault keys this device holds.
  *
- * Also the upgrade path: a config written before the vault key existed holds
- * a passphrase, which is enough to derive or unwrap the key. When that
- * happens the config is rewritten to hold the key instead, so the cost is
- * paid exactly once.
+ * Prefers the stored ring. Falls back to CLIPSYNC_PASSPHRASE, which costs one
+ * PBKDF2 at startup and a round trip to fetch the wrapped key. That is also
+ * the upgrade path for a config written before the vault key existed: it
+ * holds a passphrase, and is rewritten to hold the key instead, once.
  */
-export async function resolveVaultKey(
+export async function resolveVaultRing(
   config: AgentConfig,
   api: ApiClient,
-): Promise<string> {
-  if (config.vaultKey) return config.vaultKey;
+): Promise<VaultRing> {
+  const stored = storedRing(config);
+  if (stored) return stored;
 
-  const passphrase = process.env.CLIPSYNC_PASSPHRASE ?? config.passphrase;
+  const passphrase = passphraseFor(config);
   if (!passphrase) {
     throw new Error(
       "no vault key available -- set CLIPSYNC_PASSPHRASE or re-run `clipsync login`",
     );
   }
-
-  const { kdfSalt, wrappedVaultKey } = await api.vaultKey();
-  const { vaultKey } = await unlockVault(api, passphrase, kdfSalt, wrappedVaultKey);
+  const ring = await ringFromPassphrase(api, passphrase);
 
   if (config.passphrase) {
     const { passphrase: _dropped, ...rest } = config;
-    await saveConfig({ ...rest, vaultKey });
+    await saveConfig(withRing(rest, ring));
   }
+  return ring;
+}
 
-  return vaultKey;
+/**
+ * This device's keypair, created and saved on first use, and registered with
+ * the Worker every time (it is idempotent, and a Worker older than device
+ * keys just ignores it). null in CLIPSYNC_PASSPHRASE mode.
+ */
+export async function ensureDeviceKey(
+  config: AgentConfig,
+  api: ApiClient,
+): Promise<{ config: AgentConfig; keypair: DeviceKeypair | null }> {
+  if (!storedRing(config)) return { config, keypair: null };
+
+  let next = config;
+  if (!config.deviceKey) {
+    next = {
+      ...config,
+      deviceKey: await exportDeviceKeypair(await generateDeviceKeypair(true)),
+    };
+    await saveConfig(next);
+  }
+  await registerDeviceKey(api, next.deviceKey!.publicKey);
+  return { config: next, keypair: await importDeviceKeypair(next.deviceKey!) };
+}
+
+/**
+ * Pick up a re-key this device has not seen yet -- its sealed copy, or in
+ * CLIPSYNC_PASSPHRASE mode the passphrase -- saving the ring when it is
+ * stored. Throws NoSealedKeyError when the re-key left this device out.
+ */
+export async function refreshRing(
+  config: AgentConfig,
+  api: ApiClient,
+  keypair: DeviceKeypair | null,
+  ring: VaultRing,
+): Promise<{ config: AgentConfig; ring: VaultRing }> {
+  if (!storedRing(config)) {
+    const fresh = await ringFromPassphrase(api, passphraseFor(config) ?? "");
+    return { config, ring: withKey(ring, fresh.current, currentKey(fresh)) };
+  }
+  const next = await refreshVaultRing(api, keypair, config.deviceId, ring);
+  if (next === ring) return { config, ring };
+  const updated = withRing(config, next);
+  await saveConfig(updated);
+  return { config: updated, ring: next };
+}
+
+/**
+ * The ring as it stands on the server now: registers this device's key and
+ * picks up any re-key it missed. For one-shot commands, which have no event
+ * stream to hear about a re-key from -- and for anything that hands the
+ * current key on, which must not hand on one the vault has moved past.
+ */
+export async function freshRing(
+  config: AgentConfig,
+  api: ApiClient,
+): Promise<{ config: AgentConfig; ring: VaultRing }> {
+  const ring = await resolveVaultRing(config, api);
+  // Unwrapped from the passphrase just now: already the newest.
+  if (!storedRing(config)) return { config, ring };
+  const ensured = await ensureDeviceKey(config, api);
+  return refreshRing(ensured.config, api, ensured.keypair, ring);
 }

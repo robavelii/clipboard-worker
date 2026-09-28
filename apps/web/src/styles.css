@@ -124,7 +124,8 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
 .small { font-size: 12px; }
 .error { color: var(--danger); margin: 0; font-size: 13px; }
 
-.paircode {
+.paircode,
+.notice {
   background: var(--panel);
   border: 1px dashed var(--accent);
   border-radius: 8px;
@@ -149,7 +150,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
 .linkform { display: flex; gap: 8px; }
 .linkform input { flex: 1; }
-.paircode p { margin: 0 0 8px; }
+.paircode p,
+.notice p { margin: 0 0 8px; }
+.notice { border-color: var(--danger); margin-bottom: 12px; }
 
 .sharepreview {
   margin: 0;

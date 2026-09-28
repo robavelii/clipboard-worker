@@ -13,17 +13,22 @@
  */
 
 import { useState, type FormEvent } from "react";
-import type { ApiClient } from "@clipsync/client";
-import { dedupeHash, encryptText, type VaultKeys } from "@clipsync/crypto";
+import { STALE_EPOCH_ERROR } from "@clipsync/protocol";
+import { ApiRequestError, type ApiClient } from "@clipsync/client";
+import { currentKeys, type RingKeys } from "@clipsync/client/ring";
+import { dedupeHash, encryptText } from "@clipsync/crypto";
 
 export function Compose({
   api,
   keys,
   onSent,
+  onStale,
 }: {
   api: ApiClient;
-  keys: VaultKeys;
+  keys: RingKeys;
   onSent: () => void;
+  /** The vault was re-keyed and this tab missed it: fetch the new key. */
+  onStale: () => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,11 +43,13 @@ export function Compose({
     setBusy(true);
     setError(null);
     try {
+      const current = currentKeys(keys);
       await api.createClip({
         type: "text",
-        envelope: await encryptText(keys, payload),
-        contentHash: await dedupeHash(keys, payload),
+        envelope: await encryptText(current, payload),
+        contentHash: await dedupeHash(current, payload),
         size: new TextEncoder().encode(payload).length,
+        keyEpoch: keys.current,
       });
       setText("");
       setJustSent(true);
@@ -51,7 +58,13 @@ export function Compose({
       // so refresh rather than wait for a push that will never arrive.
       onSent();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
+        // The text stays in the box; once the new key is in, Send works.
+        await onStale();
+        setError("The vault was re-keyed — press Send again.");
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setBusy(false);
     }

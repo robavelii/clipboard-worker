@@ -480,3 +480,61 @@ nothing in production arrives without one.
 Invite proofs are also hashed once more at rest. The claimant presents
 `SHA-256(S)`, and the table used to store exactly that, so anyone who could
 read it during an invite's five minutes could claim a device token.
+
+## 22. Re-keying: epochs, device keys, and re-encryption in place
+
+Revoking a device stops its token, but it keeps the vault key, and the vault
+key opens every clip. A re-key replaces the vault key; the questions were how
+the new key reaches the devices that should keep it, and what happens to
+history.
+
+**Epochs.** The account has a `key_epoch`, and every clip records the epoch
+it was written under. Devices hold a ring -- every key they have been given,
+by epoch -- decrypt each clip with the key it names, and write only under the
+current one. Writes name their epoch and the server refuses an old one with
+409 `stale_epoch`: without that, a device that missed a re-key would keep
+writing clips the revoked device can read.
+
+**Device keys, not the passphrase.** Devices joined by link or invite never
+learn the passphrase (§11), so a new passphrase-wrapped key is no use to them.
+Each device registers a P-256 public key; the re-keying device seals the new
+key to every active device's key (`d1.`, ECDH to an ephemeral key, device id
+and epoch bound into the HKDF info so the server cannot swap copies between
+devices or epochs). Revoked devices are not offered one. The alternative --
+re-enrolling every device by QR after each revoke -- is the kind of chore that
+means nobody revokes anything.
+
+**One batch for the switch.** The epoch bump (guarded on `from_epoch` and the
+passphrase proof), the new wrapped key and the sealed copies land in one D1
+batch. A device can never see the new epoch without its copy, and two racing
+re-keys cannot both win.
+
+**History re-encrypted in place, by clients.** The server cannot re-encrypt;
+it holds no key. The re-keying device pages through clips under older epochs
+(`?epochBelow=`) and writes each back re-encrypted, each write conditional on
+the clip still being at the epoch it was read at, so passes are resumable
+(`clipsync rekey --finish`) and safe against a second device doing the same.
+The dedupe tag is rewritten too, since it is keyed per epoch. The alternative,
+keeping old clips under old keys forever, would leave the revoked device able
+to read all of history from any copy of the database -- the thing a re-key is
+for.
+
+**The browser's key is non-extractable.** It lives in IndexedDB as a
+`CryptoKey` the page can use but not export, so script injection could ask it
+to open a sealed copy but cannot walk off with the key itself. The agent and
+tray keep theirs in their 0600 config files, next to the vault keys they
+already hold.
+
+**Traps.**
+- A passphrase change reads the wrapped key, re-wraps it and writes it back.
+  A re-key in between keeps the same proof, so the write succeeded and put the
+  old key back behind the passphrase. `PUT /api/vault/key` now takes the epoch
+  it re-wrapped and lands only if the vault is still there.
+- A device that lost its keypair (cleared IndexedDB, rewritten config)
+  registers a new one, and the copy sealed to the old one fails to open. That
+  is the same as having no copy: the client reports it as stranded.
+- Dedupe hashes are per epoch, so the agent's echo guard must be re-primed
+  under the new key when it switches, or it pushes the clipboard back as new.
+- A device that never registered a key (one that has not run since device
+  keys existed) is left out of a re-key and told so; the agent then exits 78
+  like a revoked one, and a browser falls back to the passphrase.
