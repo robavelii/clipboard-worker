@@ -24,7 +24,21 @@ import {
 import { createLinkKeypair } from "@clipsync/crypto";
 import { encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
 import { authHashOf, openVault, wrapVaultKey } from "@clipsync/crypto";
-import { PING_FRAME, MAX_ENVELOPE_BYTES, REVOKED_CLOSE_CODE, type ServerMessage } from "@clipsync/protocol";
+import { generateDeviceKeypair, openVaultKeyForDevice } from "@clipsync/crypto";
+import {
+  reencryptHistory,
+  refreshVaultRing,
+  registerDeviceKey,
+  rekeyVault,
+} from "@clipsync/client/rekey";
+import { currentKey, decryptClip, ringKeysFrom, ringOf, type VaultRing } from "@clipsync/client/ring";
+import {
+  PING_FRAME,
+  MAX_ENVELOPE_BYTES,
+  REVOKED_CLOSE_CODE,
+  STALE_EPOCH_ERROR,
+  type ServerMessage,
+} from "@clipsync/protocol";
 
 const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
 const ADMIN = process.env.CLIPSYNC_ADMIN_SECRET ?? "local-dev-admin-secret";
@@ -58,6 +72,11 @@ await expectStatus("wrong admin secret is rejected",
   () => new ApiClient(BASE).bootstrap("wrong-secret", "pc", "linux"), 403);
 
 const pc = await new ApiClient(BASE).bootstrap(ADMIN, "test-pc", "linux");
+/**
+ * Each run re-keys the vault, so the epoch it starts at depends on how many
+ * runs came before. Every write names it, as a real client's would.
+ */
+const EPOCH = pc.keyEpoch ?? 0;
 check("bootstrap returns credentials", Boolean(pc.token && pc.userId && pc.kdfSalt));
 
 const pcApi = new ApiClient(BASE, pc.token);
@@ -90,7 +109,7 @@ check("a wrong passphrase cannot unwrap the vault key", wrongRejected);
 console.log("\n--- clips ---");
 const keys = await vaultKeysFrom(vaultKey, pc.kdfSalt);
 const TEXT = `docker compose up -d # ${RUN}`;
-const created = await pcApi.createClip({
+const created = await pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: await encryptText(keys, TEXT),
   contentHash: await dedupeHash(keys, TEXT), size: Buffer.byteLength(TEXT),
 });
@@ -104,14 +123,14 @@ check("stored payload is ciphertext",
 check("clip decrypts to the original",
   (await decryptText(keys, listed.clips[0]!.envelope)) === TEXT);
 
-const again = await pcApi.createClip({
+const again = await pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: await encryptText(keys, TEXT),
   contentHash: await dedupeHash(keys, TEXT), size: Buffer.byteLength(TEXT),
 });
 check("repeat of newest clip is deduped", again.deduped && again.id === created.id);
 
 const other = `git reset --soft HEAD~1 # ${RUN}`;
-const otherClip = await pcApi.createClip({
+const otherClip = await pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: await encryptText(keys, other),
   contentHash: await dedupeHash(keys, other), size: Buffer.byteLength(other),
 });
@@ -119,7 +138,7 @@ check("different content is not deduped", !otherClip.deduped);
 
 /** Re-send existing plaintext, as `clipsync copy` effectively does. */
 async function recopy(text: string) {
-  return pcApi.createClip({
+  return pcApi.createClip({ keyEpoch: EPOCH,
     type: "text", envelope: await encryptText(keys, text),
     contentHash: await dedupeHash(keys, text), size: Buffer.byteLength(text),
   });
@@ -165,7 +184,7 @@ await pcApi.pinClip(otherClip.id, false);
 // Put TEXT back on top so the checks that follow still find it newest.
 await recopy(TEXT);
 
-await expectStatus("oversized envelope is refused", () => pcApi.createClip({
+await expectStatus("oversized envelope is refused", () => pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: "v1.aaaa." + "A".repeat(MAX_ENVELOPE_BYTES),
   contentHash: "x", size: 1,
 }), 413);
@@ -219,7 +238,7 @@ await new Promise((r) => setTimeout(r, 300));
 check("server sends a ready frame", received[0]?.type === "ready");
 
 const SYNCED = `npm install hono # ${RUN}`;
-await pcApi.createClip({
+await pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: await encryptText(keys, SYNCED),
   contentHash: await dedupeHash(keys, SYNCED), size: Buffer.byteLength(SYNCED),
 });
@@ -433,7 +452,7 @@ check("the device is told it was revoked before the close",
   received.some((m) => m.type === "revoked"));
 
 const AFTER_REVOKE = `clip made after revocation # ${RUN}`;
-await pcApi.createClip({
+await pcApi.createClip({ keyEpoch: EPOCH,
   type: "text", envelope: await encryptText(keys, AFTER_REVOKE),
   contentHash: await dedupeHash(keys, AFTER_REVOKE), size: Buffer.byteLength(AFTER_REVOKE),
 });
@@ -442,5 +461,116 @@ check("a revoked device receives no further clips",
   !received.some((m) => m.type === "clip.created" || m.type === "clip.bumped"));
 
 socket.close();
+
+console.log("\n--- re-key ---");
+
+// The phone (invite) and the linked device register device keys; the pc,
+// which runs the re-key, does not, so it is the one reported as left out.
+// Test devices are revoked at the end, so runs do not pile up sealed copies.
+const phoneDevice = await generateDeviceKeypair(false);
+const linkedDevice = await generateDeviceKeypair(false);
+check("a device registers its public key",
+  await registerDeviceKey(phoneApi, phoneDevice.publicKey));
+await registerDeviceKey(linkedApi, linkedDevice.publicKey);
+
+const phoneSocket = new WebSocket(await phoneApi.syncUrl());
+const phoneReceived: ServerMessage[] = [];
+phoneSocket.addEventListener("message", (e) => {
+  phoneReceived.push(JSON.parse(String(e.data)) as ServerMessage);
+});
+await waitFor(() => phoneReceived.some((m) => m.type === "ready"));
+
+const BEFORE_REKEY = `written before the re-key # ${RUN}`;
+const beforeRekey = await pcApi.createClip({ keyEpoch: EPOCH,
+  type: "text", envelope: await encryptText(keys, BEFORE_REKEY),
+  contentHash: await dedupeHash(keys, BEFORE_REKEY), size: Buffer.byteLength(BEFORE_REKEY),
+});
+
+let storedFirst: VaultRing | null = null;
+const rekeyed = await rekeyVault(pcApi, pc.kdfSalt, PASS, ringOf(vaultKey, EPOCH), {
+  onRotated: (ring) => { storedFirst = ring; },
+});
+const NEXT = EPOCH + 1;
+const newKey = currentKey(rekeyed.ring);
+check("re-keying moves the vault to the next epoch", rekeyed.epoch === NEXT);
+check("the new key is handed over before history is re-encrypted",
+  (storedFirst as VaultRing | null)?.current === NEXT);
+check("the new key is a different key", newKey !== vaultKey);
+check("a device without a device key is reported as left out",
+  rekeyed.unsealed.some((d) => d.id === pc.deviceId));
+check("devices with a device key are not",
+  !rekeyed.unsealed.some((d) =>
+    d.id === phone.credentials.deviceId || d.id === linked.credentials.deviceId));
+check("the revoked device is not offered the new key",
+  !rekeyed.unsealed.some((d) => d.id === laptop.deviceId));
+check("connected devices are told about the re-key",
+  await waitFor(() => phoneReceived.some((m) => m.type === "vault.rotated" && m.epoch === NEXT)));
+
+const phoneRing = await refreshVaultRing(
+  phoneApi, phoneDevice, phone.credentials.deviceId, ringOf(phone.vaultKey, EPOCH));
+check("a device opens its sealed copy of the new key",
+  phoneRing.current === NEXT && currentKey(phoneRing) === newKey);
+check("and keeps the old key for anything not yet moved",
+  phoneRing.keys[String(EPOCH)] === vaultKey);
+
+const linkedSealed = (await linkedApi.sealedVaultKey()).sealed!;
+let crossRefused = false;
+try {
+  await openVaultKeyForDevice(phoneDevice, phone.credentials.deviceId, NEXT, linkedSealed);
+} catch { crossRefused = true; }
+check("one device's sealed copy does not open for another", crossRefused);
+
+const newKeys = await ringKeysFrom(rekeyed.ring, pc.kdfSalt);
+const moved = (await pcApi.getClip(beforeRekey.id));
+check("history is re-encrypted under the new key", moved.keyEpoch === NEXT);
+check("and still reads the same",
+  (await decryptClip(newKeys, moved).catch(() => null)) === BEFORE_REKEY);
+check("the old key no longer opens it",
+  (await decryptText(keys, moved.envelope).catch(() => null)) === null);
+
+const again2 = await reencryptHistory(pcApi, rekeyed.ring, pc.kdfSalt);
+check("re-encryption is safe to run again", again2.reencrypted === 0);
+
+const bumpedAfter = await pcApi.createClip({
+  keyEpoch: NEXT,
+  type: "text",
+  envelope: await encryptText(newKeys.byEpoch.get(NEXT)!, BEFORE_REKEY),
+  contentHash: await dedupeHash(newKeys.byEpoch.get(NEXT)!, BEFORE_REKEY),
+  size: Buffer.byteLength(BEFORE_REKEY),
+});
+check("dedupe still recognises re-encrypted history",
+  bumpedAfter.deduped && bumpedAfter.id === beforeRekey.id);
+
+const AFTER_REKEY = `written after the re-key # ${RUN}`;
+const afterRekey = await pcApi.createClip({
+  keyEpoch: NEXT,
+  type: "text",
+  envelope: await encryptText(newKeys.byEpoch.get(NEXT)!, AFTER_REKEY),
+  contentHash: await dedupeHash(newKeys.byEpoch.get(NEXT)!, AFTER_REKEY),
+  size: Buffer.byteLength(AFTER_REKEY),
+});
+check("the revoked device's key opens nothing written since",
+  (await decryptText(laptopKeys, (await pcApi.getClip(afterRekey.id)).envelope)
+    .catch(() => null)) === null);
+
+let staleCode = "";
+try {
+  await pcApi.createClip({
+    keyEpoch: EPOCH,
+    type: "text", envelope: await encryptText(keys, `stale # ${RUN}`),
+    contentHash: await dedupeHash(keys, `stale # ${RUN}`), size: 8,
+  });
+} catch (e) { staleCode = e instanceof ApiRequestError ? e.code : String(e); }
+check("a write under the old key is refused as stale", staleCode === STALE_EPOCH_ERROR,
+  `got ${staleCode}`);
+
+check("the passphrase unlocks the new key",
+  (await unlockVault(pcApi, PASS, pc.kdfSalt, (await pcApi.vaultKey()).wrappedVaultKey))
+    .vaultKey === newKey);
+
+phoneSocket.close();
+await pcApi.revokeDevice(phone.credentials.deviceId);
+await pcApi.revokeDevice(linked.credentials.deviceId);
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
