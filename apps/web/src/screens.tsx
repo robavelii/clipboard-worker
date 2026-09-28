@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
 import type { Credentials } from "@clipsync/protocol";
+import type { VaultRing } from "@clipsync/client/ring";
 import { saveCredentials, unlockWithPassphrase } from "./session";
 
 export function PairScreen({ onPaired }: { onPaired: () => void }) {
@@ -104,7 +105,7 @@ export function UnlockScreen({
   onForget,
 }: {
   credentials: Credentials;
-  onUnlocked: (vaultKey: string) => void;
+  onUnlocked: (ring: VaultRing) => void;
   onForget: () => void;
 }) {
   const [passphrase, setPassphrase] = useState("");
@@ -118,13 +119,14 @@ export function UnlockScreen({
     try {
       // Deliberately slow: one PBKDF2 to unwrap the vault key, then the key
       // is cached for the tab and nothing else costs anything.
-      const vaultKey = await unlockWithPassphrase(
-        new ApiClient("", credentials.token),
-        passphrase,
-        credentials.kdfSalt,
-        credentials.wrappedVaultKey,
+      onUnlocked(
+        await unlockWithPassphrase(
+          new ApiClient("", credentials.token),
+          passphrase,
+          credentials.kdfSalt,
+          credentials.wrappedVaultKey,
+        ),
       );
-      onUnlocked(vaultKey);
     } catch {
       setError("That passphrase does not unlock this account.");
       setBusy(false);

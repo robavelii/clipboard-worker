@@ -12,7 +12,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
 import { claimInvite } from "@clipsync/client/invite";
-import { cacheVaultKey, saveCredentials } from "./session";
+import { cacheEnrolmentKey, saveCredentials } from "./session";
 
 function defaultDeviceName(): string {
   const ua = navigator.userAgent;
@@ -55,7 +55,7 @@ export function JoinScreen({
       );
 
       saveCredentials(credentials);
-      cacheVaultKey(vaultKey, stayUnlocked);
+      cacheEnrolmentKey(vaultKey, credentials.keyEpoch, stayUnlocked);
       // Drop the secret from the address bar so a screenshot or a shared
       // history entry cannot replay it.
       window.history.replaceState(null, "", "/");

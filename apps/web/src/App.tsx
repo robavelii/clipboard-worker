@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClient } from "@clipsync/client";
-import type { Device } from "@clipsync/protocol";
-import type { VaultKeys } from "@clipsync/crypto";
+import { NoSealedKeyError } from "@clipsync/client/rekey";
 import {
-  cachedVaultKey,
+  currentKey,
+  ringKeysFrom,
+  type RingKeys,
+  type VaultRing,
+} from "@clipsync/client/ring";
+import type { Device, SyncEvent } from "@clipsync/protocol";
+import {
+  cachedRing,
   clearSession,
   forgetVaultKey,
-  keysFor,
   loadCredentials,
+  syncRing,
 } from "./session";
 import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
@@ -18,7 +24,11 @@ import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 export function App() {
   const [creds, setCreds] = useState(loadCredentials);
-  const [keys, setKeys] = useState<VaultKeys | null>(null);
+  const [ring, setRing] = useState<VaultRing | null>(null);
+  const [keys, setKeys] = useState<RingKeys | null>(null);
+  /** A re-key left this device out: only the passphrase gets it back in. */
+  const [stranded, setStranded] = useState(false);
+  const [needsPassphrase, setNeedsPassphrase] = useState(false);
   const [link, setLink] = useState(readLinkFromLocation);
   const [invite, setInvite] = useState(readInviteFromLocation);
   const [shared, setShared] = useState(readSharedText);
@@ -39,15 +49,60 @@ export function App() {
     setLink(null);
   }, []);
 
-  // Restore from the tab's cached vault key on reload. No PBKDF2 needed --
+  // Restore from the tab's cached vault keys on reload. No PBKDF2 needed --
   // the expensive step only happens at unlock.
   useEffect(() => {
-    const vaultKey = cachedVaultKey();
-    if (!creds || !vaultKey || keys) return;
-    void keysFor(vaultKey, creds.kdfSalt)
-      .then(setKeys)
-      .catch(() => forgetVaultKey());
-  }, [creds, keys]);
+    if (!creds || ring || needsPassphrase) return;
+    const cached = cachedRing();
+    if (cached) setRing(cached);
+  }, [creds, ring, needsPassphrase]);
+
+  // HKDF only. Not cleared while the next set derives, so picking up a
+  // re-key does not flash the unlock screen.
+  useEffect(() => {
+    if (!creds || !ring) {
+      setKeys(null);
+      return;
+    }
+    let live = true;
+    ringKeysFrom(ring, creds.kdfSalt)
+      .then((next) => live && setKeys(next))
+      .catch(() => {
+        forgetVaultKey();
+        setRing(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [creds, ring]);
+
+  // Pick up a re-key: on unlock (it may have happened while this tab was
+  // closed), on the vault.rotated event, and on a write refused as stale.
+  // Concurrent triggers share one fetch.
+  const ringRef = useRef(ring);
+  ringRef.current = ring;
+  const refreshing = useRef<Promise<void> | null>(null);
+  const refreshRing = useCallback((): Promise<void> => {
+    const held = ringRef.current;
+    if (!creds || !held) return Promise.resolve();
+    refreshing.current ??= (async () => {
+      try {
+        const next = await syncRing(new ApiClient("", creds.token), creds.deviceId, held);
+        if (next !== held) setRing(next);
+      } catch (err) {
+        if (err instanceof NoSealedKeyError) setStranded(true);
+        // Anything else: the next trigger tries again.
+      } finally {
+        refreshing.current = null;
+      }
+    })();
+    return refreshing.current;
+  }, [creds]);
+
+  const unlocked = ring !== null;
+  useEffect(() => {
+    if (unlocked) void refreshRing();
+  }, [unlocked, refreshRing]);
 
   // A scanned invite outranks everything: it is how an unenrolled device
   // becomes enrolled, and it re-enrols one that was already paired.
@@ -87,33 +142,34 @@ export function App() {
 
   // An approval seals the vault key, so it waits behind the unlock screen
   // like everything else.
-  if (link && keys) {
-    const vaultKey = cachedVaultKey();
-    if (vaultKey) {
-      return (
-        <Centered>
-          <LinkApproval
-            linkId={link.linkId}
-            publicKey={link.publicKey}
-            token={creds.token}
-            vaultKey={vaultKey}
-            onClose={closeLink}
-          />
-        </Centered>
-      );
-    }
+  if (link && ring && !needsPassphrase) {
+    return (
+      <Centered>
+        <LinkApproval
+          linkId={link.linkId}
+          publicKey={link.publicKey}
+          token={creds.token}
+          vaultKey={currentKey(ring)}
+          onClose={closeLink}
+        />
+      </Centered>
+    );
   }
 
-  if (!keys) {
+  if (!ring || needsPassphrase) {
     return (
       <Centered>
         <UnlockScreen
           credentials={creds}
-          onUnlocked={(vaultKey) =>
-            void keysFor(vaultKey, creds.kdfSalt).then(setKeys)
-          }
+          onUnlocked={(next) => {
+            setNeedsPassphrase(false);
+            setStranded(false);
+            setRing(next);
+          }}
           onForget={() => {
             clearSession();
+            setNeedsPassphrase(false);
+            setRing(null);
             setCreds(null);
           }}
         />
@@ -121,19 +177,24 @@ export function App() {
     );
   }
 
+  if (!keys) return null;
+
   return (
     <Workspace
       keys={keys}
       token={creds.token}
       deviceId={creds.deviceId}
+      stranded={stranded}
+      onRefreshRing={refreshRing}
+      onUnlockAgain={() => setNeedsPassphrase(true)}
       onSignOut={() => {
         clearSession();
-        setKeys(null);
+        setRing(null);
         setCreds(null);
       }}
       onLock={() => {
         forgetVaultKey();
-        setKeys(null);
+        setRing(null);
       }}
     />
   );
@@ -147,19 +208,43 @@ function Workspace({
   keys,
   token,
   deviceId,
+  stranded,
+  onRefreshRing,
+  onUnlockAgain,
   onSignOut,
   onLock,
 }: {
-  keys: VaultKeys;
+  keys: RingKeys;
   token: string;
   deviceId: string;
+  stranded: boolean;
+  onRefreshRing: () => Promise<void>;
+  onUnlockAgain: () => void;
   onSignOut: () => void;
   onLock: () => void;
 }) {
   const api = useMemo(() => new ApiClient("", token), [token]);
   const { clips, loading, error, hasMore, loadMore, applyEvent, remove, togglePin, reload } =
     useClips(api, keys);
-  const { status, connected } = useSync(api, applyEvent);
+  const onEvent = useCallback(
+    (event: SyncEvent) => {
+      if (event.type === "vault.rotated") {
+        void onRefreshRing();
+        return;
+      }
+      // Under a key this tab does not hold yet: the rotation event may have
+      // been missed. The list reloads once the key is in.
+      if (
+        (event.type === "clip.created" || event.type === "clip.bumped") &&
+        event.clip.keyEpoch > keys.current
+      ) {
+        void onRefreshRing();
+      }
+      applyEvent(event);
+    },
+    [applyEvent, keys, onRefreshRing],
+  );
+  const { status, connected } = useSync(api, onEvent);
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [query, setQuery] = useState("");
@@ -256,7 +341,18 @@ function Workspace({
         </div>
       )}
 
-      <Compose api={api} keys={keys} onSent={reload} />
+      {stranded && (
+        <div className="notice">
+          <p>
+            Your vault was re-keyed, and this browser did not get the new key —
+            it had no device key registered yet. New clips will not open here
+            until you unlock with your passphrase.
+          </p>
+          <button onClick={onUnlockAgain}>Unlock with passphrase</button>
+        </div>
+      )}
+
+      <Compose api={api} keys={keys} onSent={reload} onStale={onRefreshRing} />
 
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}
@@ -310,7 +406,7 @@ function ClipRow({
   return (
     <li className={clip.pinned ? "clip pinned" : "clip"}>
       <pre className={clip.text === null ? "locked" : undefined}>
-        {clip.text ?? "Encrypted with a different passphrase"}
+        {clip.text ?? "Cannot decrypt on this device"}
       </pre>
       <div className="meta">
         <span>{origin}</span>
