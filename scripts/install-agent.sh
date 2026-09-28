@@ -68,6 +68,9 @@ Type=simple
 ExecStart=$NODE $CLI run
 Restart=on-failure
 RestartSec=5
+# The agent exits 78 when its device has been revoked. Restarting would only
+# retry a token that can never work again.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=graphical-session.target

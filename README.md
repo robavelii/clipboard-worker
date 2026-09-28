@@ -207,6 +207,8 @@ After=graphical-session.target
 ExecStart=%h/path/to/clipsync/apps/agent/dist/clipsync.mjs run
 Restart=on-failure
 RestartSec=5
+# Exit 78 means this device was revoked; restarting cannot fix that.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

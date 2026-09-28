@@ -9,11 +9,16 @@
  *   1. Events carry an `origin` device id; a device ignores its own.
  *   2. `lastHandled` records the hash of whatever content this agent last
  *      uploaded *or* applied, so the next poll recognises it and stays quiet.
+ *
+ * A third guard covers the gap between those two: a poll whose read started
+ * before a remote clip was applied carries the *old* clipboard, and must not
+ * push it -- see `applied`.
  */
 
 import {
   MAX_ENVELOPE_BYTES,
   PING_FRAME,
+  REVOKED_CLOSE_CODE,
   type ServerMessage,
 } from "@clipsync/protocol";
 import {
@@ -22,7 +27,7 @@ import {
   encryptText,
   type VaultKeys,
 } from "@clipsync/crypto";
-import { ApiClient } from "@clipsync/client";
+import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { detectClipboard, type ClipboardBackend } from "./clipboard";
 import { resolveVaultKeys, type AgentConfig } from "./config";
 
@@ -35,6 +40,12 @@ export interface DaemonOptions {
   /** Push whatever is already on the clipboard when the agent starts. */
   pushCurrent?: boolean;
   verbose?: boolean;
+  /**
+   * Called once the server has made clear this device is revoked. The daemon
+   * has already stopped; retrying would only hammer the API with a token
+   * that will never work again.
+   */
+  onRevoked?: () => void;
 }
 
 function log(...args: unknown[]): void {
@@ -48,6 +59,19 @@ export class Daemon {
 
   /** Hash of the content this agent last uploaded or applied. */
   private lastHandled: string | null = null;
+
+  /**
+   * Bumped every time a remote clip is written to the local clipboard.
+   *
+   * A poll snapshots it before reading. If it moved by the time the read
+   * returns, the read may predate the write -- it holds the clipboard as it
+   * was, and pushing that would bump the old clip back to the top of history
+   * and onto every other device's clipboard.
+   */
+  private applied = 0;
+
+  /** One poll at a time: a slow read must not stack another behind it. */
+  private polling = false;
 
   private socket: WebSocket | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -107,13 +131,22 @@ export class Daemon {
   }
 
   private async poll(): Promise<void> {
-    const text = await this.readClipboard();
-    if (!text) return;
+    if (this.polling || this.stopped) return;
+    this.polling = true;
+    try {
+      const generation = this.applied;
+      const text = await this.readClipboard();
+      if (!text) return;
 
-    const hash = await dedupeHash(this.keys, text);
-    if (hash === this.lastHandled) return;
+      const hash = await dedupeHash(this.keys, text);
+      // Stale: a remote clip landed while this read was in flight.
+      if (generation !== this.applied) return;
+      if (hash === this.lastHandled) return;
 
-    await this.push(text, hash);
+      await this.push(text, hash);
+    } finally {
+      this.polling = false;
+    }
   }
 
   private async push(text: string, knownHash?: string): Promise<void> {
@@ -138,6 +171,7 @@ export class Daemon {
 
       if (!res.deduped) log(`pushed ${text.length} chars`);
     } catch (err) {
+      if (this.isRevocation(err)) return;
       // Let the next poll retry: the clipboard still holds the content.
       this.lastHandled = null;
       log("push failed:", err instanceof Error ? err.message : err);
@@ -149,9 +183,11 @@ export class Daemon {
   private async apply(envelope: string, from: string): Promise<void> {
     try {
       const text = await decryptText(this.keys, envelope);
-      // Set the guard before writing: the write itself triggers a clipboard
-      // change that the poller will see.
+      // Set the guards before writing: the write itself triggers a clipboard
+      // change that the poller will see, and a poll already in flight holds
+      // the content this write replaces.
       this.lastHandled = await dedupeHash(this.keys, text);
+      this.applied++;
       await this.clipboard.write(text);
       log(`applied ${text.length} chars from ${from}`);
     } catch (err) {
@@ -168,6 +204,10 @@ export class Daemon {
     }
 
     switch (msg.type) {
+      case "revoked":
+        this.revoked();
+        break;
+
       case "ready":
         log(
           msg.connected.length
@@ -222,8 +262,12 @@ export class Daemon {
           if (typeof event.data === "string") this.handleMessage(event.data);
         });
 
-        ws.addEventListener("close", () => {
+        ws.addEventListener("close", (event) => {
           if (this.pingTimer) clearInterval(this.pingTimer);
+          if (event.code === REVOKED_CLOSE_CODE) {
+            this.revoked();
+            return;
+          }
           this.scheduleReconnect();
         });
 
@@ -231,10 +275,30 @@ export class Daemon {
           // 'close' always follows; reconnect is handled there.
         });
       } catch (err) {
+        if (this.isRevocation(err)) return;
         log("sync connect failed:", err instanceof Error ? err.message : err);
         this.scheduleReconnect();
       }
     })();
+  }
+
+  /**
+   * A 401 means the token no longer resolves, which for a token that worked
+   * at startup means this device was revoked. Stops the daemon if so.
+   */
+  private isRevocation(err: unknown): boolean {
+    if (!(err instanceof ApiRequestError) || err.status !== 401) return false;
+    this.revoked();
+    return true;
+  }
+
+  private revoked(): void {
+    if (this.stopped) return;
+    log(
+      "this device has been revoked -- stopping. Re-enrol with `clipsync link` or `clipsync login`.",
+    );
+    this.stop();
+    this.options.onRevoked?.();
   }
 
   private scheduleReconnect(): void {
