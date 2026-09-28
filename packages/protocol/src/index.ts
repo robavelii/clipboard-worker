@@ -228,8 +228,12 @@ export interface CreateClipResponse {
 
 export interface ListClipsResponse {
   clips: Clip[];
-  /** Pass back as `?before=` to page further into history. */
-  nextCursor: number | null;
+  /**
+   * Pass back as `?before=` to page further into history. Opaque: currently
+   * `<createdAt>.<id>`, so clips sharing a millisecond are not skipped.
+   * Workers before that sent a bare timestamp.
+   */
+  nextCursor: string | number | null;
 }
 
 /* --------------------------- device linking ---------------------------- */

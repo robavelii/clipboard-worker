@@ -25,6 +25,7 @@ import { requireDevice, type AuthVars } from "../auth";
 import { clientAddress, rateLimit } from "../limits";
 import { getUser } from "../db";
 import { newId, newToken, sha256 } from "../ids";
+import { expireLinkRequests } from "../purge";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
 
 const LINK_TTL_MS = 10 * 60 * 1000;
@@ -79,9 +80,7 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     const platform = assertPlatform(body.platform);
     const now = Date.now();
 
-    await c.env.DB.prepare("DELETE FROM link_requests WHERE expires_at < ?")
-      .bind(now)
-      .run();
+    await c.env.DB.batch(expireLinkRequests(c.env.DB, now));
 
     // Hashed: the address is only ever compared, never needed back.
     const requester = await sha256(clientAddress(c.req) ?? "local");
@@ -225,29 +224,34 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       throw new HTTPException(400, { message: "pickupToken is required" });
     }
 
+    const id = c.req.param("id");
+    const pickupHash = await sha256(body.pickupToken);
+    const now = Date.now();
+
+    // Single use: the delete is the claim, so two racing claims cannot both
+    // walk away with the token.
     const row = await c.env.DB.prepare(
-      "SELECT * FROM link_requests WHERE id = ? AND pickup_hash = ? AND expires_at > ?",
+      `DELETE FROM link_requests
+        WHERE id = ? AND pickup_hash = ? AND expires_at > ? AND device_token IS NOT NULL
+        RETURNING *`,
     )
-      .bind(c.req.param("id"), await sha256(body.pickupToken), Date.now())
+      .bind(id, pickupHash, now)
       .first<LinkRow>();
 
     if (!row) {
+      const waiting = await c.env.DB.prepare(
+        "SELECT 1 FROM link_requests WHERE id = ? AND pickup_hash = ? AND expires_at > ?",
+      )
+        .bind(id, pickupHash, now)
+        .first();
+      if (waiting) return c.json<LinkClaimResponse>({ status: "pending" }, 202);
       throw new HTTPException(404, {
         message: "link request not found or expired",
       });
     }
 
-    if (!row.approved_at || !row.device_token) {
-      return c.json<LinkClaimResponse>({ status: "pending" }, 202);
-    }
-
     const user = await getUser(c.env.DB);
     if (!user) throw new HTTPException(500, { message: "account missing" });
-
-    // Single use: the row goes away with the answer.
-    await c.env.DB.prepare("DELETE FROM link_requests WHERE id = ?")
-      .bind(row.id)
-      .run();
 
     return c.json<LinkClaimResponse>({
       status: "approved",
@@ -256,7 +260,7 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       credentials: {
         userId: user.id,
         deviceId: row.device_id!,
-        token: row.device_token,
+        token: row.device_token!,
         kdfSalt: user.kdf_salt,
         wrappedVaultKey: user.wrapped_vault_key,
         keyEpoch: user.key_epoch,

@@ -145,6 +145,20 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Revoke the device this client is signed in as. Resolves once the token
+   * no longer works, including when it already did not (a 401), so logging
+   * out twice or after a revoke from elsewhere is not an error.
+   */
+  async revokeSelf(): Promise<void> {
+    try {
+      await this.request("/api/devices/me", { method: "DELETE" });
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 401) return;
+      throw err;
+    }
+  }
+
   createClip(body: CreateClipRequest): Promise<CreateClipResponse> {
     return this.request("/api/clips", {
       method: "POST",
@@ -158,11 +172,11 @@ export class ApiClient {
    */
   listClips(
     limit = 50,
-    before?: number,
+    before?: string | number,
     options: { epochBelow?: number } = {},
   ): Promise<ListClipsResponse> {
     const qs = new URLSearchParams({ limit: String(limit) });
-    if (before) qs.set("before", String(before));
+    if (before !== undefined && before !== "") qs.set("before", String(before));
     if (options.epochBelow !== undefined) {
       qs.set("epochBelow", String(options.epochBelow));
     }

@@ -133,6 +133,31 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     });
   })
 
+  /**
+   * Revoke this device: `clipsync logout`, the web UI's "Unpair", and a
+   * device that enrolled and then could not unlock the vault. Forgetting the
+   * token locally is not enough -- the server would keep listing the device
+   * and a re-key would keep sealing the vault key to it. Registered before
+   * `/:id`, which refuses a device's own id.
+   */
+  .delete("/me", requireDevice, async (c) => {
+    const { deviceId, userId } = c.var.device;
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+      ).bind(Date.now(), deviceId),
+      c.env.DB.prepare("DELETE FROM sealed_vault_keys WHERE device_id = ?").bind(
+        deviceId,
+      ),
+    ]);
+    try {
+      await c.env.SYNC.getByName(userId).disconnect(deviceId);
+    } catch (error) {
+      console.error({ msg: "disconnect on self-revoke failed", deviceId, error });
+    }
+    return c.json({ ok: true });
+  })
+
   /** Revoke a lost device. Its token stops resolving immediately. */
   .delete("/:id", requireDevice, async (c) => {
     const id = c.req.param("id");
