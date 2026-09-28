@@ -624,3 +624,35 @@ Traps:
   without opening the envelope.
 - The dedupe check applies to v2 only. Old rows may carry tags from before
   the HMAC existed, and v1 has nothing else authenticated anyway.
+
+## 25. macOS and Windows agents
+
+**macOS shells out, like Linux.** `pbpaste` and `pbcopy` ship with every
+Mac and cost what `xclip` does per poll. They transcode through the locale,
+and launchd starts jobs with none, so the agent forces a UTF-8 locale when
+the session has no UTF-8 one. Without it, anything beyond ASCII is mangled
+only when running as a service, which is the worst time to find out.
+
+**Windows keeps one PowerShell alive.** Starting PowerShell costs a few
+hundred milliseconds of CPU, which is fine once but not every 600 ms poll.
+A native addon would mean a build toolchain on every Windows machine. So one
+helper process runs a small read-eval loop: `R` and `W <base64>` in,
+`OK`/`ERR` lines out, text in base64 so the pipe is ASCII whatever the
+console code page. Requests are queued one at a time. A helper that dies or
+stops answering is killed and restarted on the next request, and its first
+answer gets a longer timeout because PowerShell starts slowly.
+
+Trap: Windows hands text back with CRLF whatever was put in. The helper
+reads CRLF as LF. Otherwise a clip applied from Linux reads back as
+different text, fails the echo guard and is pushed straight back.
+
+**launchd cannot skip one exit status.** systemd restarts the agent on
+failure except status 78 (revoked). launchd's `KeepAlive` has only
+`SuccessfulExit`, so the plist sets `CLIPSYNC_SUPERVISOR=launchd`, and the
+agent then exits 0 for "stop for good" and keeps 75 for "restart onto the
+rebuilt bundle". The alternative, a wrapper script mapping statuses, is one
+more moving part in the one place nobody looks.
+
+**Not done.** A Windows installer: a logon task that runs node without a
+console window has no clean answer, so the README gives an untested task
+instead of shipping one. The tray panel stays Linux-only for now.
