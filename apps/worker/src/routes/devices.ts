@@ -125,5 +125,14 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     if (!res.meta.changes) {
       throw new HTTPException(404, { message: "device not found" });
     }
+
+    // The token no longer resolves, but a socket opened before this moment
+    // would keep receiving clips. Awaited rather than deferred, so "revoked"
+    // in the response means the device has actually been cut off.
+    try {
+      await c.env.SYNC.getByName(c.var.device.userId).disconnect(id);
+    } catch (error) {
+      console.error({ msg: "disconnect on revoke failed", deviceId: id, error });
+    }
     return c.json({ ok: true });
   });

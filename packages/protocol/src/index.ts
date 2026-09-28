@@ -262,6 +262,13 @@ export type ClientMessage = { type: "ping" };
 
 export const PING_FRAME = JSON.stringify({ type: "ping" });
 
+/**
+ * Close code the server uses when it drops a revoked device's socket. In the
+ * 4000-4999 range reserved for applications, so a client can tell "you were
+ * revoked, stop" apart from an ordinary disconnect it should retry.
+ */
+export const REVOKED_CLOSE_CODE = 4001;
+
 /** Server -> client control frames that are not domain events. */
 export type ServerMessage =
   | SyncEvent

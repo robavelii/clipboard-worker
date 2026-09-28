@@ -23,7 +23,7 @@ import {
 } from "@clipsync/client/link";
 import { createLinkKeypair } from "@clipsync/crypto";
 import { encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
-import { PING_FRAME, MAX_ENVELOPE_BYTES, type ServerMessage } from "@clipsync/protocol";
+import { PING_FRAME, MAX_ENVELOPE_BYTES, REVOKED_CLOSE_CODE, type ServerMessage } from "@clipsync/protocol";
 
 const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
 const ADMIN = process.env.CLIPSYNC_ADMIN_SECRET ?? "local-dev-admin-secret";
@@ -379,8 +379,29 @@ check("forged ticket is refused",
 
 await expectStatus("a device cannot revoke itself",
   () => pcApi.revokeDevice(pc.deviceId), 400);
+
+// The laptop's socket from the realtime section is still open. Revoking the
+// token alone would leave it receiving every new clip.
+let revokedCloseCode: number | null = null;
+socket.addEventListener("close", (e) => { revokedCloseCode = e.code; });
+received.length = 0;
+
 await pcApi.revokeDevice(laptop.deviceId);
 await expectStatus("revoked token stops working", () => laptopApi.me(), 401);
+check("revocation closes the device's open socket",
+  await waitFor(() => revokedCloseCode !== null),
+  `socket state ${socket.readyState}`);
+check("the close says why", revokedCloseCode === REVOKED_CLOSE_CODE,
+  `got close code ${revokedCloseCode}`);
+
+const AFTER_REVOKE = `clip made after revocation # ${RUN}`;
+await pcApi.createClip({
+  type: "text", envelope: await encryptText(keys, AFTER_REVOKE),
+  contentHash: await dedupeHash(keys, AFTER_REVOKE), size: Buffer.byteLength(AFTER_REVOKE),
+});
+await new Promise((r) => setTimeout(r, 500));
+check("a revoked device receives no further clips",
+  !received.some((m) => m.type === "clip.created" || m.type === "clip.bumped"));
 
 socket.close();
 console.log(`\n${pass} passed, ${fail} failed\n`);

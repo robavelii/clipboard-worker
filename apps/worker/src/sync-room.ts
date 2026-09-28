@@ -8,7 +8,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import type { SyncEvent } from "@clipsync/protocol";
+import { REVOKED_CLOSE_CODE, type SyncEvent } from "@clipsync/protocol";
 
 interface Attachment {
   deviceId: string;
@@ -84,6 +84,28 @@ export class SyncRoom extends DurableObject<Env> {
   /** Device ids with a live socket right now. */
   connected(): string[] {
     return this.connectedDeviceIds();
+  }
+
+  /**
+   * Close every socket a device holds. Called when the device is revoked.
+   *
+   * Revoking the token only stops *new* connections: a socket opened before
+   * the revocation would otherwise keep receiving every clip, and the device
+   * on the other end still holds the vault key that opens them.
+   */
+  disconnect(deviceId: string): number {
+    let closed = 0;
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as Attachment | null;
+      if (att?.deviceId !== deviceId) continue;
+      try {
+        ws.close(REVOKED_CLOSE_CODE, "device revoked");
+      } catch {
+        // Already closing; nothing more to do.
+      }
+      closed++;
+    }
+    return closed;
   }
 
   override async webSocketMessage(
