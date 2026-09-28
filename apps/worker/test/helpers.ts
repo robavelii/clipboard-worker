@@ -6,9 +6,11 @@ export const ADMIN_SECRET = "test-admin-secret";
 /** A request to the Worker under test, JSON in and out. */
 export async function api(
   path: string,
-  init: { method?: string; token?: string; body?: unknown; ip?: string } = {},
+  init: { method?: string; token?: string; body?: unknown; raw?: Uint8Array; ip?: string } = {},
 ): Promise<Response> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = {
+    "content-type": init.raw ? "application/octet-stream" : "application/json",
+  };
   if (init.token) headers.authorization = `Bearer ${init.token}`;
   // Cloudflare sets this on every production request; locally it is absent
   // unless a test stands in for a client address.
@@ -16,7 +18,7 @@ export async function api(
   return SELF.fetch(`https://clip.test${path}`, {
     method: init.method ?? "GET",
     headers,
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)),
   });
 }
 

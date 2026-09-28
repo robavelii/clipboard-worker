@@ -656,3 +656,48 @@ more moving part in the one place nobody looks.
 **Not done.** A Windows installer: a logon task that runs node without a
 console window has no clean answer, so the README gives an untested task
 instead of shipping one. The tray panel stays Linux-only for now.
+
+## 26. Images and files: a key per file, and a budget the Worker enforces
+
+**A key per file, carried in the envelope.** Each file is encrypted under a
+random key of its own, and that key sits in the clip's v2 envelope with the
+name, type, size and SHA-256. Encrypting under the vault key directly would
+mean a re-key downloads, re-encrypts and re-uploads every file: R2
+operations, bandwidth and time for exactly the job that must be quick after
+a revoke. With a per-file key, the re-key re-seals the small envelope, and a
+revoked device that later obtains the bytes has no key for them unless it
+kept the old envelope. It could equally have kept the file itself.
+
+**Chunks, each bound to its place.** 1 MiB chunks, each AES-GCM sealed with
+associated data naming the blob, its index and the chunk count, so the
+server cannot reorder, splice or truncate a file. The downloader also checks
+the whole file against the envelope's digest. The dedupe tag is an HMAC of
+that digest, so re-sending the same file bumps the existing clip. The bump
+moves the row to the new upload and deletes the old one, because the new
+envelope holds the new blob's key.
+
+**A budget, because R2 has no cap.** Past its free tier (10 GB-month, 1M
+Class A and 10M Class B operations a month) R2 bills, and Cloudflare offers
+no spending limit to set from here. Nothing but this Worker touches the
+bucket (no public access), so the Worker counts every billed operation in
+D1 before making it, and refuses past a budget set at half the free tier.
+The counter is a conditional UPDATE, so racing requests cannot share the
+last unit. Deletes are free and never refused.
+
+**Storage makes room rather than filling up.** Storage is a ceiling on
+bytes held, which keeps GB-months under it too. A new upload that would not
+fit deletes the oldest unpinned files first, and is refused only when
+pinned files alone fill the ceiling. Files also expire after 7 days rather
+than 30, and uploads nothing adopted are swept after an hour. The
+alternative, refusing at the ceiling, leaves a full bucket that blocks
+every new file until someone deletes by hand.
+
+Traps:
+- Room is reserved when the blob is created, from the declared size, so
+  concurrent uploads cannot overshoot the ceiling between chunks. The
+  reservation's INSERT is conditional on the running total.
+- R2 objects persist across Worker tests like D1 rows; the test setup
+  clears the bucket before each test.
+- The agent daemon does not apply image or file clips. Fetching them on
+  every device would spend the download budget on bytes nobody asked to
+  paste, and the clipboard tools it drives carry text.

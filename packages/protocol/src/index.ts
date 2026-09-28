@@ -23,7 +23,30 @@ export const MAX_REENCRYPT_BATCH = 50;
  */
 export const STALE_EPOCH_ERROR = "stale_epoch";
 
-export type ClipType = "text";
+/**
+ * Image and file clips keep their bytes in R2 as encrypted chunks (see
+ * `/api/blobs`); the row holds a v2 envelope of their metadata, which
+ * includes the key the chunks are encrypted under.
+ */
+export type ClipType = "text" | "image" | "file";
+
+/** How long an unpinned image or file lives. Shorter than text: they are big. */
+export const FILE_TTL_DAYS = 7;
+
+/** Plaintext bytes per encrypted blob chunk. The last chunk may be shorter. */
+export const BLOB_CHUNK_BYTES = 1024 * 1024;
+
+/** AES-GCM overhead per chunk: a 12-byte IV and a 16-byte tag. */
+export const BLOB_CHUNK_OVERHEAD = 28;
+
+/** Largest image or file, in plaintext bytes. */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * ApiError.error when R2 work would exceed the monthly budget the Worker
+ * keeps under Cloudflare's free tier (see apps/worker/src/r2.ts).
+ */
+export const R2_BUDGET_ERROR = "r2_budget";
 
 export type Platform = "linux" | "macos" | "windows" | "web" | "other";
 
@@ -61,6 +84,8 @@ export interface Clip {
   expiresAt: number | null;
   /** Which vault key encrypted this clip: the account's epoch when written. */
   keyEpoch: number;
+  /** The encrypted bytes of an image or file clip; null for text. */
+  blobId: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,6 +246,31 @@ export interface CreateClipRequest {
   size: number;
   /** The epoch of the key that encrypted it. Omitted by older clients: 0. */
   keyEpoch?: number;
+  /** Image and file clips: the blob, fully uploaded, that holds the bytes. */
+  blobId?: string;
+}
+
+/** Reserve room for an encrypted blob before uploading its chunks. */
+export interface CreateBlobRequest {
+  chunks: number;
+  /** Total ciphertext bytes across all chunks. */
+  bytes: number;
+}
+
+export interface CreateBlobResponse {
+  id: string;
+}
+
+/** This month's R2 use against the Worker's budget. */
+export interface BlobUsageResponse {
+  /** UTC calendar month, `YYYY-MM`. */
+  month: string;
+  storedBytes: number;
+  storageBudgetBytes: number;
+  classA: number;
+  classABudget: number;
+  classB: number;
+  classBBudget: number;
 }
 
 export interface CreateClipResponse {

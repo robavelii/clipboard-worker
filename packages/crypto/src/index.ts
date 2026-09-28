@@ -379,6 +379,85 @@ export async function openClip(
   }
 }
 
+/* ------------------------------ file blobs ----------------------------- */
+
+/**
+ * Images and files are encrypted under a key of their own, not the vault
+ * key. The key travels inside the clip's v2 envelope, so a re-key re-seals
+ * that envelope and never has to download and re-upload the file.
+ *
+ * Each chunk is `<12-byte iv><ciphertext>`, raw bytes. Its associated data
+ * names the blob, the chunk's index and the chunk count, so the server can
+ * neither reorder chunks, splice in another file's, nor cut a file short.
+ */
+export type BlobKey = string;
+
+export function generateBlobKey(): BlobKey {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+export function importBlobKey(key: BlobKey): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new Uint8Array(fromBase64Url(key)), "AES-GCM", false, [
+    "encrypt",
+    "decrypt",
+  ]);
+}
+
+function chunkAad(blobId: string, index: number, count: number): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(enc.encode(`clipsync:blob:v1:${blobId}:${index}:${count}`));
+}
+
+export async function sealChunk(
+  key: CryptoKey,
+  blobId: string,
+  index: number,
+  count: number,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: chunkAad(blobId, index, count) },
+      key,
+      new Uint8Array(plaintext),
+    ),
+  );
+  const out = new Uint8Array(IV_BYTES + ct.length);
+  out.set(iv);
+  out.set(ct, IV_BYTES);
+  return out;
+}
+
+export async function openChunk(
+  key: CryptoKey,
+  blobId: string,
+  index: number,
+  count: number,
+  sealed: Uint8Array,
+): Promise<Uint8Array> {
+  try {
+    return new Uint8Array(
+      await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: new Uint8Array(sealed.subarray(0, IV_BYTES)),
+          additionalData: chunkAad(blobId, index, count),
+        },
+        key,
+        new Uint8Array(sealed.subarray(IV_BYTES)),
+      ),
+    );
+  } catch {
+    throw new DecryptError(`chunk ${index} of ${blobId} does not open -- wrong key, order or file`);
+  }
+}
+
+/** Hex SHA-256, for a file's integrity check and its dedupe tag. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)));
+  return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Server-visible dedupe tag. An HMAC rather than a plain digest so that nobody
  * holding the database can confirm a guess at the clipboard contents.

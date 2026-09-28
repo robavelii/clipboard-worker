@@ -40,6 +40,7 @@ import {
   sealText,
   type VaultRing,
 } from "@clipsync/client/ring";
+import { downloadFile, uploadFile } from "@clipsync/client/files";
 import {
   PING_FRAME,
   MAX_ENVELOPE_BYTES,
@@ -530,6 +531,51 @@ check("one clip's envelope in another clip's row is refused",
 await expectStatus("the server refuses a v2 envelope naming another device",
   async () => pcApi.createClip(await sealText(pcRing, pc.userId, phone.credentials.deviceId, `forged # ${RUN}`)), 400);
 
+console.log("\n--- images and files ---");
+
+// Bytes are encrypted per file in 1 MiB chunks and kept in R2; the clip's
+// envelope holds the file's key, name and digest.
+const fileBytes = new Uint8Array(2_500_000).map((_, i) => (i * 31 + Number(RUN)) & 0xff);
+const uploaded = await uploadFile(pcApi, pcRing, pc.userId, pc.deviceId, {
+  name: `photo-${RUN}.png`,
+  mime: "image/png",
+  bytes: fileBytes,
+});
+const fileClip = await phoneApi.getClip(uploaded.id);
+check("an image is stored as an image clip with a blob", fileClip.type === "image" && Boolean(fileClip.blobId));
+check("its row holds only ciphertext", !fileClip.envelope.includes(`photo-${RUN}`));
+const fetched = await downloadFile(phoneApi, phoneRingKeys, fileClip, phone.credentials.userId);
+check("another device downloads the same bytes",
+  fetched.bytes.length === fileBytes.length && fetched.bytes.every((b, i) => b === fileBytes[i]));
+check("with its name and type", fetched.meta.name === `photo-${RUN}.png` && fetched.meta.mime === "image/png");
+const firstChunk = await phoneApi.getBlobChunk(fileClip.blobId!, 0);
+check("the server holds chunks it cannot read",
+  firstChunk.length === 1024 * 1024 + 28 && !firstChunk.subarray(12, 44).every((b, i) => b === fileBytes[i]));
+
+let swappedRefused = false;
+try {
+  await downloadFile(phoneApi, phoneRingKeys, { ...fileClip, blobId: "blob_other" }, phone.credentials.userId);
+} catch { swappedRefused = true; }
+check("a clip pointing at another blob is refused", swappedRefused);
+
+const usageBefore = await pcApi.blobUsage();
+check("R2 use is counted against the budget",
+  usageBefore.classA >= 3 && usageBefore.classB >= 4 && usageBefore.storedBytes > 0);
+await pcApi.deleteClip(uploaded.id);
+const usageAfter = await pcApi.blobUsage();
+check("deleting the clip frees its storage",
+  usageAfter.storedBytes === usageBefore.storedBytes - (2_500_000 + 3 * 28));
+
+// Kept through the re-key below, which must re-seal its envelope only.
+const survivorBytes = new TextEncoder().encode(`notes kept across a re-key # ${RUN}`);
+const survivor = await uploadFile(pcApi, pcRing, pc.userId, pc.deviceId, {
+  name: `notes-${RUN}.txt`,
+  mime: "text/plain",
+  bytes: survivorBytes,
+});
+const survivorBefore = await pcApi.getClip(survivor.id);
+check("a non-image is stored as a file clip", survivorBefore.type === "file");
+
 console.log("\n--- re-key ---");
 
 // The phone (invite) and the linked device register device keys; the pc,
@@ -600,6 +646,13 @@ check("re-encryption upgrades history to v2 envelopes", moved.envelope.startsWit
 const oldKeyAsNew = await ringKeysFrom(ringOf(vaultKey, NEXT), pc.kdfSalt);
 check("the old key no longer opens it",
   (await decryptClip(oldKeyAsNew, moved, pc.userId).catch(() => null)) === null);
+
+const survivorAfter = await pcApi.getClip(survivor.id);
+check("a file survives the re-key under the new key",
+  survivorAfter.keyEpoch === NEXT &&
+  (await downloadFile(pcApi, newKeys, survivorAfter, pc.userId)).bytes.length === survivorBytes.length);
+check("without its bytes in R2 being rewritten", survivorAfter.blobId === survivorBefore.blobId);
+await pcApi.deleteClip(survivor.id);
 
 const again2 = await reencryptHistory(pcApi, { account: pc.userId, kdfSalt: pc.kdfSalt, ring: rekeyed.ring });
 check("re-encryption is safe to run again", again2.reencrypted === 0);

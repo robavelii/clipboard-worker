@@ -39,6 +39,7 @@ export interface ClipRow {
   created_at: number;
   expires_at: number | null;
   key_epoch: number;
+  blob_id: string | null;
 }
 
 export function toDevice(row: DeviceRow): Device {
@@ -56,7 +57,7 @@ export function toClip(row: ClipRow): Clip {
   return {
     id: row.id,
     deviceId: row.device_id,
-    type: "text",
+    type: row.type as Clip["type"],
     envelope: row.envelope,
     contentHash: row.content_hash,
     size: row.size,
@@ -64,6 +65,7 @@ export function toClip(row: ClipRow): Clip {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     keyEpoch: row.key_epoch,
+    blobId: row.blob_id ?? null,
   };
 }
 

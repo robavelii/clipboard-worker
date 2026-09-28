@@ -38,6 +38,22 @@
     }
   ],
 
+  // Encrypted image and file chunks. Only this Worker reads or writes it: the
+  // bucket has no public access, so every operation it is billed for passes
+  // through the budget in src/r2.ts.
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "clipsync-blobs" }],
+
+  // Half of R2's free tier (10 GB-month, 1M Class A and 10M Class B
+  // operations a month), so a month of use never leaves it. Storage is a
+  // ceiling on bytes held at any moment: past it the oldest unpinned files
+  // are deleted to make room. Operations are counted per UTC month and
+  // refused past their budget. See decisions §26.
+  "vars": {
+    "R2_STORAGE_BUDGET_BYTES": 5368709120,
+    "R2_CLASS_A_BUDGET": 500000,
+    "R2_CLASS_B_BUDGET": 5000000
+  },
+
   // One SyncRoom per user: the fan-out point for every connected device.
   "durable_objects": {
     "bindings": [{ "name": "SYNC", "class_name": "SyncRoom" }]
@@ -53,7 +69,8 @@
     { "name": "UNAUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
   ],
 
-  // Hourly purge of expired, unpinned clips.
+  // Hourly purge of expired, unpinned clips and their R2 objects, and of
+  // uploads no clip adopted.
   "triggers": {
     "crons": ["17 * * * *"]
   }

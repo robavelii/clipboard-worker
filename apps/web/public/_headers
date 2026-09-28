@@ -3,9 +3,10 @@
 # The page can hold the vault key in localStorage (the "stay unlocked" choice
 # on phones), so script injection is the attack that matters most. The build
 # has no inline script or style, which lets the policy allow nothing but this
-# origin. API responses come from the Worker, not from here.
+# origin. API responses come from the Worker, not from here. `blob:` images
+# are decrypted image clips, made into object URLs by this page itself.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   X-Frame-Options: DENY
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff

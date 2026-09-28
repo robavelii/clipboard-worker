@@ -19,9 +19,10 @@ an opaque ciphertext envelope.
 
 ## Status
 
-v0.1 — text clips, real-time sync, encrypted history, device pairing and
-revocation. The agent runs on Linux, macOS and Windows; the tray panel on
-Linux. Images and files are not implemented; see [Not built yet](#not-built-yet).
+v0.1 — text, images and files, real-time sync, encrypted history, device
+pairing and revocation. The agent runs on Linux, macOS and Windows; the tray
+panel on Linux. Images and files go through the web UI and `clipsync send` /
+`clipsync get`; the agent does not put them on the clipboard.
 
 ## Quick start (local)
 
@@ -81,6 +82,13 @@ npm run db:create
 
 ```bash
 npm run db:migrate
+```
+
+Create the R2 bucket that holds encrypted images and files. The name must
+match `r2_buckets` in `wrangler.jsonc`:
+
+```bash
+npx wrangler r2 bucket create clipsync-blobs
 ```
 
 Set the admin secret — this is what authorises the very first device:
@@ -179,6 +187,8 @@ letting you discover the mistake later.
 | `clipsync run` | Watch the clipboard and sync (the daemon) |
 | `clipsync history [-n 20] [--full]` | Recent clips, decrypted locally; `--full` prints them untruncated |
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
+| `clipsync send <file>` | Send an image or file to your devices |
+| `clipsync get <clip-id> [-o path]` | Save an image or file clip (never overwrites) |
 | `clipsync passphrase` | Change the passphrase |
 | `clipsync-desktop` | Tray panel (see below) |
 | `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
@@ -313,6 +323,13 @@ minutes old, so the server cannot replay an old clip onto your clipboard as
 a new copy. Clips stored before this change carry no header until a re-key
 re-encrypts them.
 
+**Images and files.** Each file is encrypted under a random key of its own,
+in 1 MiB chunks. Each chunk is bound to its file, its position and the chunk
+count, so the server cannot reorder, splice or truncate a file. The key, name,
+type, size and SHA-256 live in the clip's authenticated envelope, and the
+downloader checks the whole file against that digest. A re-key re-seals only
+that envelope; the bytes in R2 are never rewritten.
+
 **Scan-to-join.** The vault key is sealed under a 256-bit secret that exists
 only in the QR and reaches the scanner through its camera. The server stores
 the ciphertext and a SHA-256 of the secret — enough to check who may claim the
@@ -420,9 +437,26 @@ that entry back to the top rather than adding a second row, so history does not
 fill with duplicates and a clip you deleted does not quietly return the next
 time you copy it.
 
-Clips expire after 30 days and an hourly cron deletes them. Pinned clips never
-expire. Clipboard history accumulates API tokens and passwords whether or not
-you intend it to, so the default is to forget.
+Text clips expire after 30 days, images and files after 7, and an hourly cron
+deletes them along with their bytes in R2. Pinned clips never expire.
+Clipboard history accumulates API tokens and passwords whether or not you
+intend it to, so the default is to forget.
+
+**Staying inside R2's free tier.** R2 has no spending cap of its own, so the
+Worker keeps a budget at half the free tier and enforces it itself: it is the
+only thing that touches the bucket. The budget is set in `vars` in
+`wrangler.jsonc`:
+
+| | Free tier | Budget | Past it |
+|---|---|---|---|
+| Storage | 10 GB-month | 5 GB held at any moment | the oldest unpinned files are deleted to make room |
+| Uploads (Class A) | 1M a month | 500k a month | refused until the 1st |
+| Downloads (Class B) | 10M a month | 5M a month | refused until the 1st |
+
+A new file is refused only when pinned files alone fill the storage budget.
+Uploads that never became a clip are swept after an hour, and files are
+limited to 25 MB. `clipsync status` shows how much of each budget this month
+has used.
 
 ## Repository layout
 
@@ -466,13 +500,10 @@ assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
-Images and file sync (needs R2), semantic search, a Windows installer, and
-the tray panel on macOS and Windows. `packages/crypto` and the
-`ClipType` union are the two places that will need to change first for images.
-
-Images come after the trust-boundary work — passphrase authority, re-keying on
-revocation — because re-keying the vault gets more expensive with every byte
-under it.
+Images and files on the agent's clipboard (they sync through the web UI and
+the CLI for now), sharing files into the web app from a phone's share sheet,
+semantic search, a Windows installer, and the tray panel on macOS and
+Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or

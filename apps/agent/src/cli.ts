@@ -1,7 +1,9 @@
 /** clipsync — command line entry point. */
 
 import { watchFile } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { hostname, platform as osPlatform } from "node:os";
+import { basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
@@ -15,6 +17,7 @@ import {
   parseLinkUrl,
 } from "@clipsync/client/link";
 import { createInvite } from "@clipsync/client/invite";
+import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
 import {
   currentKey,
@@ -56,6 +59,8 @@ Usage
   clipsync run [--push-current] [--verbose]             Watch the clipboard and sync
   clipsync history [-n <count>] [--full]                Show recent clips (--full: untruncated)
   clipsync copy <clip-id>                               Copy a clip to this clipboard
+  clipsync send <file>                                  Send an image or file to your devices
+  clipsync get <clip-id> [-o <path>]                    Save an image or file clip
   clipsync passphrase                                   Change the passphrase
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
@@ -469,6 +474,8 @@ async function cmdHistory(limit: number, full = false): Promise<void> {
     let text: string | null;
     try {
       text = await decryptClip(keys, clip, config.userId);
+      // An image or file reads as its name; its bytes stay in R2 until asked for.
+      if (clip.type !== "text") text = `[${clip.type}] ${text} (${formatBytes(clip.size)}) -- clipsync get ${clip.id}`;
     } catch {
       text = null;
     }
@@ -502,9 +509,92 @@ async function cmdCopy(id: string | undefined): Promise<void> {
   const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
 
   const clip = await api.getClip(id);
+  if (clip.type !== "text") {
+    throw new Error(`that clip is ${clip.type === "image" ? "an image" : "a file"} -- save it with: clipsync get ${id}`);
+  }
   const text = await decryptClip(keys, clip, config.userId);
   await (await detectClipboard()).write(text);
   console.log(`Copied ${text.length} chars to the clipboard.`);
+}
+
+/** Enough of the common types that images show inline in the web UI. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  zip: "application/zip",
+};
+
+/**
+ * Send a file to every device: encrypted in chunks under a key of its own,
+ * kept in R2 for FILE_TTL_DAYS unless pinned.
+ */
+async function cmdSend(path: string | undefined): Promise<void> {
+  if (!path) throw new Error("usage: clipsync send <file>");
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
+
+  const name = basename(path);
+  const extension = extname(name).slice(1).toLowerCase();
+  const bytes = new Uint8Array(await readFile(path));
+  const res = await uploadFile(
+    api,
+    keys,
+    config.userId,
+    config.deviceId,
+    { name, mime: MIME_BY_EXTENSION[extension] ?? "application/octet-stream", bytes },
+    (sent) => process.stdout.write(`\r  sent ${formatBytes(sent)} of ${formatBytes(bytes.length)}`),
+  );
+  console.log();
+  console.log(res.deduped ? `Already in history as ${res.id}.` : `Sent ${name} as ${res.id}.`);
+}
+
+/**
+ * Save an image or file clip. Never overwrites: without -o it saves under
+ * the clip's own name, numbered if that is taken.
+ */
+async function cmdGet(id: string | undefined, output?: string): Promise<void> {
+  if (!id) throw new Error("usage: clipsync get <clip-id> [-o <path>]");
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
+
+  const clip = await api.getClip(id);
+  const { meta, bytes } = await downloadFile(api, keys, clip, config.userId, (got) =>
+    process.stdout.write(`\r  received ${formatBytes(got)}`),
+  );
+  console.log();
+
+  // The name came from another device: keep only its last path component.
+  const safeName = basename(meta.name.replace(/\\/g, "/")) || "download";
+  let target = output ?? safeName;
+  for (let n = 1; ; n++) {
+    try {
+      await writeFile(target, bytes, { flag: "wx" });
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST" || output) throw err;
+      const ext = extname(safeName);
+      target = `${safeName.slice(0, safeName.length - ext.length)} (${n})${ext}`;
+    }
+  }
+  console.log(`Saved ${meta.name} (${formatBytes(meta.size)}) to ${target}.`);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 async function cmdDevices(opts: { revoke?: string; rekey?: boolean }): Promise<void> {
@@ -688,11 +778,26 @@ async function cmdStatus(): Promise<void> {
     console.log(`clipboard  unavailable — ${(err as Error).message}`);
   }
 
+  const api = new ApiClient(config.baseUrl, config.token);
   try {
-    await new ApiClient(config.baseUrl, config.token).me();
+    await api.me();
     console.log("worker     reachable, token valid");
   } catch (err) {
     console.log(`worker     ${err instanceof Error ? err.message : err}`);
+    return;
+  }
+
+  // The R2 budget that keeps files inside Cloudflare's free tier.
+  try {
+    const u = await api.blobUsage();
+    const pct = (used: number, budget: number) => `${Math.round((used / budget) * 100)}%`;
+    console.log(
+      `files      ${formatBytes(u.storedBytes)} of ${formatBytes(u.storageBudgetBytes)} stored; ` +
+        `${u.month}: ${u.classA} uploads (${pct(u.classA, u.classABudget)}), ` +
+        `${u.classB} downloads (${pct(u.classB, u.classBBudget)}) of budget`,
+    );
+  } catch {
+    // A Worker from before files: nothing to report.
   }
 }
 
@@ -736,6 +841,7 @@ async function main(): Promise<void> {
       finish: { type: "boolean" },
       number: { type: "string", short: "n" },
       full: { type: "boolean", short: "f" },
+      output: { type: "string", short: "o" },
       "push-current": { type: "boolean" },
       verbose: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
@@ -771,6 +877,10 @@ async function main(): Promise<void> {
       return cmdHistory(Number(values.number) || 20, values.full);
     case "copy":
       return cmdCopy(arg);
+    case "send":
+      return cmdSend(arg);
+    case "get":
+      return cmdGet(arg, values.output);
     case "passphrase":
       return cmdPassphrase();
     case "devices":

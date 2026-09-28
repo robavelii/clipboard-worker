@@ -68,7 +68,7 @@ packages/protocol   wire types + constants (sync events, close codes, limits)
 packages/crypto     WebCrypto-only envelope crypto: runs unchanged in Worker, browser, Node
 packages/client     typed API client + the shared flows (vault, link, invite)
 packages/react      useClips / useSync hooks, shared by web UI and tray
-apps/worker         Hono API, SyncRoom Durable Object, hourly purge cron, serves apps/web/dist
+apps/worker         Hono API, SyncRoom Durable Object, hourly purge cron, R2 blobs, serves apps/web/dist
 apps/web            React UI / PWA (share target, service worker)
 apps/agent          `clipsync` CLI + clipboard daemon (Linux: wl-clipboard or xclip)
 apps/desktop        Tauri tray panel (Ctrl+Alt+V picker)
@@ -115,7 +115,9 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 - Dedupe is across the whole history. A repeat `contentHash` bumps the existing row (`clip.bumped`) instead of inserting. A repeat of the newest clip is a silent no-op.
 - Revocation: `DELETE /api/devices/:id` revokes the token (and drops its sealed keys), and `SyncRoom.disconnect` sends a `{type:"revoked"}` frame and closes with `REVOKED_CLOSE_CODE` (4001). Clients treat that frame, code 4001, or a 401 as terminal and stop reconnecting. The frame is needed because under local workerd an idle socket's close event may never fire.
 - `GET /api/clips?pinned=1` returns every pin unpaged. `useClips` merges it into the first page, and `sortForDisplay` puts pins first in both UIs.
-- Unpinned clips expire after 30 days (hourly cron, `apps/worker/src/purge.ts`), and the cron broadcasts `clip.deleted` for each, from origin `server:expiry`. The same purge revokes devices enrolled by link approvals nobody collected.
+- **Images and files** (decisions §26): the client encrypts them per file (`packages/client/src/files.ts`) in 1 MiB chunks (AAD = blob id, index, count), under a random key that travels only in the clip's v2 envelope with name, MIME, size and SHA-256 (`FileMeta`). Flow: `POST /api/blobs` reserves room, `PUT /api/blobs/:id/:idx` uploads each chunk, then `POST /api/clips` with `blobId` adopts the blob once every chunk is in. Deleting, expiring or re-copying a clip deletes its R2 objects. A re-key re-seals only the envelope. The agent daemon never applies image/file clips; the tray only lists them.
+- **R2 budget** (`apps/worker/src/r2.ts`): the Worker is the only thing that touches the bucket, so it counts every billed operation per UTC month in `r2_usage` *before* making it, and refuses past the `vars` budgets with 429 `r2_budget`. Storage is a ceiling on bytes held: `reserveBlob` evicts the oldest unpinned files, and refuses only when pinned files fill it. Any new R2 call must go through `spend()`. Worker tests run with tiny budgets (`vitest.config.ts`).
+- Unpinned clips expire after 30 days, images and files after 7 (hourly cron, `apps/worker/src/purge.ts`), and the cron broadcasts `clip.deleted` for each, from origin `server:expiry`. The same purge revokes devices enrolled by link approvals nobody collected.
 - History pages on `(created_at, id)`: `nextCursor` is `<createdAt>.<id>`, and a bare timestamp from older clients still works.
 - `DELETE /api/devices/me` revokes the calling device. `logout`, the web UI's "Unpair", and a `login`/`pair` whose passphrase fails all call it, so no device is left listed that nobody holds.
 
