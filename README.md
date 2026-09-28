@@ -280,10 +280,9 @@ the ciphertext and a SHA-256 of the secret — enough to check who may claim the
 invite, not enough to open it. Invites last five minutes and are single-use.
 
 **Device linking.** Transfers the vault key, not the passphrase, so a linked
-device never learns the passphrase. It can still *replace* it, though: holding
-the vault key is enough to wrap it under a new passphrase, and the server
-accepts a new wrapped key from any enrolled device. Closing that — the server
-requiring proof of the current passphrase — is planned. ECDH over P-256, with both public keys bound into the HKDF
+device never learns the passphrase and cannot change it: the server replaces
+the wrapped key only with proof of the current passphrase (see below). ECDH
+over P-256, with both public keys bound into the HKDF
 info so a swapped transcript derives a different key and fails closed. The
 server sees two public keys and one ciphertext. The joining device's key
 travels out of band and both ends display a fingerprint of it, which is what
@@ -294,6 +293,16 @@ pickup token is single-use, and the claiming read deletes the row.
 digests. Revoking a device invalidates its token immediately. The WebSocket uses
 a separate single-use 30-second ticket, because browsers cannot set headers on a
 handshake and a long-lived token in a URL ends up in logs.
+
+**Unauthenticated endpoints** — bootstrap, pairing, invite claims and link
+requests — are rate-limited per client address, and pending link requests are
+capped per address rather than globally, so no one can lock others out of
+linking. Invite proofs are hashed again before they are stored.
+
+**The web UI** is served with a strict Content-Security-Policy (this origin
+only, no inline script or style), refuses to be framed, and sends no referrer.
+It can keep the vault key in browser storage on a phone, so script injection
+is the attack those headers are there for.
 
 **Not protected.** The agent stores your passphrase in `~/.config/clipsync/config.json`
 at mode 0600 so it can start unattended. Anyone who can read that file can also
@@ -312,6 +321,17 @@ clipsync passphrase
 
 Re-wraps the vault key. No clip is re-encrypted, and your other devices keep
 working without doing anything — they hold the vault key, not the passphrase.
+
+It asks for the current passphrase first (or reads `CLIPSYNC_PASSPHRASE`).
+Holding the vault key is enough to wrap it under a passphrase of your choosing,
+so the server stores a hash of a proof derived from the passphrase and accepts
+a new wrapped key only with that proof. A phone that joined by QR can read your
+clipboard, but it cannot lock you out of it.
+
+Accounts that predate the proof register it the next time the passphrase is
+used — the web UI's unlock, `clipsync login`, or a `CLIPSYNC_PASSPHRASE` agent
+starting. Do that once after upgrading: until then, the first device to
+register a proof holds the right to change the passphrase.
 
 One caveat for accounts created before the vault key existed: their vault key
 *is* the old passphrase-derived value, so someone who knows the original

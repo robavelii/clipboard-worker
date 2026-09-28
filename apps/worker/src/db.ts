@@ -7,6 +7,8 @@ export interface UserRow {
   kdf_salt: string;
   /** Sealed under the passphrase-derived KEK. null until migrated. */
   wrapped_vault_key: string | null;
+  /** SHA-256 of the passphrase proof. null on accounts that predate it. */
+  auth_hash: string | null;
   created_at: number;
 }
 

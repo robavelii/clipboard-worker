@@ -44,6 +44,15 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SyncRoom"] }],
 
+  // Per-address limits on the unauthenticated endpoints (keyed by
+  // CF-Connecting-IP; see src/limits.ts). Periods must be 10 or 60 seconds.
+  "ratelimits": [
+    // /api/auth/bootstrap: guessing ADMIN_SECRET.
+    { "name": "STRICT_LIMIT", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    // Pair-code redemption, invite claims, link requests.
+    { "name": "UNAUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+  ],
+
   // Hourly purge of expired, unpinned clips.
   "triggers": {
     "crons": ["17 * * * *"]

@@ -77,6 +77,31 @@ export interface Credentials {
   createdAccount?: boolean;
 }
 
+/**
+ * Write the wrapped vault key: the first wrap (new or migrated account), or a
+ * passphrase change.
+ */
+export interface PutVaultKeyRequest {
+  wrappedVaultKey: string;
+  /** authHashOf() the proof for the passphrase this key is now wrapped under. */
+  authHash: string;
+  /**
+   * Proof of the *current* passphrase. Required to replace a key that is
+   * already set; a device holding only the vault key cannot produce it.
+   */
+  authProof?: string;
+}
+
+/** Register the passphrase proof on an account that predates it. */
+export interface ClaimVaultAuthRequest {
+  authHash: string;
+}
+
+export interface ClaimVaultAuthResponse {
+  /** false when this same hash was already registered. */
+  claimed: boolean;
+}
+
 export interface VaultKeyResponse {
   kdfSalt: string;
   wrappedVaultKey: string | null;

@@ -23,6 +23,7 @@ import {
 } from "@clipsync/client/link";
 import { createLinkKeypair } from "@clipsync/crypto";
 import { encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
+import { authHashOf, openVault, wrapVaultKey } from "@clipsync/crypto";
 import { PING_FRAME, MAX_ENVELOPE_BYTES, REVOKED_CLOSE_CODE, type ServerMessage } from "@clipsync/protocol";
 
 const BASE = process.env.CLIPSYNC_URL ?? "http://127.0.0.1:8787";
@@ -337,9 +338,32 @@ check("an invite works exactly once", replayRefused);
 check("proof is not the sealing secret",
   (await inviteProof(invite.secret)) !== invite.secret);
 
+console.log("\n--- passphrase authority ---");
+
+// Audit O1: the phone holds the vault key but was never told the passphrase.
+// Holding the key is enough to wrap it under a passphrase of its own.
+const hijack = await openVault("the phone's own passphrase", phone.credentials.kdfSalt);
+const hijackBody = {
+  wrappedVaultKey: await wrapVaultKey(hijack.kek, phone.vaultKey),
+  authHash: await authHashOf(hijack.authProof),
+};
+await expectStatus("a device without the passphrase cannot replace it",
+  () => phoneApi.putVaultKey(hijackBody), 403);
+await expectStatus("nor by offering its own passphrase as the proof",
+  () => phoneApi.putVaultKey({ ...hijackBody, authProof: hijack.authProof }), 403);
+check("the owner's passphrase still unlocks after the attempt",
+  (await unlockVault(pcApi, PASS, pc.kdfSalt, (await pcApi.vaultKey()).wrappedVaultKey))
+    .vaultKey === vaultKey);
+
+let wrongCurrentRefused = false;
+try {
+  await changePassphrase(pcApi, pc.kdfSalt, "not the current one", "anything else");
+} catch { wrongCurrentRefused = true; }
+check("changing the passphrase needs the current one", wrongCurrentRefused);
+
 console.log("\n--- passphrase rotation ---");
 
-await changePassphrase(pcApi, vaultKey, pc.kdfSalt, "a brand new passphrase");
+await changePassphrase(pcApi, pc.kdfSalt, PASS, "a brand new passphrase");
 const afterRotation = await pcApi.vaultKey();
 
 const withNew = await unlockVault(pcApi, "a brand new passphrase", pc.kdfSalt, afterRotation.wrappedVaultKey);
@@ -362,7 +386,7 @@ check("clips written before the change still decrypt", readBack.includes(TEXT),
 
 // Put the account back so the suite can be run twice in a row. Without this
 // the next run cannot unlock the vault it left behind.
-await changePassphrase(pcApi, vaultKey, pc.kdfSalt, PASS);
+await changePassphrase(pcApi, pc.kdfSalt, "a brand new passphrase", PASS);
 const restored = await pcApi.vaultKey();
 check("the suite leaves the passphrase as it found it",
   (await unlockVault(pcApi, PASS, pc.kdfSalt, restored.wrappedVaultKey)).vaultKey === vaultKey);

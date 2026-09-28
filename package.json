@@ -16,7 +16,7 @@
     "db:migrate:local": "npm run db:migrate:local -w @clipsync/worker",
     "db:migrate": "npm run db:migrate -w @clipsync/worker",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test -w @clipsync/crypto",
+    "test": "npm run test -w @clipsync/crypto -w @clipsync/worker",
     "e2e": "esbuild scripts/e2e.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/e2e.mjs && node node_modules/.cache/e2e.mjs"
   },
   "devDependencies": {

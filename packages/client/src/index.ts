@@ -16,6 +16,9 @@ import type {
   PairCodeResponse,
   Platform,
   ClaimInviteRequest,
+  ClaimVaultAuthRequest,
+  ClaimVaultAuthResponse,
+  PutVaultKeyRequest,
   ClaimInviteResponse,
   CreateInviteRequest,
   CreateInviteResponse,
@@ -105,11 +108,19 @@ export class ApiClient {
     return this.request("/api/vault/key");
   }
 
-  /** Write the wrapped vault key: migration, or completing a passphrase change. */
-  putVaultKey(wrappedVaultKey: string): Promise<{ ok: boolean }> {
+  /** Write the wrapped vault key: the first wrap, or a passphrase change. */
+  putVaultKey(body: PutVaultKeyRequest): Promise<{ ok: boolean }> {
     return this.request("/api/vault/key", {
       method: "PUT",
-      body: JSON.stringify({ wrappedVaultKey }),
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** Register the passphrase proof on an account that predates it. */
+  claimVaultAuth(authHash: string): Promise<ClaimVaultAuthResponse> {
+    return this.request("/api/vault/auth", {
+      method: "POST",
+      body: JSON.stringify({ authHash } satisfies ClaimVaultAuthRequest),
     });
   }
 

@@ -5,7 +5,7 @@ import { hostname, platform as osPlatform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Platform } from "@clipsync/protocol";
-import { decryptText } from "@clipsync/crypto";
+import { DecryptError, decryptText } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import {
   approveLink,
@@ -79,6 +79,19 @@ function preview(text: string, width = 64): string {
   return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
 }
 
+/**
+ * The account predates passphrase proofs and another device registered a
+ * different one first. Worth saying loudly: that device, not this passphrase,
+ * can now change the passphrase.
+ */
+function warnProofConflict(): void {
+  console.warn(
+    "\nWarning: another device registered a different passphrase for this account\n" +
+      "before this one did. It can change the passphrase and this one cannot.\n" +
+      "If that was not you, revoke devices you do not recognise (clipsync devices).\n",
+  );
+}
+
 /* ------------------------------ commands ------------------------------- */
 
 async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
@@ -96,7 +109,7 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
   );
 
   const api = new ApiClient(baseUrl, creds.token);
-  const { vaultKey, migrated } = await unlockVault(
+  const { vaultKey, migrated, proofConflict } = await unlockVault(
     api,
     passphrase,
     creds.kdfSalt,
@@ -108,6 +121,7 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
   if (migrated && !creds.createdAccount) {
     console.log("Upgraded this account to a wrapped vault key.");
   }
+  if (proofConflict) warnProofConflict();
   console.log(`Enrolled "${deviceName}" (${creds.deviceId}).`);
   console.log(`Credentials written to ${configPath()}.`);
   console.log(`\nNext: clipsync run`);
@@ -421,15 +435,25 @@ async function cmdDevices(opts: { revoke?: string }): Promise<void> {
 async function cmdPassphrase(): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
-  const vaultKey = await resolveVaultKey(config, api);
 
   console.log(
     "Changing the passphrase re-wraps your vault key.\n" +
       "Your clips are not re-encrypted and your other devices keep working.\n",
   );
 
+  // The server replaces the wrapped key only with proof of the current
+  // passphrase, so holding the vault key is not enough to change it.
+  const current =
+    process.env.CLIPSYNC_PASSPHRASE ?? (await askSecret("Current passphrase: "));
   const next = await askNewPassphrase();
-  await changePassphrase(api, vaultKey, config.kdfSalt, next);
+  try {
+    await changePassphrase(api, config.kdfSalt, current, next);
+  } catch (err) {
+    if (err instanceof DecryptError) {
+      throw new Error("that is not the current passphrase -- nothing was changed");
+    }
+    throw err;
+  }
 
   console.log("\nPassphrase changed.");
   console.log(

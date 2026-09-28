@@ -10,7 +10,7 @@
     "db:create": "wrangler d1 create clipsync",
     "db:migrate:local": "wrangler d1 migrations apply clipsync --local",
     "db:migrate": "wrangler d1 migrations apply clipsync --remote",
-    "test": "echo 'worker is covered by `npm run e2e` against a running dev server'",
+    "test": "vitest run",
     "typecheck": "wrangler types >/dev/null && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -19,9 +19,9 @@
     "hono": "^4.10.7"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.9.12",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "typescript": "^5.9.3",
-    "vitest": "~3.2.4",
+    "vitest": "^4.1.0",
     "wrangler": "^4.129.0"
   }
 }

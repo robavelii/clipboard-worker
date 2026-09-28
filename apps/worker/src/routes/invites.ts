@@ -16,8 +16,9 @@ import type {
   ClaimInviteResponse,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
+import { rateLimit } from "../limits";
 import { getUser } from "../db";
-import { newId } from "../ids";
+import { newId, sha256 } from "../ids";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
 
 /**
@@ -48,7 +49,7 @@ export const inviteRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       !body.sealedVaultKey.startsWith("i1.") ||
       body.sealedVaultKey.length > MAX_SEALED_LENGTH ||
       typeof body.proofHash !== "string" ||
-      !body.proofHash
+      !/^[A-Za-z0-9_-]{43}$/.test(body.proofHash)
     ) {
       throw new HTTPException(400, {
         message: "sealedVaultKey (i1 envelope) and proofHash are required",
@@ -67,7 +68,10 @@ export const inviteRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       ).bind(
         id,
         c.var.device.userId,
-        body.proofHash,
+        // Hashed once more at rest: what the claimant presents is SHA-256(S),
+        // so storing that value itself would let anyone who can read this
+        // table claim the invite.
+        await sha256(body.proofHash),
         body.sealedVaultKey,
         now,
         now + INVITE_TTL_MS,
@@ -87,7 +91,7 @@ export const inviteRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
    * the credential, and the claim is the mutex, so a second scan of the same
    * QR finds nothing.
    */
-  .post("/:id/claim", async (c) => {
+  .post("/:id/claim", rateLimit("UNAUTH_LIMIT", "invite-claim"), async (c) => {
     const body = await c.req.json<ClaimInviteRequest>().catch(() => null);
     if (!body || typeof body.proof !== "string" || !body.proof) {
       throw new HTTPException(400, { message: "proof is required" });
@@ -102,7 +106,7 @@ export const inviteRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
         WHERE id = ? AND proof_hash = ? AND claimed_at IS NULL AND expires_at > ?
         RETURNING user_id, sealed_vault_key`,
     )
-      .bind(now, c.req.param("id"), body.proof, now)
+      .bind(now, c.req.param("id"), await sha256(body.proof), now)
       .first<Pick<InviteRow, "user_id" | "sealed_vault_key">>();
 
     if (!claimed) {

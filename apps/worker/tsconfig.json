@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022"],
-    "noEmit": true
+    "noEmit": true,
+    "types": ["@cloudflare/vitest-pool-workers/types"]
   },
-  "include": ["src", "worker-configuration.d.ts"]
+  "include": ["src", "test", "worker-configuration.d.ts"]
 }
