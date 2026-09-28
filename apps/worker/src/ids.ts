@@ -19,8 +19,9 @@ export function newToken(): string {
 }
 
 /**
- * Human-typeable pairing code, `PAIR-XXXX-XXXX`. ~50 bits of entropy over a
- * 10-minute window, and single-use.
+ * Human-typeable pairing code, `PAIR-XXXX-XXXX`: 8 characters from a
+ * 32-letter alphabet, so 40 bits, over a 10-minute window, single-use, and
+ * rate-limited per address (see limits.ts).
  */
 export function newPairCode(): string {
   const raw = crypto.getRandomValues(new Uint8Array(8));

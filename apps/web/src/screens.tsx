@@ -35,7 +35,12 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
           creds.wrappedVaultKey,
         );
       } catch {
-        setWarning("That passphrase does not unlock this account.");
+        // The code is spent and a device enrolled; revoke it rather than
+        // leave a phantom behind. A fresh code is needed either way.
+        await api.revokeSelf().catch(() => undefined);
+        setWarning(
+          "That passphrase does not unlock this account. Mint a new pairing code and try again.",
+        );
         setBusy(false);
         return;
       }

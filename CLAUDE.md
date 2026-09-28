@@ -35,7 +35,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-End-to-end suite: about 90 checks against the running local Worker, with real crypto and WebSockets, standing in for several devices:
+End-to-end suite: about 95 checks against the running local Worker, with real crypto and WebSockets, standing in for several devices:
 
 ```bash
 npm run e2e    # needs `npm run dev` running; ADMIN_SECRET must match CLIPSYNC_ADMIN_SECRET (default "local-dev-admin-secret")
@@ -114,7 +114,9 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 - Dedupe is across the whole history. A repeat `contentHash` bumps the existing row (`clip.bumped`) instead of inserting. A repeat of the newest clip is a silent no-op.
 - Revocation: `DELETE /api/devices/:id` revokes the token (and drops its sealed keys), and `SyncRoom.disconnect` sends a `{type:"revoked"}` frame and closes with `REVOKED_CLOSE_CODE` (4001). Clients treat that frame, code 4001, or a 401 as terminal and stop reconnecting. The frame is needed because under local workerd an idle socket's close event may never fire.
 - `GET /api/clips?pinned=1` returns every pin unpaged. `useClips` merges it into the first page, and `sortForDisplay` puts pins first in both UIs.
-- Unpinned clips expire after 30 days (hourly cron, `apps/worker/src/index.ts`).
+- Unpinned clips expire after 30 days (hourly cron, `apps/worker/src/purge.ts`), and the cron broadcasts `clip.deleted` for each, from origin `server:expiry`. The same purge revokes devices enrolled by link approvals nobody collected.
+- History pages on `(created_at, id)`: `nextCursor` is `<createdAt>.<id>`, and a bare timestamp from older clients still works.
+- `DELETE /api/devices/me` revokes the calling device. `logout`, the web UI's "Unpair", and a `login`/`pair` whose passphrase fails all call it, so no device is left listed that nobody holds.
 
 ### Agent daemon (`apps/agent/src/daemon.ts`)
 
@@ -125,7 +127,9 @@ It polls the clipboard every 600 ms. Echo suppression is the whole design proble
 3. the `applied` generation counter drops a read that was in flight when a remote clip was written;
 4. the settle rule: push only after the content holds for two consecutive polls.
 
-Reads time out after 5 s; writes don't, because `xclip -i`/`wl-copy` fork a selection-holding child. Exit codes, which the systemd unit depends on:
+Reads time out after 5 s; writes don't, and settle on the tool's `exit`, not `close`: `xclip -i`/`wl-copy` fork a selection-holding child that keeps the inherited stdio open until the next copy.
+
+After a reconnect (not on first start) the daemon applies the newest clip if it is another device's, under 10 minutes old, newer than the last local copy and not already on the clipboard (decisions §23). Exit codes, which the systemd unit depends on:
 
 - **75:** the bundle was rebuilt on disk; restart onto it (`RestartForceExitStatus=75`).
 - **78:** the device was revoked, or re-keyed without a copy for it; never restart (`RestartPreventExitStatus=78`).
@@ -142,7 +146,7 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. `a
 - The webview origin is `tauri://localhost`, so HTTP goes through the Tauri HTTP plugin (`ApiClient`'s `fetchImpl`). WebSockets are unaffected.
 - Adding a Worker host means updating **both** the allowlist in `src-tauri/capabilities/default.json` and the CSP in `src-tauri/tauri.conf.json`.
 - Tauri v2 silently denies any command not granted in `capabilities/`.
-- Debug log: `/tmp/clipsync-desktop.log`.
+- Debug log: `$XDG_STATE_HOME/clipsync/desktop.log` (default `~/.local/state/clipsync/desktop.log`), 0600.
 
 ## Invariants to preserve
 

@@ -432,7 +432,7 @@ check("replayed ticket is refused", !(await opens(ticketUrl.toString())));
 check("forged ticket is refused",
   !(await opens(ticketUrl.toString().replace(/ticket=.*$/, "ticket=made-up"))));
 
-await expectStatus("a device cannot revoke itself",
+await expectStatus("a device cannot revoke itself by id",
   () => pcApi.revokeDevice(pc.deviceId), 400);
 
 // The laptop's socket from the realtime section is still open. Revoking the
@@ -461,6 +461,35 @@ check("a revoked device receives no further clips",
   !received.some((m) => m.type === "clip.created" || m.type === "clip.bumped"));
 
 socket.close();
+
+console.log("\n--- device lifecycle ---");
+
+// Logout and "Unpair" revoke the device itself, which a device could not do
+// before: a forgotten token left the device listed and sealed to by re-keys.
+const leaving = await new ApiClient(BASE).bootstrap(ADMIN, `leaving-${RUN}`, "linux");
+const leavingApi = new ApiClient(BASE, leaving.token);
+await leavingApi.revokeSelf();
+await expectStatus("a device can revoke itself", () => leavingApi.me(), 401);
+let secondLogout = true;
+try { await leavingApi.revokeSelf(); } catch { secondLogout = false; }
+check("revoking yourself twice is not an error", secondLogout);
+check("a revoked-by-itself device is no longer listed",
+  !(await pcApi.devices()).devices.some((d) => d.id === leaving.deviceId));
+
+// Page through the whole history: every clip once, newest first.
+const pagedIds: string[] = [];
+const pagedTimes: number[] = [];
+let cursor: string | number | undefined;
+do {
+  const page = await pcApi.listClips(7, cursor);
+  pagedIds.push(...page.clips.map((c) => c.id));
+  pagedTimes.push(...page.clips.map((c) => c.createdAt));
+  cursor = page.nextCursor ?? undefined;
+} while (cursor !== undefined);
+check("paging visits every clip once", new Set(pagedIds).size === pagedIds.length,
+  `${pagedIds.length - new Set(pagedIds).size} repeated`);
+check("paging stays newest first",
+  pagedTimes.every((t, i) => i === 0 || t <= pagedTimes[i - 1]!));
 
 console.log("\n--- re-key ---");
 

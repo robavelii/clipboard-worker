@@ -64,12 +64,12 @@ export function sortForDisplay(clips: DecryptedClip[]): DecryptedClip[] {
  */
 export function useClips(api: ApiClient, keys: RingKeys) {
   const [clips, setClips] = useState<DecryptedClip[]>([]);
-  const [cursor, setCursor] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<string | number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
-    async (before?: number) => {
+    async (before?: string | number) => {
       try {
         // The first page comes with every pin, however old: pins sort to
         // the top, so one beyond the first page would otherwise be missing
@@ -179,7 +179,7 @@ export function useClips(api: ApiClient, keys: RingKeys) {
     loading,
     error,
     hasMore: cursor !== null,
-    loadMore: () => (cursor ? load(cursor) : undefined),
+    loadMore: () => (cursor !== null ? load(cursor) : undefined),
     applyEvent,
     remove,
     togglePin,

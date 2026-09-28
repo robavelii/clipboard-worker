@@ -106,6 +106,30 @@ export async function clearConfig(): Promise<void> {
   await rm(configPath(), { force: true });
 }
 
+/** What `logout` needs of the tray panel's own device (`tray.json`). */
+export interface TrayCredentials {
+  baseUrl: string;
+  deviceId: string;
+  deviceName: string;
+  token: string;
+}
+
+function trayPath(): string {
+  return join(configDir(), "tray.json");
+}
+
+export async function loadTrayCredentials(): Promise<TrayCredentials | null> {
+  try {
+    return JSON.parse(await readFile(trayPath(), "utf8")) as TrayCredentials;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearTrayCredentials(): Promise<void> {
+  await rm(trayPath(), { force: true });
+}
+
 /** The ring stored in this config, or null in CLIPSYNC_PASSPHRASE mode. */
 export function storedRing(config: AgentConfig): VaultRing | null {
   if (config.vaultKeys && Object.keys(config.vaultKeys).length) {

@@ -31,6 +31,20 @@ const MAX_LIMIT = 200;
 
 type AppEnv = { Bindings: Env; Variables: AuthVars };
 
+/**
+ * `?before=`: `<createdAt>.<id>` as nextCursor hands it out. A bare
+ * timestamp, from clients that predate the id half, still pages -- with the
+ * old gap at a shared millisecond: its empty id sorts before every real one,
+ * so it keeps meaning "older than this timestamp".
+ */
+function parseCursor(raw: string | undefined): { createdAt: number; id: string } | null {
+  if (!raw) return null;
+  const dot = raw.indexOf(".");
+  const createdAt = Number(dot === -1 ? raw : raw.slice(0, dot));
+  if (!Number.isSafeInteger(createdAt) || createdAt <= 0) return null;
+  return { createdAt, id: dot === -1 ? "" : raw.slice(dot + 1) };
+}
+
 /** A write under a vault key the account has rotated away from. */
 function staleEpoch(c: Context<AppEnv, string>, epoch: number) {
   return c.json<ApiError>(
@@ -239,7 +253,7 @@ export const clipRoutes = new Hono<AppEnv>()
     if (c.req.query("pinned") === "1") {
       const { results } = await c.env.DB.prepare(
         `SELECT * FROM clips WHERE user_id = ? AND pinned = 1
-          ORDER BY created_at DESC LIMIT ?`,
+          ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
         .bind(c.var.device.userId, MAX_LIMIT)
         .all<ClipRow>();
@@ -253,7 +267,7 @@ export const clipRoutes = new Hono<AppEnv>()
       Math.max(Number(c.req.query("limit")) || DEFAULT_LIMIT, 1),
       MAX_LIMIT,
     );
-    const before = Number(c.req.query("before")) || null;
+    const before = parseCursor(c.req.query("before"));
     // `?epochBelow=N`: only clips still under a key older than epoch N, for
     // re-encrypting history after a re-key.
     const epochBelow = c.req.query("epochBelow");
@@ -261,8 +275,11 @@ export const clipRoutes = new Hono<AppEnv>()
     const where = ["user_id = ?"];
     const params: unknown[] = [c.var.device.userId];
     if (before) {
-      where.push("created_at < ?");
-      params.push(before);
+      // Strictly after the cursor in (created_at, id) order. created_at
+      // alone skips a clip sharing the last one's millisecond, which a
+      // re-encryption pass or a bump makes likely.
+      where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      params.push(before.createdAt, before.createdAt, before.id);
     }
     if (epochBelow !== undefined) {
       where.push("key_epoch < ?");
@@ -271,16 +288,16 @@ export const clipRoutes = new Hono<AppEnv>()
 
     const { results } = await c.env.DB.prepare(
       `SELECT * FROM clips WHERE ${where.join(" AND ")}
-        ORDER BY created_at DESC LIMIT ?`,
+        ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
       .bind(...params, limit + 1)
       .all<ClipRow>();
     const page = results.slice(0, limit);
+    const last = page.at(-1);
 
     return c.json<ListClipsResponse>({
       clips: page.map(toClip),
-      nextCursor:
-        results.length > limit ? (page.at(-1)?.created_at ?? null) : null,
+      nextCursor: results.length > limit && last ? `${last.created_at}.${last.id}` : null,
     });
   })
 

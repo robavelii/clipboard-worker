@@ -115,7 +115,7 @@ export async function reencryptHistory(
 
   for (let moved = -1; moved !== 0; ) {
     moved = 0;
-    let before: number | undefined;
+    let before: string | number | undefined;
     do {
       const page = await api.listClips(MAX_REENCRYPT_BATCH, before, {
         epochBelow: ring.current,

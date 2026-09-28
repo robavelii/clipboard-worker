@@ -81,6 +81,11 @@ export class SyncRoom extends DurableObject<Env> {
     this.fanout(event, event.origin);
   }
 
+  /** Several events in one call, in order: the expiry cron's deletions. */
+  broadcastAll(events: SyncEvent[]): void {
+    for (const event of events) this.fanout(event, event.origin);
+  }
+
   /** Device ids with a live socket right now. */
   connected(): string[] {
     return this.connectedDeviceIds();

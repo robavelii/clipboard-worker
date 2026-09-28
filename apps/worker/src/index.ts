@@ -16,6 +16,8 @@ import { linkRoutes } from "./routes/link";
 import { syncRoutes } from "./routes/sync";
 import { vaultRoutes } from "./routes/vault";
 
+import { purgeExpired } from "./purge";
+
 export { SyncRoom } from "./sync-room";
 
 const app = new Hono<{ Bindings: Env }>()
@@ -82,25 +84,8 @@ function httpErrorCode(status: number): string {
 export default {
   fetch: app.fetch,
 
-  /**
-   * Hourly purge. Clipboard history is a liability as much as a feature --
-   * unpinned clips die on schedule so a stale API token in the log cannot be
-   * recovered from last spring.
-   */
+  /** Hourly purge; see purge.ts. */
   async scheduled(_controller, env, _ctx): Promise<void> {
-    const now = Date.now();
-    const purged = await env.DB.batch([
-      env.DB.prepare(
-        "DELETE FROM clips WHERE pinned = 0 AND expires_at IS NOT NULL AND expires_at < ?",
-      ).bind(now),
-      env.DB.prepare("DELETE FROM link_requests WHERE expires_at < ?").bind(now),
-      env.DB.prepare("DELETE FROM invites WHERE expires_at < ?").bind(now),
-    ]);
-    console.log({
-      msg: "purged expired rows",
-      clips: purged[0]?.meta.changes ?? 0,
-      linkRequests: purged[1]?.meta.changes ?? 0,
-      invites: purged[2]?.meta.changes ?? 0,
-    });
+    console.log({ msg: "purged expired rows", ...(await purgeExpired(env, Date.now())) });
   },
 } satisfies ExportedHandler<Env>;

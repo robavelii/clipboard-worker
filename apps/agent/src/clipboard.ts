@@ -25,11 +25,18 @@ export interface ClipboardBackend {
  */
 const READ_TIMEOUT_MS = 5_000;
 
+/**
+ * Run a clipboard tool. Reads wait for `close`, when all of stdout is in.
+ * Writes wait for `exit` instead: `xclip -i` and `wl-copy` fork a child that
+ * holds the selection -- and the inherited stdio pipes -- until something
+ * else is copied, so `close` would not fire until the *next* copy.
+ */
 function run(
   cmd: string,
   args: string[],
   stdin?: string,
   timeoutMs?: number,
+  settleOn: "close" | "exit" = "close",
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: "pipe", timeout: timeoutMs });
@@ -41,7 +48,7 @@ function run(
     child.on("error", reject);
     // A null code means the process was killed -- by the timeout, typically.
     // That is a failed read, not an empty clipboard.
-    child.on("close", (code, signal) =>
+    child.on(settleOn, (code: number | null, signal: NodeJS.Signals | null) =>
       resolve({
         code: code ?? -1,
         stdout,
@@ -84,7 +91,7 @@ const wayland: ClipboardBackend = {
     return stdout;
   },
   async write(text) {
-    const { code, stderr } = await run("wl-copy", [], text);
+    const { code, stderr } = await run("wl-copy", [], text, undefined, "exit");
     if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
   },
 };
@@ -109,6 +116,8 @@ const x11: ClipboardBackend = {
       "xclip",
       ["-selection", "clipboard", "-i"],
       text,
+      undefined,
+      "exit",
     );
     if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
   },
