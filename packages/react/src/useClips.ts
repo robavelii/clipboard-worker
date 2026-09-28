@@ -5,7 +5,7 @@
  * so there is nothing for a SQL `LIKE` to match against.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Clip, SyncEvent } from "@clipsync/protocol";
 import { decryptText, type VaultKeys } from "@clipsync/crypto";
 import type { ApiClient } from "@clipsync/client";
@@ -32,6 +32,28 @@ async function decryptAll(
   );
 }
 
+/** Append `more`, skipping any clip already present. */
+function mergeClips(
+  base: DecryptedClip[],
+  more: DecryptedClip[],
+): DecryptedClip[] {
+  const seen = new Set(base.map((c) => c.id));
+  return [...base, ...more.filter((c) => !seen.has(c.id))];
+}
+
+/**
+ * Display order: pinned first, then newest first.
+ *
+ * Pinning is how you keep something from scrolling away under whatever was
+ * copied a minute ago, so it has to change where a clip sits, not only how it
+ * looks.
+ */
+export function sortForDisplay(clips: DecryptedClip[]): DecryptedClip[] {
+  return [...clips].sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
+  );
+}
+
 export function useClips(api: ApiClient, keys: VaultKeys) {
   const [clips, setClips] = useState<DecryptedClip[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -41,9 +63,20 @@ export function useClips(api: ApiClient, keys: VaultKeys) {
   const load = useCallback(
     async (before?: number) => {
       try {
-        const page = await api.listClips(PAGE_SIZE, before);
+        // The first page comes with every pin, however old: pins sort to
+        // the top, so one beyond the first page would otherwise be missing
+        // from exactly where it belongs until "load more" reached it.
+        const [page, pinned] = await Promise.all([
+          api.listClips(PAGE_SIZE, before),
+          before ? null : api.listPinned(),
+        ]);
         const decrypted = await decryptAll(keys, page.clips);
-        setClips((prev) => (before ? [...prev, ...decrypted] : decrypted));
+        const decryptedPins = pinned ? await decryptAll(keys, pinned.clips) : [];
+        setClips((prev) =>
+          before
+            ? mergeClips(prev, decrypted)
+            : mergeClips(decryptedPins, decrypted),
+        );
         setCursor(page.nextCursor);
         setError(null);
       } catch (err) {
@@ -127,11 +160,14 @@ export function useClips(api: ApiClient, keys: VaultKeys) {
     [api, load],
   );
 
+  const ordered = useMemo(() => sortForDisplay(clips), [clips]);
+
   // Stable, so callers can use it as an effect dependency.
   const reload = useCallback(() => load(), [load]);
 
   return {
-    clips,
+    /** Already in display order; see sortForDisplay. */
+    clips: ordered,
     loading,
     error,
     hasMore: cursor !== null,

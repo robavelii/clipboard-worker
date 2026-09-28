@@ -235,14 +235,8 @@ function Panel({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const matching = needle
-      ? clips.filter((c) => c.text?.toLowerCase().includes(needle))
-      : clips;
-    // Pinned first: the panel is small, so what you chose to keep should not
-    // scroll away under whatever you copied a minute ago.
-    return [...matching].sort(
-      (a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt - a.createdAt,
-    );
+    if (!needle) return clips;
+    return clips.filter((c) => c.text?.toLowerCase().includes(needle));
   }, [clips, query]);
 
   const copy = useCallback(async (clip: DecryptedClip) => {
