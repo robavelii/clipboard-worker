@@ -579,3 +579,48 @@ Trap found on the way: the agent's clipboard write waited for the tool's
 stdio to `close`. `xclip -i` and `wl-copy` fork a child that holds the
 selection and those pipes until the next copy, so every write stayed pending
 until then. Writes now settle on `exit`.
+
+## 24. Envelope v2: an authenticated header, not a server-side check
+
+v1 envelopes are bare AES-GCM under the vault key. Every one of the user's
+ciphertexts opens equally well in any row, so the server could put last
+week's clip in a new row, name another device as its source, and push it as
+a fresh copy: the agent would dutifully write it to the clipboard (audit O8).
+
+**What is bound.** v2 is `v2.<header>.<iv>.<ct>`. The header is base64url
+JSON naming the copying device, its clock at the copy, and the clip type.
+The associated data is `clipsync:clip:v2:<account>:<header as encoded>`, so
+the header cannot be edited, a ciphertext cannot be spliced under another
+header, and an envelope cannot move to another account. The header is not
+secret: the server already knows the device, roughly the time, and the type.
+
+**What clients check.** After opening a v2 clip, a device requires the
+header's device and type to match the row, and the row's dedupe tag to be
+the HMAC of the plaintext. The agent refuses a clip whose authenticated copy
+time is more than ten minutes old (the catch-up window, which also absorbs
+clock skew). The server can still withhold, delay within ten minutes,
+reorder, or replay a clip into its *own* row, where it shows its true age.
+None of that puts foreign content on a clipboard.
+
+**Alternatives.** A client-chosen clip id in the associated data was the
+roadmap's first idea. It protects the id, but ids mean nothing to a user: the
+device and the time are what the agent acts on. Server-side signing adds
+nothing, since the server is the party being guarded against.
+
+**Bumps replace the envelope.** A re-copy used to keep the first copy's
+envelope. Under v2 that envelope names the first copy's device and time,
+which would contradict the row the bump rewrites, and would read as a
+replay. The new copy's envelope now replaces it.
+
+**v1 is readable, not trusted.** Old clips, and clients not yet updated,
+still produce v1, so a server can replay a v1 clip. Re-encryption writes
+v2, so `clipsync rekey` upgrades history. For a v1 clip, re-encryption
+vouches for the device and time the server reported, which is the price of
+the upgrade.
+
+Traps:
+- The Worker reads the header without the key (`peekClipHeader`) and
+  insists it names the writing device. Clients never trust the header
+  without opening the envelope.
+- The dedupe check applies to v2 only. Old rows may carry tags from before
+  the HMAC existed, and v1 has nothing else authenticated anyway.

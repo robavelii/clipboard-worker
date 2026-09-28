@@ -31,7 +31,15 @@ import {
   registerDeviceKey,
   rekeyVault,
 } from "@clipsync/client/rekey";
-import { currentKey, decryptClip, ringKeysFrom, ringOf, type VaultRing } from "@clipsync/client/ring";
+import {
+  currentKey,
+  decryptClip,
+  readClip,
+  ringKeysFrom,
+  ringOf,
+  sealText,
+  type VaultRing,
+} from "@clipsync/client/ring";
 import {
   PING_FRAME,
   MAX_ENVELOPE_BYTES,
@@ -491,6 +499,37 @@ check("paging visits every clip once", new Set(pagedIds).size === pagedIds.lengt
 check("paging stays newest first",
   pagedTimes.every((t, i) => i === 0 || t <= pagedTimes[i - 1]!));
 
+console.log("\n--- envelope v2 ---");
+
+// v2 binds the copying device, copy time and type to the ciphertext, so a
+// server cannot present one clip as another's copy. The server here is
+// honest, so tampering is simulated on the client's copy of the row.
+const pcRing = await ringKeysFrom(ringOf(vaultKey, EPOCH), pc.kdfSalt);
+const phoneRingKeys = await ringKeysFrom(ringOf(phone.vaultKey, EPOCH), phone.credentials.kdfSalt);
+const V2_TEXT = `sealed with v2 # ${RUN}`;
+const v2Created = await pcApi.createClip(await sealText(pcRing, pc.userId, pc.deviceId, V2_TEXT));
+const v2Clip = await phoneApi.getClip(v2Created.id);
+check("clips are written as v2 envelopes", v2Clip.envelope.startsWith("v2."));
+const v2Opened = await readClip(phoneRingKeys, v2Clip, phone.credentials.userId);
+check("another device reads a v2 clip", v2Opened.text === V2_TEXT);
+check("and learns who copied it, authenticated",
+  v2Opened.origin === pc.deviceId && Math.abs(Date.now() - (v2Opened.copiedAt ?? 0)) < 60_000);
+
+const refusedAs = async (clip: typeof v2Clip, account = phone.credentials.userId) =>
+  (await readClip(phoneRingKeys, clip, account).catch(() => null)) === null;
+check("a v2 clip does not open for another account",
+  await refusedAs(v2Clip, "usr_someone_else"));
+check("a clip presented as another device's copy is refused",
+  await refusedAs({ ...v2Clip, deviceId: phone.credentials.deviceId }));
+check("a clip whose dedupe tag was swapped is refused",
+  await refusedAs({ ...v2Clip, contentHash: v2Clip.contentHash.replace(/^./, (ch) => (ch === "A" ? "B" : "A")) }));
+const otherV2 = await phoneApi.getClip((await pcApi.createClip(
+  await sealText(pcRing, pc.userId, pc.deviceId, `another v2 clip # ${RUN}`))).id);
+check("one clip's envelope in another clip's row is refused",
+  await refusedAs({ ...v2Clip, envelope: otherV2.envelope }));
+await expectStatus("the server refuses a v2 envelope naming another device",
+  async () => pcApi.createClip(await sealText(pcRing, pc.userId, phone.credentials.deviceId, `forged # ${RUN}`)), 400);
+
 console.log("\n--- re-key ---");
 
 // The phone (invite) and the linked device register device keys; the pc,
@@ -516,9 +555,12 @@ const beforeRekey = await pcApi.createClip({ keyEpoch: EPOCH,
 });
 
 let storedFirst: VaultRing | null = null;
-const rekeyed = await rekeyVault(pcApi, pc.kdfSalt, PASS, ringOf(vaultKey, EPOCH), {
-  onRotated: (ring) => { storedFirst = ring; },
-});
+const rekeyed = await rekeyVault(
+  pcApi,
+  { account: pc.userId, kdfSalt: pc.kdfSalt, ring: ringOf(vaultKey, EPOCH) },
+  PASS,
+  { onRotated: (ring) => { storedFirst = ring; } },
+);
 const NEXT = EPOCH + 1;
 const newKey = currentKey(rekeyed.ring);
 check("re-keying moves the vault to the next epoch", rekeyed.epoch === NEXT);
@@ -553,11 +595,13 @@ const newKeys = await ringKeysFrom(rekeyed.ring, pc.kdfSalt);
 const moved = (await pcApi.getClip(beforeRekey.id));
 check("history is re-encrypted under the new key", moved.keyEpoch === NEXT);
 check("and still reads the same",
-  (await decryptClip(newKeys, moved).catch(() => null)) === BEFORE_REKEY);
+  (await decryptClip(newKeys, moved, pc.userId).catch(() => null)) === BEFORE_REKEY);
+check("re-encryption upgrades history to v2 envelopes", moved.envelope.startsWith("v2."));
+const oldKeyAsNew = await ringKeysFrom(ringOf(vaultKey, NEXT), pc.kdfSalt);
 check("the old key no longer opens it",
-  (await decryptText(keys, moved.envelope).catch(() => null)) === null);
+  (await decryptClip(oldKeyAsNew, moved, pc.userId).catch(() => null)) === null);
 
-const again2 = await reencryptHistory(pcApi, rekeyed.ring, pc.kdfSalt);
+const again2 = await reencryptHistory(pcApi, { account: pc.userId, kdfSalt: pc.kdfSalt, ring: rekeyed.ring });
 check("re-encryption is safe to run again", again2.reencrypted === 0);
 
 const bumpedAfter = await pcApi.createClip({

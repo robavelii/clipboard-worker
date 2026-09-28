@@ -81,7 +81,7 @@ The shared packages exist so one implementation of each flow runs on all three s
 ```
 passphrase --PBKDF2(salt, 600k)--> master --HKDF("clipsync:kek:v1")--> KEK --wraps--> vault key (32 random bytes)
                                           `--HKDF("clipsync:auth:v1")--> authProof (server keeps SHA-256 = users.auth_hash)
-vault key --HKDF("clipsync:enc:v1")----> AES-GCM-256 (clip envelopes "v1.<iv>.<ct>")
+vault key --HKDF("clipsync:enc:v1")----> AES-GCM-256 (clip envelopes "v2.<header>.<iv>.<ct>", AAD = account + header; legacy "v1.<iv>.<ct>")
 vault key --HKDF("clipsync:dedupe:v1")-> HMAC-SHA256 (contentHash: dedupe tag, never a bare digest)
 device key (P-256) <--ECDH-- re-key seals each new vault key to it ("d1.", crypto/device.ts)
 ```
@@ -92,7 +92,8 @@ device key (P-256) <--ECDH-- re-key seals each new vault key to it ("d1.", crypt
 - **Key epochs** (decisions §22). `users.key_epoch` and `clips.key_epoch`; a device holds a ring of keys by epoch (`packages/client/src/ring.ts`), decrypts each clip with `decryptClip`, and writes only under the current key, naming it as `keyEpoch`. The server refuses a write under an older epoch with 409 `stale_epoch`, so every write path must pass `keyEpoch` and handle that by refreshing the ring.
 - **Device keys.** Every device registers a P-256 public key (`PUT /api/devices/me/key`). Agent and tray keep the keypair in their config file; the browser keeps a non-extractable one in IndexedDB. `rekeyVault` (`packages/client/src/rekey.ts`) rotates in one guarded batch (`POST /api/vault/rotate`: epoch bump, new wrapped key, a sealed copy per active device), then re-encrypts history with conditional writes (`POST /api/clips/reencrypt`), resumable via `reencryptHistory`. Devices pick up their copy (`GET /api/vault/sealed`) on `vault.rotated`, a 409, a clip under a newer epoch, or startup. No copy, or one they cannot open, is `NoSealedKeyError`: the agent exits 78, a browser falls back to the passphrase.
 - **Legacy accounts** (created before the vault key existed) use `legacyVaultKey = PBKDF2 master` as their vault key, which keeps old clips decryptable. `unlockVault` in `packages/client/src/vault.ts` owns that rule; don't duplicate it.
-- Envelope prefixes are versioned (`v1`, `k1`, `l1`, `i1`). A format change is a new prefix, never an in-place change.
+- Envelope prefixes are versioned (`v1`/`v2`, `k1`, `l1`, `i1`, `d1`). A format change is a new prefix, never an in-place change.
+- **Clip envelopes are v2** (decisions §24). The header names the copying device, the copy time and the type, and AES-GCM's associated data binds it and the account id to the ciphertext. Write clips with `sealText` and read them with `readClip`/`decryptClip` (`packages/client/src/ring.ts`), never with raw `encryptText`/`decryptText`. `readClip` also refuses a v2 clip whose header disagrees with its row, or whose dedupe tag is not its plaintext's. The Worker checks a v2 header names the writing device. A bump replaces the stored envelope, and re-encryption writes v2, so a re-key upgrades history. v1 stays readable but unauthenticated.
 
 ### Enrolling a device (four paths, all ending in a hashed bearer token)
 
@@ -122,7 +123,7 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 
 It polls the clipboard every 600 ms. Echo suppression is the whole design problem, and there are four guards:
 
-1. ignore events from its own `origin`;
+1. ignore events from its own `origin` (and, separately, never apply a v2 clip whose authenticated copy time is over 10 minutes old: that is a replay, not a copy);
 2. `lastHandled` = the hash of whatever it last pushed *or* applied;
 3. the `applied` generation counter drops a read that was in flight when a remote clip was written;
 4. the settle rule: push only after the content holds for two consecutive polls.
