@@ -46,7 +46,11 @@ export interface Clip {
   id: string;
   deviceId: string;
   type: ClipType;
-  /** Opaque ciphertext envelope, `v1.<iv>.<ct>`. */
+  /**
+   * Ciphertext envelope. `v2.<header>.<iv>.<ct>` binds the copying device,
+   * copy time and type to the ciphertext (clients check them against this
+   * row); legacy `v1.<iv>.<ct>` carries nothing but the text.
+   */
   envelope: string;
   /** HMAC of the plaintext under the user's dedupe key. Never a bare hash. */
   contentHash: string;

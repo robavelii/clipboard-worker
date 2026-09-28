@@ -22,6 +22,7 @@ import {
   type ReencryptClipsResponse,
   type SyncEvent,
 } from "@clipsync/protocol";
+import { peekClipHeader } from "@clipsync/crypto";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, type ClipRow } from "../db";
 import { newId } from "../ids";
@@ -43,6 +44,25 @@ function parseCursor(raw: string | undefined): { createdAt: number; id: string }
   const createdAt = Number(dot === -1 ? raw : raw.slice(0, dot));
   if (!Number.isSafeInteger(createdAt) || createdAt <= 0) return null;
   return { createdAt, id: dot === -1 ? "" : raw.slice(dot + 1) };
+}
+
+/**
+ * A clip envelope this device may store: legacy v1, or a v2 whose readable
+ * header names this device and a text clip. The header is authenticated
+ * only to clients, but checking it here keeps an honest server's rows and
+ * envelopes in agreement -- which is what clients hold them to.
+ */
+function assertEnvelope(envelope: string, deviceId: string): void {
+  if (envelope.startsWith("v1.")) return;
+  const header = peekClipHeader(envelope);
+  if (!header) {
+    throw new HTTPException(400, { message: "envelope must be v1 or v2" });
+  }
+  if (header.device !== deviceId || header.type !== "text") {
+    throw new HTTPException(400, {
+      message: "a v2 envelope must name the device writing it and a text clip",
+    });
+  }
 }
 
 /** A write under a vault key the account has rotated away from. */
@@ -114,6 +134,7 @@ export const clipRoutes = new Hono<AppEnv>()
 
     const { userId, deviceId } = c.var.device;
     const now = Date.now();
+    assertEnvelope(body.envelope, deviceId);
 
     // Clips are only stored under the current vault key. A device that has
     // not picked up a re-key yet is sent to fetch it, rather than leaving new
@@ -164,13 +185,14 @@ export const clipRoutes = new Hono<AppEnv>()
         ? existing.expires_at
         : bumpedAt + DEFAULT_TTL_DAYS * 86_400_000;
 
-      // The stored envelope is kept rather than replaced: it already decrypts
-      // to the same plaintext, and rewriting it would buy nothing.
+      // The new envelope replaces the stored one. Same plaintext, but a v2
+      // envelope vouches for who copied it and when, and a device checks
+      // that against the row: the old one names the first copy.
       await c.env.DB.prepare(
-        `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?
+        `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?, envelope = ?
           WHERE id = ? AND user_id = ?`,
       )
-        .bind(bumpedAt, deviceId, expiresAt, existing.id, userId)
+        .bind(bumpedAt, deviceId, expiresAt, body.envelope, existing.id, userId)
         .run();
 
       const bumped = toClip({
@@ -178,6 +200,7 @@ export const clipRoutes = new Hono<AppEnv>()
         created_at: bumpedAt,
         device_id: deviceId,
         expires_at: expiresAt,
+        envelope: body.envelope,
       });
 
       await publish(c, userId, {
@@ -326,13 +349,13 @@ export const clipRoutes = new Hono<AppEnv>()
         typeof item.id !== "string" ||
         !Number.isInteger(item.fromEpoch) ||
         typeof item.envelope !== "string" ||
-        !item.envelope.startsWith("v1.") ||
+        peekClipHeader(item.envelope)?.type !== "text" ||
         item.envelope.length > MAX_ENVELOPE_BYTES ||
         typeof item.contentHash !== "string" ||
         !item.contentHash
       ) {
         throw new HTTPException(400, {
-          message: "each item needs id, fromEpoch, a v1 envelope and contentHash",
+          message: "each item needs id, fromEpoch, a v2 envelope and contentHash",
         });
       }
     }
@@ -348,8 +371,11 @@ export const clipRoutes = new Hono<AppEnv>()
     const results = await c.env.DB.batch(
       items.map((item) =>
         c.env.DB.prepare(
+          // The envelope must name the device the row does: re-encryption
+          // moves a clip to a new key, it does not re-attribute it.
           `UPDATE clips SET envelope = ?, content_hash = ?, key_epoch = ?
             WHERE id = ? AND user_id = ? AND key_epoch = ? AND key_epoch < ?
+              AND device_id = ?
               AND (SELECT key_epoch FROM users WHERE id = ?) = ?`,
         ).bind(
           item.envelope,
@@ -359,6 +385,7 @@ export const clipRoutes = new Hono<AppEnv>()
           userId,
           item.fromEpoch,
           epoch,
+          peekClipHeader(item.envelope)!.device,
           userId,
           epoch,
         ),

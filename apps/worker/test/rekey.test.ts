@@ -10,7 +10,7 @@ import type {
   SealedVaultKeyResponse,
   VaultKeyResponse,
 } from "@clipsync/protocol";
-import { api, bootstrap } from "./helpers";
+import { api, bootstrap, v2Envelope } from "./helpers";
 
 const WRAPPED = "k1.aXYtaXYtaXYtaXY.Y2lwaGVydGV4dA";
 const WRAPPED_2 = "k1.b3RoZXItaXYtaXY.bmV3LWNpcGhlcnRleHQ";
@@ -227,7 +227,7 @@ describe("POST /api/clips/reencrypt", () => {
 
   it("moves a clip to the current key, once", async () => {
     const { owner, id } = await withOldClip();
-    const item = { id, fromEpoch: 0, envelope: "v1.bmV3LWl2LW5ldy1pdg.cmVrZXllZA", contentHash: "new-hash" };
+    const item = { id, fromEpoch: 0, envelope: v2Envelope(owner.deviceId, "text", "rekeyed"), contentHash: "new-hash" };
     const first = await api("/api/clips/reencrypt", {
       method: "POST",
       token: owner.token,
@@ -250,6 +250,19 @@ describe("POST /api/clips/reencrypt", () => {
       await api("/api/clips?epochBelow=1", { token: owner.token })
     ).json()) as ListClipsResponse;
     expect(left.clips).toEqual([]);
+  });
+
+  it("takes only v2 envelopes, naming the device the row does", async () => {
+    const { owner, phone, id } = await withOldClip();
+    const reencrypt = (envelope: string) =>
+      api("/api/clips/reencrypt", {
+        method: "POST",
+        token: owner.token,
+        body: { items: [{ id, fromEpoch: 0, envelope, contentHash: "h" }] },
+      });
+    expect((await reencrypt("v1.bmV3LWl2LW5ldy1pdg.cmVrZXllZA")).status).toBe(400);
+    // Re-attributing the clip to another device writes nothing.
+    expect(await (await reencrypt(v2Envelope(phone.deviceId))).json()).toEqual({ updated: 0, epoch: 1 });
   });
 
   it("refuses an empty or oversized batch", async () => {
