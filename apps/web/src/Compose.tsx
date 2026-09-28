@@ -15,17 +15,20 @@
 import { useState, type FormEvent } from "react";
 import { STALE_EPOCH_ERROR } from "@clipsync/protocol";
 import { ApiRequestError, type ApiClient } from "@clipsync/client";
-import { currentKeys, type RingKeys } from "@clipsync/client/ring";
-import { dedupeHash, encryptText } from "@clipsync/crypto";
+import { sealText, type RingKeys } from "@clipsync/client/ring";
 
 export function Compose({
   api,
   keys,
+  account,
+  deviceId,
   onSent,
   onStale,
 }: {
   api: ApiClient;
   keys: RingKeys;
+  account: string;
+  deviceId: string;
   onSent: () => void;
   /** The vault was re-keyed and this tab missed it: fetch the new key. */
   onStale: () => Promise<void>;
@@ -43,14 +46,7 @@ export function Compose({
     setBusy(true);
     setError(null);
     try {
-      const current = currentKeys(keys);
-      await api.createClip({
-        type: "text",
-        envelope: await encryptText(current, payload),
-        contentHash: await dedupeHash(current, payload),
-        size: new TextEncoder().encode(payload).length,
-        keyEpoch: keys.current,
-      });
+      await api.createClip(await sealText(keys, account, deviceId, payload));
       setText("");
       setJustSent(true);
       setTimeout(() => setJustSent(false), 1800);

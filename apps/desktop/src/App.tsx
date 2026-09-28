@@ -124,6 +124,8 @@ async function trayConfigFor(agent: AgentConfig): Promise<TrayConfig> {
 
 interface AgentConfig {
   baseUrl: string;
+  /** The account; envelopes are bound to it. */
+  userId: string;
   token: string;
   kdfSalt: string;
   deviceName: string;
@@ -195,6 +197,7 @@ type Boot =
       api: ApiClient;
       ring: VaultRing;
       kdfSalt: string;
+      account: string;
       keypair: DeviceKeypair;
       tray: TrayConfig;
     };
@@ -249,6 +252,7 @@ export function App() {
           api,
           ring,
           kdfSalt: config.kdfSalt,
+          account: config.userId,
           keypair: ensured.keypair,
           tray,
         });
@@ -324,22 +328,32 @@ function Keyed({
   }, [boot, onStranded]);
 
   if (!keys) return <div className="panel centered muted">Loading…</div>;
-  return <Panel api={boot.api} keys={keys} tray={boot.tray} onRefreshRing={refresh} />;
+  return (
+    <Panel
+      api={boot.api}
+      keys={keys}
+      account={boot.account}
+      tray={boot.tray}
+      onRefreshRing={refresh}
+    />
+  );
 }
 
 function Panel({
   api,
   keys,
+  account,
   tray,
   onRefreshRing,
 }: {
   api: ApiClient;
   keys: RingKeys;
+  account: string;
   tray: TrayConfig;
   onRefreshRing: () => Promise<void>;
 }) {
   const { clips, loading, error, applyEvent, remove, togglePin, reload } =
-    useClips(api, keys);
+    useClips(api, keys, account);
   const onEvent = useCallback(
     (event: SyncEvent) => {
       if (event.type === "vault.rotated") {
