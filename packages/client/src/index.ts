@@ -7,7 +7,10 @@
 
 import type {
   ApiError,
+  BlobUsageResponse,
   Clip,
+  CreateBlobRequest,
+  CreateBlobResponse,
   CreateClipRequest,
   CreateClipResponse,
   Credentials,
@@ -64,12 +67,13 @@ export class ApiClient {
     return this.baseUrl ? new URL(path, this.baseUrl).toString() : path;
   }
 
-  private async request<T>(
+  private async send(
     path: string,
-    init: RequestInit = {},
-  ): Promise<T> {
+    init: RequestInit,
+    contentType = "application/json",
+  ): Promise<Response> {
     const headers = new Headers(init.headers);
-    headers.set("content-type", "application/json");
+    headers.set("content-type", contentType);
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
 
     const res = await this.fetchImpl(this.url(path), { ...init, headers });
@@ -82,7 +86,11 @@ export class ApiClient {
         body?.message ?? `${res.status} ${res.statusText}`,
       );
     }
-    return (await res.json()) as T;
+    return res;
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    return (await (await this.send(path, init)).json()) as T;
   }
 
   bootstrap(
@@ -264,5 +272,34 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ pinned }),
     });
+  }
+
+  /* ------------------------------ blobs ------------------------------ */
+
+  /** Reserve room for an encrypted image or file; see /api/blobs. */
+  createBlob(body: CreateBlobRequest): Promise<CreateBlobResponse> {
+    return this.request("/api/blobs", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async putBlobChunk(id: string, index: number, sealed: Uint8Array): Promise<void> {
+    await this.send(
+      `/api/blobs/${encodeURIComponent(id)}/${index}`,
+      { method: "PUT", body: new Uint8Array(sealed) },
+      "application/octet-stream",
+    );
+  }
+
+  async getBlobChunk(id: string, index: number): Promise<Uint8Array> {
+    const res = await this.send(`/api/blobs/${encodeURIComponent(id)}/${index}`, {});
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  deleteBlob(id: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/blobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  /** This month's R2 use against the Worker's free-tier budget. */
+  blobUsage(): Promise<BlobUsageResponse> {
+    return this.request("/api/blobs/usage");
   }
 }

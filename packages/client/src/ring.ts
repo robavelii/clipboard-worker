@@ -68,9 +68,48 @@ export function currentKeys(keys: RingKeys): VaultKeys {
   return current;
 }
 
+/**
+ * What an image or file clip's envelope holds: everything needed to fetch,
+ * decrypt and check its bytes. The blob's key is here and nowhere else.
+ */
+export interface FileMeta {
+  name: string;
+  mime: string;
+  /** Plaintext bytes. */
+  size: number;
+  /** Hex SHA-256 of the plaintext, checked after download. */
+  sha256: string;
+  /** The blob's own AES-GCM key (see @clipsync/crypto generateBlobKey). */
+  key: string;
+  blobId: string;
+  chunks: number;
+}
+
+function isFileMeta(value: unknown): value is FileMeta {
+  const m = value as Partial<FileMeta> | null;
+  return (
+    !!m &&
+    typeof m.name === "string" &&
+    typeof m.mime === "string" &&
+    Number.isSafeInteger(m.size) &&
+    typeof m.sha256 === "string" &&
+    typeof m.key === "string" &&
+    typeof m.blobId === "string" &&
+    Number.isSafeInteger(m.chunks)
+  );
+}
+
+/** A file's dedupe tag is over its digest: the bytes never reach HMAC whole. */
+function fileTag(sha256: string): string {
+  return `blob:${sha256}`;
+}
+
 /** A clip as a device reads it. */
 export interface OpenedClip {
+  /** The text, or for an image or file its name. */
   text: string;
+  /** An image or file clip's metadata; null for text. */
+  file: FileMeta | null;
   /**
    * What the envelope itself vouches for: the copying device and its clock
    * at the copy. null for v1 envelopes, which carry no authenticated
@@ -80,7 +119,9 @@ export interface OpenedClip {
   copiedAt: number | null;
 }
 
-type ReadableClip = Pick<Clip, "envelope" | "keyEpoch" | "deviceId" | "type" | "contentHash">;
+type ReadableClip = Pick<Clip, "envelope" | "keyEpoch" | "deviceId" | "type" | "contentHash"> & {
+  blobId?: string | null;
+};
 
 /**
  * Open a clip with the key for the epoch it names, and check it is the clip
@@ -104,17 +145,41 @@ export async function readClip(
   }
   if (!clip.envelope.startsWith("v2.")) {
     // Legacy: readable, but nothing about it is authenticated beyond the text.
-    return { text: await decryptText(epochKeys, clip.envelope), origin: null, copiedAt: null };
+    if (clip.type !== "text") throw new DecryptError("image and file clips are always v2");
+    return {
+      text: await decryptText(epochKeys, clip.envelope),
+      file: null,
+      origin: null,
+      copiedAt: null,
+    };
   }
   const { header, payload } = await openClip(epochKeys, account, clip.envelope);
   if (header.device !== clip.deviceId || header.type !== clip.type) {
     throw new DecryptError("the clip's envelope does not match its row");
   }
-  const text = new TextDecoder().decode(payload);
-  if ((await dedupeHash(epochKeys, text)) !== clip.contentHash) {
+  const decoded = new TextDecoder().decode(payload);
+  const authenticated = { origin: header.device, copiedAt: header.copiedAt };
+
+  if (clip.type === "text") {
+    if ((await dedupeHash(epochKeys, decoded)) !== clip.contentHash) {
+      throw new DecryptError("the clip's dedupe tag does not match its contents");
+    }
+    return { text: decoded, file: null, ...authenticated };
+  }
+
+  let meta: unknown;
+  try {
+    meta = JSON.parse(decoded);
+  } catch {
+    meta = null;
+  }
+  if (!isFileMeta(meta) || meta.blobId !== clip.blobId) {
+    throw new DecryptError("the clip's envelope does not match its blob");
+  }
+  if ((await dedupeHash(epochKeys, fileTag(meta.sha256))) !== clip.contentHash) {
     throw new DecryptError("the clip's dedupe tag does not match its contents");
   }
-  return { text, origin: header.device, copiedAt: header.copiedAt };
+  return { text: meta.name, file: meta, ...authenticated };
 }
 
 /** {@link readClip}, for callers that only want the text. */
@@ -154,5 +219,38 @@ export async function sealText(
     contentHash: await dedupeHash(current, text),
     size: new TextEncoder().encode(text).length,
     keyEpoch: keys.current,
+  };
+}
+
+/** What a device sends to store an image or file clip, once its blob is up. */
+export interface SealedFile extends SealedText {
+  blobId: string;
+}
+
+/**
+ * Seal an image or file clip's metadata under the current key. The bytes
+ * are already in the blob; this is the row that adopts it.
+ */
+export async function sealFile(
+  keys: RingKeys,
+  account: string,
+  device: string,
+  type: Exclude<ClipType, "text">,
+  meta: FileMeta,
+  copiedAt = Date.now(),
+): Promise<SealedFile> {
+  const current = currentKeys(keys);
+  return {
+    type,
+    envelope: await sealClip(
+      current,
+      account,
+      { device, copiedAt, type },
+      new TextEncoder().encode(JSON.stringify(meta)),
+    ),
+    contentHash: await dedupeHash(current, fileTag(meta.sha256)),
+    size: meta.size,
+    keyEpoch: keys.current,
+    blobId: meta.blobId,
   };
 }

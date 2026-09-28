@@ -26,6 +26,7 @@ import {
   currentKey,
   readClip,
   ringKeysFrom,
+  sealFile,
   sealText,
   withKey,
   type VaultRing,
@@ -130,13 +131,13 @@ export async function reencryptHistory(
           // Kept as the device and time it was stored under. For a v1 clip
           // that is the server's word, which re-encryption now vouches for:
           // the price of upgrading history to authenticated envelopes.
-          const sealed = await sealText(
-            keys,
-            account,
-            clip.deviceId,
-            opened.text,
-            opened.copiedAt ?? clip.createdAt,
-          );
+          const copiedAt = opened.copiedAt ?? clip.createdAt;
+          // An image or file's envelope holds its blob's key; re-sealing that
+          // is the whole job -- the bytes in R2 stay as they are.
+          const sealed =
+            opened.file && clip.type !== "text"
+              ? await sealFile(keys, account, clip.deviceId, clip.type, opened.file, copiedAt)
+              : await sealText(keys, account, clip.deviceId, opened.text, copiedAt);
           items.push({
             id: clip.id,
             fromEpoch: clip.keyEpoch,
