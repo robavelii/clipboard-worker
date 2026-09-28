@@ -235,11 +235,21 @@ for installability. The worker caches nothing deliberately: the payloads are
 ciphertext fetched with a bearer token, and a cache would outlive the tab that
 holds the key.
 
-iOS has no share-target support, so a Shortcut opens `/share?text=…` instead.
+iOS has no share-target support, so a Shortcut opens `/share#text=…` instead.
 The Shortcut carries only the text — it cannot encrypt, because Shortcuts has
 no AES-GCM — and the web app does the sealing before anything is uploaded. The
 two platforms therefore converge on one endpoint rather than growing separate
 paths.
+
+**The URL is the one place the text is plaintext.** Android's share target
+can only put it in a query string, and a query string is sent to the server
+with the page request, so every shared clip used to cross the edge
+unencrypted, in a URL that proxies and request logs record. The service
+worker now answers `/share` navigations itself, with the app shell fetched
+without the query, so the text stays on the phone. The iOS Shortcut uses a
+fragment instead, which browsers never send, so it does not depend on the
+service worker. Either way the page scrubs the text from the address bar
+once it has read it.
 
 **The cost is the unlock.** Sharing opens a fresh tab, and the vault key lives
 in sessionStorage, so every share would demand the passphrase. That is enough
