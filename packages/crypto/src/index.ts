@@ -305,7 +305,9 @@ interface WireHeader {
 }
 
 function clipAad(account: string, header: string): Uint8Array<ArrayBuffer> {
-  return enc.encode(`clipsync:clip:v2:${account}:${header}`);
+  // Copied into a plain ArrayBuffer: TextEncoder's result type varies with
+  // the TypeScript lib, and WebCrypto's parameter type does not.
+  return new Uint8Array(enc.encode(`clipsync:clip:v2:${account}:${header}`));
 }
 
 /**
@@ -319,7 +321,7 @@ export async function sealClip(
   keys: VaultKeys,
   account: string,
   header: ClipHeader,
-  payload: Uint8Array<ArrayBuffer>,
+  payload: Uint8Array,
 ): Promise<string> {
   const wire: WireHeader = { d: header.device, t: header.copiedAt, k: header.type };
   const encodedHeader = toBase64Url(enc.encode(JSON.stringify(wire)));
@@ -327,7 +329,7 @@ export async function sealClip(
   const ct = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: clipAad(account, encodedHeader) },
     keys.enc,
-    payload,
+    new Uint8Array(payload),
   );
   return `${CLIP_ENVELOPE_V2}.${encodedHeader}.${toBase64Url(iv)}.${toBase64Url(new Uint8Array(ct))}`;
 }
