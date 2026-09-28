@@ -211,7 +211,9 @@ describe("v2 envelopes", () => {
     const phone = await bootstrap("phone");
     expect((await post(owner.token, v2Envelope(phone.deviceId))).status).toBe(400);
     expect((await post(owner.token, v2Envelope(owner.deviceId, "image"))).status).toBe(400);
-    expect((await post(owner.token, "v2.bm90LWpzb24.aXY.Y3Q")).status).toBe(400);
+    // A header that is not JSON.
+    const notJson = btoa("not-json").replace(/=+$/, "");
+    expect((await post(owner.token, `v2.${notJson}.aXY.Y3Q`)).status).toBe(400);
     expect((await post(owner.token, "v9.aXY.Y3Q")).status).toBe(400);
   });
 
