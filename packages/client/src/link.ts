@@ -23,6 +23,15 @@ import type {
 /** Poll interval while waiting for a human to approve. */
 const POLL_MS = 2000;
 
+/**
+ * An API path against `baseUrl`, or the bare path when `baseUrl` is "" -- the
+ * web UI, which is served from the Worker's own origin. `new URL(path, "")`
+ * throws, which is how approving a link from the web UI used to fail.
+ */
+function endpoint(baseUrl: string, path: string): string {
+  return baseUrl ? new URL(path, baseUrl).toString() : path;
+}
+
 export interface PendingLink {
   keypair: LinkKeypair;
   linkId: string;
@@ -67,7 +76,7 @@ export async function beginLink(
 ): Promise<PendingLink> {
   const keypair = await createLinkKeypair();
 
-  const res = await fetch(new URL("/api/link/request", baseUrl), {
+  const res = await fetch(endpoint(baseUrl, "/api/link/request"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -113,7 +122,7 @@ export async function awaitApproval(
     }
 
     const res = await fetch(
-      new URL(`/api/link/${pending.linkId}/claim`, baseUrl),
+      endpoint(baseUrl, `/api/link/${pending.linkId}/claim`),
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -154,7 +163,7 @@ export async function inspectLink(
   token: string,
   linkId: string,
 ): Promise<LinkStatusResponse> {
-  const res = await fetch(new URL(`/api/link/${linkId}`, baseUrl), {
+  const res = await fetch(endpoint(baseUrl, `/api/link/${linkId}`), {
     headers: { authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -194,7 +203,7 @@ export async function approveLink(
     vaultKey,
   );
 
-  const res = await fetch(new URL(`/api/link/${linkId}/approve`, baseUrl), {
+  const res = await fetch(endpoint(baseUrl, `/api/link/${linkId}/approve`), {
     method: "POST",
     headers: {
       "content-type": "application/json",
