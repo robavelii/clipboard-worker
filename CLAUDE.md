@@ -164,7 +164,7 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. `a
 
 ### Abuse limits
 
-The unauthenticated endpoints (`bootstrap`, `pair`, invite `claim`, `link/request`) are rate-limited per client address through the `STRICT_LIMIT` / `UNAUTH_LIMIT` bindings (`src/limits.ts`, `wrangler.jsonc`), keyed by `CF-Connecting-IP`. That header is absent locally, and **limiting is skipped when it is missing**, so e2e and local runs are never throttled. Worker tests that exercise limits set it explicitly, with a fresh address per test (`freshAddress()`), because limiter state is not reset between tests. Invite proofs are hashed again at rest, so the `invites` table never holds what a claimant presents.
+The unauthenticated endpoints (`bootstrap`, `pair`, invite `claim`, `link/request`) are rate-limited per client address through the `STRICT_LIMIT` / `UNAUTH_LIMIT` bindings (`src/limits.ts`, `wrangler.jsonc`), keyed by `CF-Connecting-IP`. **Limiting is skipped when that header is missing or a loopback address**, so e2e and local runs are never throttled: Worker tests send none, and local workerd (`wrangler dev`) fills in `127.0.0.1` from the connection. The edge always sends the client's real address. Worker tests that exercise limits set it explicitly, with a fresh address per test (`freshAddress()`), because limiter state is not reset between tests. Invite proofs are hashed again at rest, so the `invites` table never holds what a claimant presents.
 
 ## Known open issues
 

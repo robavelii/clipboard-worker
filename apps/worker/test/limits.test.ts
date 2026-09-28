@@ -66,6 +66,36 @@ describe("rate limits (audit O4)", () => {
       expect(res.status).toBe(403);
     }
   });
+
+  // Local workerd fills the header in from the connection, so `wrangler dev`
+  // and the e2e suite arrive as loopback. The edge never sends one.
+  it("does not limit loopback addresses, as local workerd reports them", async () => {
+    for (const ip of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+      for (let i = 0; i < 7; i++) {
+        const res = await api("/api/auth/bootstrap", {
+          method: "POST",
+          ip,
+          body: { adminSecret: "a guess", deviceName: "guesser", platform: "linux" },
+        });
+        expect(res.status).toBe(403);
+      }
+    }
+  });
+
+  it("still limits an address that merely starts like loopback", async () => {
+    // Limiter state outlives the test, so the address is new each run.
+    const ip = `127.0.0.1.${Date.now()}`;
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const res = await api("/api/auth/bootstrap", {
+        method: "POST",
+        ip,
+        body: { adminSecret: "a guess", deviceName: "guesser", platform: "linux" },
+      });
+      statuses.push(res.status);
+    }
+    expect(statuses).toContain(429);
+  });
 });
 
 describe("pending link requests (audit O4)", () => {

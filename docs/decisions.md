@@ -477,6 +477,13 @@ absent only in local development. Keying missing addresses together would
 throttle the e2e suite and any repeated manual run for no protection, since
 nothing in production arrives without one.
 
+Correction, found later: under `wrangler dev` the header is not absent.
+Local workerd fills it in from the connection, as `127.0.0.1`, so two e2e
+runs within a minute tripped the bootstrap limit. Loopback addresses are now
+treated as missing. The edge sets the header from the real client address,
+which is never loopback for a request from the internet, so no real client
+is exempted.
+
 Invite proofs are also hashed once more at rest. The claimant presents
 `SHA-256(S)`, and the table used to store exactly that, so anyone who could
 read it during an invite's five minutes could claim a device token.
