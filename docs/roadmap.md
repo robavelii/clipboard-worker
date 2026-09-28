@@ -138,6 +138,9 @@ does not go through the passphrase.
   The private key stays on the device: in the agent config (0600), and in the
   web UI as a non-extractable `CryptoKey` in IndexedDB. The public key is
   stored on the device row. Existing devices register one on next start.
+  Since PR #3 the tray panel is a device of its own, with its token in
+  `~/.config/clipsync/tray.json`, so it needs a keypair of its own there
+  too, rather than sharing the agent's.
 - `users.key_epoch` counts vault keys; each clip records the epoch it was
   written under.
 - A re-key runs on a device that holds the passphrase (it has to rewrap under
@@ -196,5 +199,6 @@ What the README lists as not built yet, after the foundations above.
 - **macOS and Windows agents.** `pbpaste`/`pbcopy` and a PowerShell backend
   behind the existing `ClipboardBackend` interface, and a launchd plist to go
   with the systemd unit.
-- **Global picker.** A `Ctrl+Shift+V` shortcut in the tray app that opens the
-  panel at the pointer, with keyboard selection.
+- ~~**Global picker.**~~ Done in PR #3: `Ctrl+Alt+V` opens the tray panel at
+  the pointer with keyboard selection (not `Ctrl+Shift+V`, which is paste in
+  every Linux terminal).
