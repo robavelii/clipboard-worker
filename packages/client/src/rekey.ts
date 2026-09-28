@@ -141,6 +141,16 @@ export async function reencryptHistory(
   return { reencrypted, unreadable: unreadable.size };
 }
 
+export interface RekeyOptions {
+  /**
+   * The rotation has landed and the ring now holds the new key. Store it
+   * here: re-encryption can take a while, and a device that loses the new
+   * key before it finishes has to fetch its sealed copy back.
+   */
+  onRotated?: (ring: VaultRing) => void | Promise<void>;
+  onProgress?: (reencrypted: number) => void;
+}
+
 export interface RekeyResult extends ReencryptResult {
   ring: VaultRing;
   epoch: number;
@@ -161,7 +171,7 @@ export async function rekeyVault(
   kdfSalt: string,
   passphrase: string,
   ring: VaultRing,
-  onProgress?: (reencrypted: number) => void,
+  { onRotated, onProgress }: RekeyOptions = {},
 ): Promise<RekeyResult> {
   const { wrappedVaultKey, keyEpoch } = await api.vaultKey();
   if (!wrappedVaultKey) {
@@ -209,6 +219,7 @@ export async function rekeyVault(
   });
 
   const next = withKey(ring, rotated.epoch, newKey);
+  await onRotated?.(next);
   const history = await reencryptHistory(api, next, kdfSalt, onProgress);
   return {
     ...history,

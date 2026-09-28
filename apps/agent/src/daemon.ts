@@ -13,23 +13,42 @@
  * A third guard covers the gap between those two: a poll whose read started
  * before a remote clip was applied carries the *old* clipboard, and must not
  * push it -- see `applied`.
+ *
+ * A re-key changes the key every dedupe hash is taken under, so picking one
+ * up (see `refresh`) re-primes those guards under the new key.
  */
 
 import {
   MAX_ENVELOPE_BYTES,
   PING_FRAME,
   REVOKED_CLOSE_CODE,
+  STALE_EPOCH_ERROR,
+  type Clip,
   type ServerMessage,
 } from "@clipsync/protocol";
 import {
+  DecryptError,
   dedupeHash,
-  decryptText,
   encryptText,
-  type VaultKeys,
+  type DeviceKeypair,
 } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
+import { NoSealedKeyError } from "@clipsync/client/rekey";
+import {
+  currentKeys,
+  decryptClip,
+  ringKeysFrom,
+  type RingKeys,
+  type VaultRing,
+} from "@clipsync/client/ring";
 import { detectClipboard, type ClipboardBackend } from "./clipboard";
-import { resolveVaultKeys, type AgentConfig } from "./config";
+import {
+  ensureDeviceKey,
+  refreshRing,
+  resolveVaultRing,
+  storedRing,
+  type AgentConfig,
+} from "./config";
 
 const POLL_INTERVAL_MS = 600;
 const PING_INTERVAL_MS = 30_000;
@@ -46,6 +65,11 @@ export interface DaemonOptions {
    * that will never work again.
    */
   onRevoked?: () => void;
+  /**
+   * Called once the vault has been re-keyed without a copy for this device.
+   * Like revocation, nothing short of enrolling again fixes it.
+   */
+  onStranded?: () => void;
 }
 
 export function log(...args: unknown[]): void {
@@ -54,7 +78,12 @@ export function log(...args: unknown[]): void {
 
 export class Daemon {
   private readonly api: ApiClient;
-  private keys!: VaultKeys;
+  /** Every vault key this device holds; clips are written under the current one. */
+  private ring!: VaultRing;
+  private keys!: RingKeys;
+  private deviceKey: DeviceKeypair | null = null;
+  /** One key refresh at a time; concurrent triggers share it. */
+  private refreshing: Promise<void> | null = null;
   private clipboard!: ClipboardBackend;
 
   /** Hash of the content this agent last uploaded or applied. */
@@ -82,15 +111,29 @@ export class Daemon {
   private stopped = false;
 
   constructor(
-    private readonly config: AgentConfig,
+    private config: AgentConfig,
     private readonly options: DaemonOptions = {},
   ) {
     this.api = new ApiClient(config.baseUrl, config.token);
   }
 
   async start(): Promise<void> {
-    this.keys = await resolveVaultKeys(this.config, this.api);
+    this.ring = await resolveVaultRing(this.config, this.api);
+    this.keys = await ringKeysFrom(this.ring, this.config.kdfSalt);
     this.clipboard = await detectClipboard();
+
+    // Register this device's key so a re-key can reach it, then catch up on
+    // any re-key that happened while the agent was not running.
+    try {
+      const ensured = await ensureDeviceKey(this.config, this.api);
+      this.config = ensured.config;
+      this.deviceKey = ensured.keypair;
+    } catch (err) {
+      if (this.isRevocation(err)) return;
+      log("could not register this device's key:", err instanceof Error ? err.message : err);
+    }
+    if (storedRing(this.config)) await this.refresh();
+    if (this.stopped) return;
 
     log(
       `clipsync agent ${__CLIPSYNC_BUILD__} ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
@@ -103,7 +146,7 @@ export class Daemon {
       if (this.options.pushCurrent) {
         await this.push(current);
       } else {
-        this.lastHandled = await dedupeHash(this.keys, current);
+        this.lastHandled = await dedupeHash(currentKeys(this.keys), current);
       }
     }
 
@@ -149,7 +192,7 @@ export class Daemon {
       const text = await this.readClipboard();
       if (!text) return;
 
-      const hash = await dedupeHash(this.keys, text);
+      const hash = await dedupeHash(currentKeys(this.keys), text);
       // Stale: a remote clip landed while this read was in flight, so the
       // read holds what the clipboard *was* -- not even a candidate.
       if (generation !== this.applied) return;
@@ -170,13 +213,14 @@ export class Daemon {
   }
 
   private async push(text: string, knownHash?: string): Promise<void> {
-    const hash = knownHash ?? (await dedupeHash(this.keys, text));
+    const keys = this.keys;
+    const hash = knownHash ?? (await dedupeHash(currentKeys(keys), text));
     // Claim it before the await: a slow upload must not let the poller fire
     // again and push the same content twice.
     this.lastHandled = hash;
 
     try {
-      const envelope = await encryptText(this.keys, text);
+      const envelope = await encryptText(currentKeys(keys), text);
       if (envelope.length > MAX_ENVELOPE_BYTES) {
         log(`skipped ${text.length} chars — larger than the ${MAX_ENVELOPE_BYTES}B limit`);
         return;
@@ -187,6 +231,7 @@ export class Daemon {
         envelope,
         contentHash: hash,
         size: Buffer.byteLength(text, "utf8"),
+        keyEpoch: keys.current,
       });
 
       if (!res.deduped) log(`pushed ${text.length} chars`);
@@ -194,19 +239,36 @@ export class Daemon {
       if (this.isRevocation(err)) return;
       // Let the next poll retry: the clipboard still holds the content.
       this.lastHandled = null;
+      if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
+        // The vault was re-keyed while this device was not listening. Pick
+        // up the new key; the next poll pushes under it.
+        await this.refresh();
+        return;
+      }
       log("push failed:", err instanceof Error ? err.message : err);
     }
   }
 
   /* ---------------------------- cloud -> local --------------------------- */
 
-  private async apply(envelope: string, from: string): Promise<void> {
+  private async apply(clip: Clip, from: string): Promise<void> {
     try {
-      const text = await decryptText(this.keys, envelope);
+      let text: string;
+      try {
+        text = await decryptClip(this.keys, clip);
+      } catch (err) {
+        // Written under a key this device has not picked up yet: the
+        // vault.rotated event may still be on its way, or was missed.
+        if (!(err instanceof DecryptError) || clip.keyEpoch <= this.keys.current) {
+          throw err;
+        }
+        await this.refresh();
+        text = await decryptClip(this.keys, clip);
+      }
       // Set the guards before writing: the write itself triggers a clipboard
       // change that the poller will see, and a poll already in flight holds
       // the content this write replaces.
-      this.lastHandled = await dedupeHash(this.keys, text);
+      this.lastHandled = await dedupeHash(currentKeys(this.keys), text);
       this.applied++;
       // Whatever was waiting to settle has just been overwritten.
       this.candidate = null;
@@ -245,7 +307,11 @@ export class Daemon {
       case "clip.bumped":
         // Defence in depth: the server already excludes the origin device.
         if (msg.origin === this.config.deviceId) break;
-        void this.apply(msg.clip.envelope, msg.origin);
+        void this.apply(msg.clip, msg.origin);
+        break;
+
+      case "vault.rotated":
+        void this.refresh();
         break;
 
       case "device.connected":
@@ -321,6 +387,54 @@ export class Daemon {
     );
     this.stop();
     this.options.onRevoked?.();
+  }
+
+  /**
+   * Pick up a re-key: add the new vault key to the ring and write under it
+   * from now on. Concurrent triggers (the event, a 409, an unreadable clip)
+   * share one fetch.
+   */
+  private refresh(): Promise<void> {
+    this.refreshing ??= (async () => {
+      try {
+        const before = this.ring.current;
+        const next = await refreshRing(this.config, this.api, this.deviceKey, this.ring);
+        this.config = next.config;
+        this.ring = next.ring;
+        if (next.ring.current === before) return;
+
+        this.keys = await ringKeysFrom(next.ring, this.config.kdfSalt);
+        // Dedupe tags are keyed per epoch, so every hash taken so far is
+        // meaningless now. Re-prime the echo guard under the new key rather
+        // than let the next poll push the clipboard back as if it were new.
+        this.applied++;
+        this.candidate = null;
+        if (this.lastHandled !== null) {
+          const current = await this.readClipboard();
+          this.lastHandled = current
+            ? await dedupeHash(currentKeys(this.keys), current)
+            : null;
+        }
+        log(`vault re-keyed -- now writing under epoch ${next.ring.current}`);
+      } catch (err) {
+        if (this.isRevocation(err)) return;
+        if (err instanceof NoSealedKeyError) {
+          this.stranded(err.message);
+          return;
+        }
+        log("could not fetch the new vault key:", err instanceof Error ? err.message : err);
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  private stranded(message: string): void {
+    if (this.stopped) return;
+    log(`${message} -- stopping.`);
+    this.stop();
+    this.options.onStranded?.();
   }
 
   private scheduleReconnect(): void {
