@@ -149,6 +149,18 @@ check("a deleted clip comes back as a new row, not a resurrected one",
   !readded.deduped && readded.id !== secretClip.id);
 await pcApi.deleteClip(readded.id);
 
+// A pin older than the first page must still be fetchable on its own, since
+// clients list pins at the top.
+await pcApi.pinClip(otherClip.id, true);
+const firstPage = await pcApi.listClips(1);
+const pins = await pcApi.listPinned();
+check("an older pin is outside the first page",
+  !firstPage.clips.some((c) => c.id === otherClip.id));
+check("the pinned listing includes it", pins.clips.some((c) => c.id === otherClip.id));
+check("the pinned listing holds only pins, unpaged",
+  pins.clips.every((c) => c.pinned) && pins.nextCursor === null);
+await pcApi.pinClip(otherClip.id, false);
+
 // Put TEXT back on top so the checks that follow still find it newest.
 await recopy(TEXT);
 

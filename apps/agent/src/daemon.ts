@@ -48,7 +48,7 @@ export interface DaemonOptions {
   onRevoked?: () => void;
 }
 
-function log(...args: unknown[]): void {
+export function log(...args: unknown[]): void {
   console.log(`[${new Date().toISOString()}]`, ...args);
 }
 
@@ -59,6 +59,8 @@ export class Daemon {
 
   /** Hash of the content this agent last uploaded or applied. */
   private lastHandled: string | null = null;
+  /** New content seen on the last poll, waiting to prove it has settled. */
+  private candidate: string | null = null;
 
   /**
    * Bumped every time a remote clip is written to the local clipboard.
@@ -91,7 +93,7 @@ export class Daemon {
     this.clipboard = await detectClipboard();
 
     log(
-      `clipsync agent ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
+      `clipsync agent ${__CLIPSYNC_BUILD__} ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
     );
 
     // Prime the echo guard so a restart does not re-upload the clipboard the
@@ -130,6 +132,15 @@ export class Daemon {
     }
   }
 
+  /**
+   * Push clipboard content once it has held for two consecutive polls.
+   *
+   * Some copies are several writes in quick succession -- clipboard managers
+   * re-owning the selection, apps that set plain text and then rich text, a
+   * quick copy corrected by a second one. Waiting one interval (0.6-1.2s in
+   * all) means only the value that stuck is uploaded, rather than every
+   * intermediate one landing on the other devices and in history.
+   */
   private async poll(): Promise<void> {
     if (this.polling || this.stopped) return;
     this.polling = true;
@@ -139,10 +150,19 @@ export class Daemon {
       if (!text) return;
 
       const hash = await dedupeHash(this.keys, text);
-      // Stale: a remote clip landed while this read was in flight.
+      // Stale: a remote clip landed while this read was in flight, so the
+      // read holds what the clipboard *was* -- not even a candidate.
       if (generation !== this.applied) return;
-      if (hash === this.lastHandled) return;
+      if (hash === this.lastHandled) {
+        this.candidate = null;
+        return;
+      }
+      if (hash !== this.candidate) {
+        this.candidate = hash;
+        return;
+      }
 
+      this.candidate = null;
       await this.push(text, hash);
     } finally {
       this.polling = false;
@@ -188,6 +208,8 @@ export class Daemon {
       // the content this write replaces.
       this.lastHandled = await dedupeHash(this.keys, text);
       this.applied++;
+      // Whatever was waiting to settle has just been overwritten.
+      this.candidate = null;
       await this.clipboard.write(text);
       log(`applied ${text.length} chars from ${from}`);
     } catch (err) {

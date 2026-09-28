@@ -6,5 +6,5 @@
  * here means a fix to reconnection or to event handling lands in both.
  */
 
-export { useClips, type DecryptedClip } from "./useClips";
+export { sortForDisplay, useClips, type DecryptedClip } from "./useClips";
 export { useSync, type SyncStatus } from "./useSync";

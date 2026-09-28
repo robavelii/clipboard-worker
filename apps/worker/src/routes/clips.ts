@@ -190,8 +190,26 @@ export const clipRoutes = new Hono<AppEnv>()
   /**
    * Newest-first history page. There is no `q=` parameter: the rows are
    * ciphertext, so search happens on the client after decryption.
+   *
+   * `?pinned=1` returns every pinned clip instead, unpaged. Clients list pins
+   * first, and a pin older than the pages they have loaded would otherwise be
+   * missing from the top of the list. Pins never expire, but they are chosen
+   * one at a time, so the set stays small; MAX_LIMIT bounds it regardless.
    */
   .get("/", async (c) => {
+    if (c.req.query("pinned") === "1") {
+      const { results } = await c.env.DB.prepare(
+        `SELECT * FROM clips WHERE user_id = ? AND pinned = 1
+          ORDER BY created_at DESC LIMIT ?`,
+      )
+        .bind(c.var.device.userId, MAX_LIMIT)
+        .all<ClipRow>();
+      return c.json<ListClipsResponse>({
+        clips: results.map(toClip),
+        nextCursor: null,
+      });
+    }
+
     const limit = Math.min(
       Math.max(Number(c.req.query("limit")) || DEFAULT_LIMIT, 1),
       MAX_LIMIT,

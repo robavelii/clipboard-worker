@@ -1,6 +1,8 @@
 /** clipsync — command line entry point. */
 
+import { watchFile } from "node:fs";
 import { hostname, platform as osPlatform } from "node:os";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Platform } from "@clipsync/protocol";
 import { decryptText } from "@clipsync/crypto";
@@ -26,7 +28,7 @@ import {
   saveConfig,
 } from "./config";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
-import { Daemon } from "./daemon";
+import { Daemon, log } from "./daemon";
 import { ask, askNewPassphrase, askSecret, closePrompts } from "./prompt";
 
 const USAGE = `clipsync — encrypted clipboard sync
@@ -314,6 +316,29 @@ async function cmdRun(opts: {
   process.on("SIGTERM", shutdown);
 
   await daemon.start();
+  if (process.env.INVOCATION_ID) restartOnRebuild(daemon);
+}
+
+/** Exit status systemd's Restart=on-failure acts on (EX_TEMPFAIL). */
+const EXIT_RESTART = 75;
+
+/**
+ * Hand over to a freshly built agent when this bundle is replaced on disk.
+ *
+ * The service runs the bundle straight from the checkout, so without this a
+ * rebuild changes nothing until someone remembers to restart it -- and a
+ * daemon quietly running last week's code is indistinguishable from one
+ * that is up to date. Only under systemd (INVOCATION_ID is set for every
+ * unit it starts), where exiting means being restarted rather than stopped.
+ */
+function restartOnRebuild(daemon: Daemon): void {
+  const bundle = fileURLToPath(import.meta.url);
+  watchFile(bundle, { interval: 5_000 }, (curr, prev) => {
+    if (curr.mtimeMs === prev.mtimeMs || curr.size === 0) return;
+    log(`new build on disk -- restarting to pick it up (was ${__CLIPSYNC_BUILD__})`);
+    daemon.stop();
+    process.exit(EXIT_RESTART);
+  });
 }
 
 async function cmdHistory(limit: number, full = false): Promise<void> {
@@ -420,6 +445,7 @@ async function cmdStatus(): Promise<void> {
     return;
   }
 
+  console.log(`build      ${__CLIPSYNC_BUILD__}`);
   console.log(`config     ${configPath()}`);
   console.log(`worker     ${config.baseUrl}`);
   console.log(`device     ${config.deviceName} (${config.deviceId})`);

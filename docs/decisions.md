@@ -378,3 +378,31 @@ suite single-use: running it twice against one database now fails on the second
 pass. Fixtures are tagged per run and lookups go by id rather than position, and
 the passphrase-rotation test now rotates back, so the suite is re-runnable --
 which is what caught this in the first place.
+
+## 18. The tray panel is its own device
+
+The panel first reused the agent's device outright -- same token, same device
+id -- because that made it need no enrolment. It also made it deaf to this
+machine. The Worker fans every event out to all devices except its origin
+(decision 7), so each clip the agent pushed was, correctly, withheld from the
+panel sharing its identity. Local copies appeared only after a restart.
+
+Refetching whenever the panel opened hid the problem without fixing it: a clip
+copied while the panel was already open still did not appear.
+
+The panel now enrols itself on first run. The agent mints a pairing code with
+its own token and the panel redeems it immediately, becoming `<name> (tray)`;
+the vault key still comes from the agent's config, so there is no passphrase to
+type. Echo suppression then works for the panel instead of against it: a clip
+it copies is pushed by the agent, which is a different device, so the panel
+receives it like any other.
+
+Two alternatives were worse. Letting a device opt into its own echoes would
+weaken the guard decision 7 relies on, for every client, to suit one. Having the
+agent relay local copies to the panel over IPC would be a second sync path to
+keep correct alongside the real one.
+
+**Revocation is left alone.** If the tray device is revoked, the panel says so
+and stops; it does not enrol again, although the agent's token would let it. An
+automatic re-enrol would make revoking it meaningless. Deleting `tray.json` is
+the deliberate way back.
