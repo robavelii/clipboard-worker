@@ -10,11 +10,13 @@ import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
   DEFAULT_TTL_DAYS,
+  FILE_TTL_DAYS,
   MAX_ENVELOPE_BYTES,
   MAX_REENCRYPT_BATCH,
   STALE_EPOCH_ERROR,
   type ApiError,
   type Clip,
+  type ClipType,
   type CreateClipRequest,
   type CreateClipResponse,
   type ListClipsResponse,
@@ -23,6 +25,8 @@ import {
   type SyncEvent,
 } from "@clipsync/protocol";
 import { peekClipHeader } from "@clipsync/crypto";
+import { deleteBlobs } from "../r2";
+import type { BlobRow } from "./blobs";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, type ClipRow } from "../db";
 import { newId } from "../ids";
@@ -52,17 +56,55 @@ function parseCursor(raw: string | undefined): { createdAt: number; id: string }
  * only to clients, but checking it here keeps an honest server's rows and
  * envelopes in agreement -- which is what clients hold them to.
  */
-function assertEnvelope(envelope: string, deviceId: string): void {
-  if (envelope.startsWith("v1.")) return;
+function assertEnvelope(envelope: string, deviceId: string, type: ClipType): void {
+  // Legacy v1 has no header to check, and only ever held text.
+  if (envelope.startsWith("v1.") && type === "text") return;
   const header = peekClipHeader(envelope);
   if (!header) {
-    throw new HTTPException(400, { message: "envelope must be v1 or v2" });
-  }
-  if (header.device !== deviceId || header.type !== "text") {
     throw new HTTPException(400, {
-      message: "a v2 envelope must name the device writing it and a text clip",
+      message: type === "text" ? "envelope must be v1 or v2" : "image and file clips need a v2 envelope",
     });
   }
+  if (header.device !== deviceId || header.type !== type) {
+    throw new HTTPException(400, {
+      message: "a v2 envelope must name the device writing it and the clip's type",
+    });
+  }
+}
+
+const CLIP_TYPES: readonly ClipType[] = ["text", "image", "file"];
+
+/** When a clip written now expires unpinned. Files go sooner: they are big. */
+function expiryFor(type: string, now: number): number {
+  return now + (type === "text" ? DEFAULT_TTL_DAYS : FILE_TTL_DAYS) * 86_400_000;
+}
+
+/**
+ * The blob an image or file clip adopts: this user's, not yet adopted, and
+ * with every chunk uploaded to exactly its declared size.
+ */
+async function uploadedBlob(c: Context<AppEnv>, blobId: unknown): Promise<BlobRow> {
+  if (typeof blobId !== "string") {
+    throw new HTTPException(400, { message: "image and file clips need a blobId" });
+  }
+  const blob = await c.env.DB.prepare(
+    `SELECT b.*,
+            (SELECT COUNT(*) FROM blob_chunks WHERE blob_id = b.id) AS uploaded,
+            (SELECT COALESCE(SUM(size), 0) FROM blob_chunks WHERE blob_id = b.id) AS uploaded_bytes
+       FROM blobs b WHERE b.id = ? AND b.user_id = ?`,
+  )
+    .bind(blobId, c.var.device.userId)
+    .first<BlobRow & { uploaded: number; uploaded_bytes: number }>();
+  if (!blob) throw new HTTPException(404, { message: "blob not found" });
+  if (blob.attached_at !== null) {
+    throw new HTTPException(409, { message: "blob is already part of a clip" });
+  }
+  if (blob.uploaded !== blob.chunks || blob.uploaded_bytes !== blob.size) {
+    throw new HTTPException(409, {
+      message: `blob is incomplete: ${blob.uploaded} of ${blob.chunks} chunks uploaded`,
+    });
+  }
+  return blob;
 }
 
 /** A write under a vault key the account has rotated away from. */
@@ -134,7 +176,15 @@ export const clipRoutes = new Hono<AppEnv>()
 
     const { userId, deviceId } = c.var.device;
     const now = Date.now();
-    assertEnvelope(body.envelope, deviceId);
+    const type: ClipType = body.type ?? "text";
+    if (!CLIP_TYPES.includes(type)) {
+      throw new HTTPException(400, { message: `type must be one of ${CLIP_TYPES.join(", ")}` });
+    }
+    assertEnvelope(body.envelope, deviceId, type);
+    if (type === "text" && body.blobId !== undefined) {
+      throw new HTTPException(400, { message: "text clips carry no blob" });
+    }
+    const blob = type === "text" ? null : await uploadedBlob(c, body.blobId);
 
     // Clips are only stored under the current vault key. A device that has
     // not picked up a re-key yet is sent to fetch it, rather than leaving new
@@ -172,7 +222,10 @@ export const clipRoutes = new Hono<AppEnv>()
 
       // Already on top: nothing to reorder, and no reason to tell anyone.
       // Clipboard managers re-announce the current selection constantly.
+      // The copy just uploaded is surplus: the stored one stays with its
+      // envelope, which holds the stored blob's key.
       if (newest?.id === existing.id) {
+        if (blob) await deleteBlobs(c.env, [blob.id]);
         return c.json<CreateClipResponse>({
           id: existing.id,
           createdAt: existing.created_at,
@@ -183,17 +236,24 @@ export const clipRoutes = new Hono<AppEnv>()
       const bumpedAt = now;
       const expiresAt = existing.pinned
         ? existing.expires_at
-        : bumpedAt + DEFAULT_TTL_DAYS * 86_400_000;
+        : expiryFor(existing.type, bumpedAt);
 
       // The new envelope replaces the stored one. Same plaintext, but a v2
       // envelope vouches for who copied it and when, and a device checks
       // that against the row: the old one names the first copy.
-      await c.env.DB.prepare(
-        `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?, envelope = ?
-          WHERE id = ? AND user_id = ?`,
-      )
-        .bind(bumpedAt, deviceId, expiresAt, body.envelope, existing.id, userId)
-        .run();
+      // For an image or file the new envelope holds the new blob's key, so
+      // the row moves to the new blob and the old one goes.
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?, envelope = ?,
+                  blob_id = COALESCE(?, blob_id)
+            WHERE id = ? AND user_id = ?`,
+        ).bind(bumpedAt, deviceId, expiresAt, body.envelope, blob?.id ?? null, existing.id, userId),
+        ...(blob
+          ? [c.env.DB.prepare("UPDATE blobs SET attached_at = ? WHERE id = ?").bind(now, blob.id)]
+          : []),
+      ]);
+      if (blob && existing.blob_id) await deleteBlobs(c.env, [existing.blob_id]);
 
       const bumped = toClip({
         ...existing,
@@ -201,6 +261,7 @@ export const clipRoutes = new Hono<AppEnv>()
         device_id: deviceId,
         expires_at: expiresAt,
         envelope: body.envelope,
+        blob_id: blob?.id ?? existing.blob_id,
       });
 
       await publish(c, userId, {
@@ -218,26 +279,29 @@ export const clipRoutes = new Hono<AppEnv>()
     const clip: Clip = {
       id: newId("clip"),
       deviceId,
-      type: "text",
+      type,
       envelope: body.envelope,
       contentHash: body.contentHash,
       size: Number.isFinite(body.size) ? Math.max(0, body.size | 0) : 0,
       pinned: false,
       createdAt: now,
-      expiresAt: now + DEFAULT_TTL_DAYS * 86_400_000,
+      expiresAt: expiryFor(type, now),
       keyEpoch,
+      blobId: blob?.id ?? null,
     };
 
     // Guarded on the epoch again, in the same statement: a re-key landing
     // between the check above and this write must not let it through.
-    const inserted = await c.env.DB.prepare(
-      `INSERT INTO clips
-         (id, user_id, device_id, type, envelope, content_hash, size, pinned,
-          created_at, expires_at, key_epoch)
-       SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
-        WHERE (SELECT key_epoch FROM users WHERE id = ?) = ?`,
-    )
-      .bind(
+    // The blob is adopted in the same batch, and only if the clip was
+    // written: a stale epoch leaves it free for the retry.
+    const [inserted] = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO clips
+           (id, user_id, device_id, type, envelope, content_hash, size, pinned,
+            created_at, expires_at, key_epoch, blob_id)
+         SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?
+          WHERE (SELECT key_epoch FROM users WHERE id = ?) = ?`,
+      ).bind(
         clip.id,
         userId,
         clip.deviceId,
@@ -248,11 +312,20 @@ export const clipRoutes = new Hono<AppEnv>()
         clip.createdAt,
         clip.expiresAt,
         keyEpoch,
+        clip.blobId,
         userId,
         keyEpoch,
-      )
-      .run();
-    if (!inserted.meta.changes) return staleEpoch(c, keyEpoch + 1);
+      ),
+      ...(blob
+        ? [
+            c.env.DB.prepare(
+              `UPDATE blobs SET attached_at = ?
+                WHERE id = ? AND EXISTS (SELECT 1 FROM clips WHERE id = ?)`,
+            ).bind(now, blob.id, clip.id),
+          ]
+        : []),
+    ]);
+    if (!inserted?.meta.changes) return staleEpoch(c, keyEpoch + 1);
 
     await publish(c, userId, { ...event("clip.created", deviceId), clip });
 
@@ -349,7 +422,7 @@ export const clipRoutes = new Hono<AppEnv>()
         typeof item.id !== "string" ||
         !Number.isInteger(item.fromEpoch) ||
         typeof item.envelope !== "string" ||
-        peekClipHeader(item.envelope)?.type !== "text" ||
+        !CLIP_TYPES.includes(peekClipHeader(item.envelope)?.type as ClipType) ||
         item.envelope.length > MAX_ENVELOPE_BYTES ||
         typeof item.contentHash !== "string" ||
         !item.contentHash
@@ -375,7 +448,7 @@ export const clipRoutes = new Hono<AppEnv>()
           // moves a clip to a new key, it does not re-attribute it.
           `UPDATE clips SET envelope = ?, content_hash = ?, key_epoch = ?
             WHERE id = ? AND user_id = ? AND key_epoch = ? AND key_epoch < ?
-              AND device_id = ?
+              AND device_id = ? AND type = ?
               AND (SELECT key_epoch FROM users WHERE id = ?) = ?`,
         ).bind(
           item.envelope,
@@ -386,6 +459,7 @@ export const clipRoutes = new Hono<AppEnv>()
           item.fromEpoch,
           epoch,
           peekClipHeader(item.envelope)!.device,
+          peekClipHeader(item.envelope)!.type,
           userId,
           epoch,
         ),
@@ -411,15 +485,16 @@ export const clipRoutes = new Hono<AppEnv>()
 
   .delete("/:id", async (c) => {
     const id = c.req.param("id");
-    const res = await c.env.DB.prepare(
-      "DELETE FROM clips WHERE id = ? AND user_id = ?",
+    const gone = await c.env.DB.prepare(
+      "DELETE FROM clips WHERE id = ? AND user_id = ? RETURNING blob_id",
     )
       .bind(id, c.var.device.userId)
-      .run();
+      .first<{ blob_id: string | null }>();
 
-    if (!res.meta.changes) {
+    if (!gone) {
       throw new HTTPException(404, { message: "clip not found" });
     }
+    if (gone.blob_id) await deleteBlobs(c.env, [gone.blob_id]);
 
     await publish(c, c.var.device.userId, {
       ...event("clip.deleted", c.var.device.deviceId),
@@ -437,12 +512,15 @@ export const clipRoutes = new Hono<AppEnv>()
     const pinned = body.pinned !== false;
 
     const res = await c.env.DB.prepare(
-      `UPDATE clips SET pinned = ?, expires_at = ?
+      `UPDATE clips SET pinned = ?,
+              expires_at = CASE WHEN ? THEN NULL WHEN type = 'text' THEN ? ELSE ? END
         WHERE id = ? AND user_id = ?`,
     )
       .bind(
         pinned ? 1 : 0,
-        pinned ? null : Date.now() + DEFAULT_TTL_DAYS * 86_400_000,
+        pinned ? 1 : 0,
+        expiryFor("text", Date.now()),
+        expiryFor("file", Date.now()),
         id,
         c.var.device.userId,
       )

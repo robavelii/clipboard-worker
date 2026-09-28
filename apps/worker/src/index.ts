@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ApiError } from "@clipsync/protocol";
 import { authRoutes } from "./routes/auth";
+import { blobRoutes } from "./routes/blobs";
 import { clipRoutes } from "./routes/clips";
 import { deviceRoutes } from "./routes/devices";
 import { inviteRoutes } from "./routes/invites";
@@ -30,6 +31,7 @@ const app = new Hono<{ Bindings: Env }>()
   .route("/api/link", linkRoutes)
   .route("/api/invites", inviteRoutes)
   .route("/api/clips", clipRoutes)
+  .route("/api/blobs", blobRoutes)
   .route("/api/sync", syncRoutes)
 
   .notFound((c) =>

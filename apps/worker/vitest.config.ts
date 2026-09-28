@@ -29,6 +29,11 @@ export default defineConfig(async () => {
           bindings: {
             ADMIN_SECRET: "test-admin-secret",
             TEST_MIGRATIONS: migrations,
+            // Small, so tests can reach them: 3 MiB of storage, and a few
+            // dozen operations a month.
+            R2_STORAGE_BUDGET_BYTES: 3 * 1024 * 1024,
+            R2_CLASS_A_BUDGET: 40,
+            R2_CLASS_B_BUDGET: 40,
           },
         },
       }),

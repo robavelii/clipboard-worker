@@ -1,6 +1,10 @@
 /** Deleting what has expired, and telling anyone who would otherwise not know. */
 
 import type { SyncEvent } from "@clipsync/protocol";
+import { deleteBlobs } from "./r2";
+
+/** An upload no clip adopted within this long was abandoned. */
+const ORPHAN_BLOB_MS = 60 * 60 * 1000;
 
 /**
  * The origin the expiry cron's events carry. No device has this id, so every
@@ -34,6 +38,7 @@ export function expireLinkRequests(db: D1Database, now: number): D1PreparedState
 
 export interface PurgeResult {
   clips: number;
+  blobs: number;
   orphanedDevices: number;
   linkRequests: number;
   invites: number;
@@ -49,13 +54,25 @@ export async function purgeExpired(env: Env, now: number): Promise<PurgeResult> 
     env.DB.prepare(
       `DELETE FROM clips
         WHERE pinned = 0 AND expires_at IS NOT NULL AND expires_at < ?
-        RETURNING id, user_id`,
+        RETURNING id, user_id, blob_id`,
     ).bind(now),
     ...expireLinkRequests(env.DB, now),
     env.DB.prepare("DELETE FROM invites WHERE expires_at < ?").bind(now),
   ]);
 
-  const deleted = (clips?.results ?? []) as { id: string; user_id: string }[];
+  const deleted = (clips?.results ?? []) as { id: string; user_id: string; blob_id: string | null }[];
+
+  // Their bytes in R2, and uploads nothing adopted. R2 deletes are free.
+  const { results: orphans } = await env.DB.prepare(
+    "SELECT id FROM blobs WHERE attached_at IS NULL AND created_at < ?",
+  )
+    .bind(now - ORPHAN_BLOB_MS)
+    .all<{ id: string }>();
+  const blobIds = [
+    ...deleted.map((row) => row.blob_id).filter((id): id is string => Boolean(id)),
+    ...orphans.map((row) => row.id),
+  ];
+  await deleteBlobs(env, blobIds);
   const byUser = new Map<string, string[]>();
   for (const row of deleted) {
     byUser.set(row.user_id, [...(byUser.get(row.user_id) ?? []), row.id]);
@@ -80,6 +97,7 @@ export async function purgeExpired(env: Env, now: number): Promise<PurgeResult> 
 
   return {
     clips: deleted.length,
+    blobs: blobIds.length,
     orphanedDevices: orphaned?.meta.changes ?? 0,
     linkRequests: links?.meta.changes ?? 0,
     invites: invites?.meta.changes ?? 0,

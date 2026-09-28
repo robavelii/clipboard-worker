@@ -12,6 +12,9 @@ beforeEach(async () => {
   await env.DB.batch(
     [
       "clips",
+      "blob_chunks",
+      "blobs",
+      "r2_usage",
       "sealed_vault_keys",
       "devices",
       "pair_codes",
@@ -21,4 +24,7 @@ beforeEach(async () => {
       "users",
     ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),
   );
+  // R2 persists across tests the same way.
+  const { objects } = await env.BLOBS.list();
+  if (objects.length) await env.BLOBS.delete(objects.map((o) => o.key));
 });
