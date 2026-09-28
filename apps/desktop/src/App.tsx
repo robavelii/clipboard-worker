@@ -415,7 +415,9 @@ function Panel({
   }, [clips, query]);
 
   const copy = useCallback(async (clip: DecryptedClip) => {
-    if (clip.text === null) return;
+    // An image or file's text is only its name; its bytes are for the web
+    // UI or `clipsync get`, not the panel.
+    if (clip.text === null || clip.file) return;
     try {
       await writeText(clip.text);
       await getCurrentWindow().hide();
@@ -496,10 +498,16 @@ function Panel({
             <button
               className={expanded.has(clip.id) ? "body expanded" : "body"}
               onClick={() => void copy(clip)}
-              disabled={clip.text === null}
-              title={clip.text ?? undefined}
+              disabled={clip.text === null || Boolean(clip.file)}
+              title={
+                clip.file
+                  ? `Save it with: clipsync get ${clip.id}`
+                  : (clip.text ?? undefined)
+              }
             >
-              {clip.text ?? "Cannot decrypt on this device"}
+              {clip.file
+                ? `[${clip.type}] ${clip.text}`
+                : (clip.text ?? "Cannot decrypt on this device")}
             </button>
             <div className="actions">
               {isLong(clip.text) && (

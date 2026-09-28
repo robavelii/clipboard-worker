@@ -273,6 +273,13 @@ export class Daemon {
   /* ---------------------------- cloud -> local --------------------------- */
 
   private async apply(clip: Clip, from: string): Promise<void> {
+    // Images and files stay in history (`clipsync get`, the web UI): the
+    // clipboard tools here carry text, and fetching the bytes would spend
+    // the R2 budget on every device for something nobody asked to paste.
+    if (clip.type !== "text") {
+      if (this.options.verbose) log(`${clip.type} from ${from} -- in history, not applied`);
+      return;
+    }
     try {
       let opened: OpenedClip;
       try {
