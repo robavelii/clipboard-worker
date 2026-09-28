@@ -21,14 +21,23 @@ import type {
   ClaimVaultAuthRequest,
   ClaimVaultAuthResponse,
   PutVaultKeyRequest,
+  RotateVaultRequest,
+  RotateVaultResponse,
+  SealedVaultKeyResponse,
   VaultKeyResponse,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { getUser } from "../db";
 import { sha256 } from "../ids";
 
-/** `k1.<iv>.<ciphertext>` — generous ceiling, the real thing is ~90 chars. */
+/**
+ * `k1.<iv>.<ciphertext>` and `d1.<pub>.<iv>.<ciphertext>` -- a generous
+ * ceiling; the real ones are about 90 and 180 characters.
+ */
 const MAX_WRAPPED_LENGTH = 512;
+
+/** One per device. Far above anyone's device count; bounds the batch. */
+const MAX_SEALED_KEYS = 64;
 
 /** SHA-256, base64url: 43 characters. */
 const AUTH_HASH = /^[A-Za-z0-9_-]{43}$/;
@@ -52,6 +61,147 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     return c.json<VaultKeyResponse>({
       kdfSalt: user.kdf_salt,
       wrappedVaultKey: user.wrapped_vault_key,
+      keyEpoch: user.key_epoch,
+    });
+  })
+
+  /** This device's sealed copy of the current vault key, if a re-key made one. */
+  .get("/sealed", async (c) => {
+    const row = await c.env.DB.prepare(
+      `SELECT u.key_epoch AS epoch, s.sealed AS sealed
+         FROM users u
+         LEFT JOIN sealed_vault_keys s
+           ON s.device_id = ? AND s.epoch = u.key_epoch
+        WHERE u.id = ?`,
+    )
+      .bind(c.var.device.deviceId, c.var.device.userId)
+      .first<{ epoch: number; sealed: string | null }>();
+    if (!row) throw new HTTPException(500, { message: "account missing" });
+    return c.json<SealedVaultKeyResponse>({ epoch: row.epoch, sealed: row.sealed });
+  })
+
+  /**
+   * Re-key: move the account to a fresh vault key.
+   *
+   * Needs the current passphrase's proof, like a passphrase change, because
+   * it replaces the wrapped key. Everything happens in one D1 batch -- a
+   * transaction -- with the epoch bump guarded by both the expected epoch and
+   * the proof, and every other statement guarded on the bump having happened.
+   * So a wrong proof or a lost race writes nothing at all.
+   */
+  .post("/rotate", async (c) => {
+    const body = await c.req
+      .json<Partial<RotateVaultRequest>>()
+      .catch(() => ({}) as Partial<RotateVaultRequest>);
+
+    const fromEpoch = body.fromEpoch;
+    if (typeof fromEpoch !== "number" || !Number.isInteger(fromEpoch) || fromEpoch < 0) {
+      throw new HTTPException(400, { message: "fromEpoch must be the current epoch" });
+    }
+    if (typeof body.authProof !== "string" || !body.authProof) {
+      throw new HTTPException(403, {
+        message: "re-keying requires the current passphrase",
+      });
+    }
+    const authHash = assertAuthHash(body.authHash);
+    const wrapped = body.wrappedVaultKey;
+    if (
+      typeof wrapped !== "string" ||
+      !wrapped.startsWith("k1.") ||
+      wrapped.length > MAX_WRAPPED_LENGTH
+    ) {
+      throw new HTTPException(400, { message: "wrappedVaultKey must be a k1 envelope" });
+    }
+    const sealedKeys = Array.isArray(body.sealedKeys) ? body.sealedKeys : null;
+    if (!sealedKeys || sealedKeys.length > MAX_SEALED_KEYS) {
+      throw new HTTPException(400, { message: "sealedKeys must be a list of devices" });
+    }
+
+    const userId = c.var.device.userId;
+    const { results: active } = await c.env.DB.prepare(
+      "SELECT id FROM devices WHERE user_id = ? AND revoked_at IS NULL",
+    )
+      .bind(userId)
+      .all<{ id: string }>();
+    const activeIds = new Set(active.map((d) => d.id));
+
+    const sealedFor = new Set<string>();
+    for (const entry of sealedKeys) {
+      if (
+        !entry ||
+        typeof entry.deviceId !== "string" ||
+        !activeIds.has(entry.deviceId) ||
+        sealedFor.has(entry.deviceId) ||
+        typeof entry.sealed !== "string" ||
+        !entry.sealed.startsWith("d1.") ||
+        entry.sealed.length > MAX_WRAPPED_LENGTH
+      ) {
+        throw new HTTPException(400, {
+          message: "each sealed key must be a d1 envelope for a distinct active device",
+        });
+      }
+      sealedFor.add(entry.deviceId);
+    }
+
+    const toEpoch = fromEpoch + 1;
+    const now = Date.now();
+    const bumped = "(SELECT key_epoch FROM users WHERE id = ?) = ?";
+    let results: D1Result[];
+    try {
+      results = await c.env.DB.batch([
+        c.env.DB.prepare(
+          `UPDATE users SET key_epoch = ?, wrapped_vault_key = ?, auth_hash = ?
+            WHERE id = ? AND key_epoch = ? AND auth_hash = ?`,
+        ).bind(toEpoch, wrapped, authHash, userId, fromEpoch, await sha256(body.authProof)),
+        ...sealedKeys.map((entry) =>
+          c.env.DB.prepare(
+            `INSERT INTO sealed_vault_keys (device_id, epoch, sealed, created_at)
+             SELECT ?, ?, ?, ? WHERE ${bumped}`,
+          ).bind(entry.deviceId, toEpoch, entry.sealed, now, userId, toEpoch),
+        ),
+        // Copies for retired epochs are dead weight once the bump lands.
+        c.env.DB.prepare(
+          `DELETE FROM sealed_vault_keys
+            WHERE epoch < ? AND device_id IN (SELECT id FROM devices WHERE user_id = ?)
+              AND ${bumped}`,
+        ).bind(toEpoch, userId, userId, toEpoch),
+      ]);
+    } catch {
+      // A concurrent re-key to the same epoch collides on the primary key and
+      // rolls this batch back. Report it as the race it is.
+      results = [];
+    }
+
+    if (!results[0]?.meta.changes) {
+      const user = await getUser(c.env.DB);
+      if (user && user.key_epoch !== fromEpoch) {
+        throw new HTTPException(409, {
+          message: `the vault is at epoch ${user.key_epoch}, not ${fromEpoch} -- it was re-keyed meanwhile`,
+        });
+      }
+      throw new HTTPException(403, { message: "that is not the current passphrase" });
+    }
+
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          await c.env.SYNC.getByName(userId).broadcast({
+            version: 1,
+            eventId: crypto.randomUUID(),
+            origin: c.var.device.deviceId,
+            timestamp: now,
+            type: "vault.rotated",
+            epoch: toEpoch,
+          });
+        } catch (error) {
+          console.error({ msg: "rotate fanout failed", error });
+        }
+      })(),
+    );
+
+    return c.json<RotateVaultResponse>({
+      epoch: toEpoch,
+      unsealed: [...activeIds].filter((id) => !sealedFor.has(id)),
     });
   })
 

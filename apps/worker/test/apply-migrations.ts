@@ -12,6 +12,7 @@ beforeEach(async () => {
   await env.DB.batch(
     [
       "clips",
+      "sealed_vault_keys",
       "devices",
       "pair_codes",
       "sync_tickets",

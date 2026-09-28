@@ -13,6 +13,16 @@ export const MAX_ENVELOPE_BYTES = 256 * 1024;
 /** How long a clip lives before the purge cron removes it (unless pinned). */
 export const DEFAULT_TTL_DAYS = 30;
 
+/** Most clips one re-encryption request may carry. */
+export const MAX_REENCRYPT_BATCH = 50;
+
+/**
+ * ApiError.error when a clip is written under a vault key the account has
+ * rotated away from. The client should fetch its sealed copy of the new key
+ * (GET /api/vault/sealed) and write again.
+ */
+export const STALE_EPOCH_ERROR = "stale_epoch";
+
 export type ClipType = "text";
 
 export type Platform = "linux" | "macos" | "windows" | "web" | "other";
@@ -25,6 +35,11 @@ export interface Device {
   lastSeen: number | null;
   /** True while the device holds an open sync WebSocket. */
   online?: boolean;
+  /**
+   * The device's long-term ECDH public key, raw P-256 point, base64url. A
+   * re-key seals the new vault key to it. null until the device registers one.
+   */
+  publicKey: string | null;
 }
 
 export interface Clip {
@@ -40,6 +55,8 @@ export interface Clip {
   pinned: boolean;
   createdAt: number;
   expiresAt: number | null;
+  /** Which vault key encrypted this clip: the account's epoch when written. */
+  keyEpoch: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -75,6 +92,11 @@ export interface Credentials {
    * passphrase-derived scheme.
    */
   createdAccount?: boolean;
+  /**
+   * The account's current vault key epoch. Optional because credentials
+   * stored by older clients lack it; read it as 0 when absent.
+   */
+  keyEpoch?: number;
 }
 
 /**
@@ -105,6 +127,66 @@ export interface ClaimVaultAuthResponse {
 export interface VaultKeyResponse {
   kdfSalt: string;
   wrappedVaultKey: string | null;
+  /** The epoch `wrappedVaultKey` belongs to. */
+  keyEpoch: number;
+}
+
+/* ------------------------- device keys and re-key ------------------------ */
+
+export interface SetDeviceKeyRequest {
+  /** Raw P-256 point, base64url. */
+  publicKey: string;
+}
+
+/** This device's sealed copy of the current vault key, if one was made. */
+export interface SealedVaultKeyResponse {
+  epoch: number;
+  /** "d1." envelope, or null when the re-key did not seal one for this device. */
+  sealed: string | null;
+}
+
+export interface SealedKeyEntry {
+  deviceId: string;
+  sealed: string;
+}
+
+/**
+ * Move the account to a fresh vault key. Only a passphrase holder can: the
+ * request carries the current passphrase's proof, like a passphrase change.
+ */
+export interface RotateVaultRequest {
+  /** The epoch being retired. Refused if the account has moved on. */
+  fromEpoch: number;
+  authProof: string;
+  /** Proof hash for the passphrase the new key is wrapped under. */
+  authHash: string;
+  /** The new vault key, wrapped under the passphrase. */
+  wrappedVaultKey: string;
+  /** The new vault key sealed to each device that should keep reading. */
+  sealedKeys: SealedKeyEntry[];
+}
+
+export interface RotateVaultResponse {
+  epoch: number;
+  /** Active devices that got no sealed copy: they must be enrolled again. */
+  unsealed: string[];
+}
+
+export interface ReencryptItem {
+  id: string;
+  /** The epoch the clip is stored under now; the write is refused otherwise. */
+  fromEpoch: number;
+  envelope: string;
+  contentHash: string;
+}
+
+export interface ReencryptClipsRequest {
+  items: ReencryptItem[];
+}
+
+export interface ReencryptClipsResponse {
+  updated: number;
+  epoch: number;
 }
 
 export interface WhoAmI {
@@ -114,6 +196,7 @@ export interface WhoAmI {
   platform: Platform;
   kdfSalt: string;
   wrappedVaultKey: string | null;
+  keyEpoch: number;
 }
 
 export interface PairCodeResponse {
@@ -126,6 +209,8 @@ export interface CreateClipRequest {
   envelope: string;
   contentHash: string;
   size: number;
+  /** The epoch of the key that encrypted it. Omitted by older clients: 0. */
+  keyEpoch?: number;
 }
 
 export interface CreateClipResponse {
@@ -226,6 +311,7 @@ export type SyncEventType =
   | "clip.bumped"
   | "clip.deleted"
   | "clip.pinned"
+  | "vault.rotated"
   | "device.connected"
   | "device.disconnected";
 
@@ -265,6 +351,15 @@ export interface ClipPinnedEvent extends SyncEventBase {
   pinned: boolean;
 }
 
+/**
+ * The account moved to a new vault key. Fetch this device's sealed copy; a
+ * device that was not given one (revoked, or never registered a key) cannot.
+ */
+export interface VaultRotatedEvent extends SyncEventBase {
+  type: "vault.rotated";
+  epoch: number;
+}
+
 export interface DevicePresenceEvent extends SyncEventBase {
   type: "device.connected" | "device.disconnected";
   deviceId: string;
@@ -276,6 +371,7 @@ export type SyncEvent =
   | ClipBumpedEvent
   | ClipDeletedEvent
   | ClipPinnedEvent
+  | VaultRotatedEvent
   | DevicePresenceEvent;
 
 /**

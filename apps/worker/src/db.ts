@@ -9,6 +9,8 @@ export interface UserRow {
   wrapped_vault_key: string | null;
   /** SHA-256 of the passphrase proof. null on accounts that predate it. */
   auth_hash: string | null;
+  /** Which vault key is current; each re-key bumps it. */
+  key_epoch: number;
   created_at: number;
 }
 
@@ -21,6 +23,8 @@ export interface DeviceRow {
   created_at: number;
   last_seen: number | null;
   revoked_at: number | null;
+  /** Long-term ECDH public key; null until the device registers one. */
+  public_key: string | null;
 }
 
 export interface ClipRow {
@@ -34,6 +38,7 @@ export interface ClipRow {
   pinned: number;
   created_at: number;
   expires_at: number | null;
+  key_epoch: number;
 }
 
 export function toDevice(row: DeviceRow): Device {
@@ -43,6 +48,7 @@ export function toDevice(row: DeviceRow): Device {
     platform: row.platform as Platform,
     createdAt: row.created_at,
     lastSeen: row.last_seen,
+    publicKey: row.public_key,
   };
 }
 
@@ -57,6 +63,7 @@ export function toClip(row: ClipRow): Clip {
     pinned: row.pinned === 1,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+    keyEpoch: row.key_epoch,
   };
 }
 
@@ -66,3 +73,6 @@ export async function getUser(db: D1Database): Promise<UserRow | null> {
     .prepare("SELECT * FROM users ORDER BY created_at ASC LIMIT 1")
     .first<UserRow>();
 }
+
+/** Raw P-256 point, base64url: 65 bytes -> 87 characters. */
+export const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{87}$/;

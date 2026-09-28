@@ -11,10 +11,15 @@ import { HTTPException } from "hono/http-exception";
 import {
   DEFAULT_TTL_DAYS,
   MAX_ENVELOPE_BYTES,
+  MAX_REENCRYPT_BATCH,
+  STALE_EPOCH_ERROR,
+  type ApiError,
   type Clip,
   type CreateClipRequest,
   type CreateClipResponse,
   type ListClipsResponse,
+  type ReencryptClipsRequest,
+  type ReencryptClipsResponse,
   type SyncEvent,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
@@ -25,6 +30,17 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
 type AppEnv = { Bindings: Env; Variables: AuthVars };
+
+/** A write under a vault key the account has rotated away from. */
+function staleEpoch(c: Context<AppEnv, string>, epoch: number) {
+  return c.json<ApiError>(
+    {
+      error: STALE_EPOCH_ERROR,
+      message: `the vault was re-keyed (now epoch ${epoch}) -- fetch the new key and write again`,
+    },
+    409,
+  );
+}
 
 /**
  * Persist first, then fan out. A client that never receives the push can still
@@ -84,6 +100,20 @@ export const clipRoutes = new Hono<AppEnv>()
 
     const { userId, deviceId } = c.var.device;
     const now = Date.now();
+
+    // Clips are only stored under the current vault key. A device that has
+    // not picked up a re-key yet is sent to fetch it, rather than leaving new
+    // ciphertext under a key a revoked device may still hold. Older clients
+    // send no epoch: they are on 0, and stop being accepted after a re-key.
+    const keyEpoch = body.keyEpoch ?? 0;
+    const current = await c.env.DB.prepare(
+      "SELECT key_epoch FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{ key_epoch: number }>();
+    if (current?.key_epoch !== keyEpoch) {
+      return staleEpoch(c, current?.key_epoch ?? 0);
+    }
 
     // Dedupe across the whole history, not just the newest clip.
     //
@@ -158,12 +188,17 @@ export const clipRoutes = new Hono<AppEnv>()
       pinned: false,
       createdAt: now,
       expiresAt: now + DEFAULT_TTL_DAYS * 86_400_000,
+      keyEpoch,
     };
 
-    await c.env.DB.prepare(
+    // Guarded on the epoch again, in the same statement: a re-key landing
+    // between the check above and this write must not let it through.
+    const inserted = await c.env.DB.prepare(
       `INSERT INTO clips
-         (id, user_id, device_id, type, envelope, content_hash, size, pinned, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         (id, user_id, device_id, type, envelope, content_hash, size, pinned,
+          created_at, expires_at, key_epoch)
+       SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
+        WHERE (SELECT key_epoch FROM users WHERE id = ?) = ?`,
     )
       .bind(
         clip.id,
@@ -175,8 +210,12 @@ export const clipRoutes = new Hono<AppEnv>()
         clip.size,
         clip.createdAt,
         clip.expiresAt,
+        keyEpoch,
+        userId,
+        keyEpoch,
       )
       .run();
+    if (!inserted.meta.changes) return staleEpoch(c, keyEpoch + 1);
 
     await publish(c, userId, { ...event("clip.created", deviceId), clip });
 
@@ -215,24 +254,103 @@ export const clipRoutes = new Hono<AppEnv>()
       MAX_LIMIT,
     );
     const before = Number(c.req.query("before")) || null;
+    // `?epochBelow=N`: only clips still under a key older than epoch N, for
+    // re-encrypting history after a re-key.
+    const epochBelow = c.req.query("epochBelow");
 
-    const stmt = before
-      ? c.env.DB.prepare(
-          `SELECT * FROM clips WHERE user_id = ? AND created_at < ?
-            ORDER BY created_at DESC LIMIT ?`,
-        ).bind(c.var.device.userId, before, limit + 1)
-      : c.env.DB.prepare(
-          `SELECT * FROM clips WHERE user_id = ?
-            ORDER BY created_at DESC LIMIT ?`,
-        ).bind(c.var.device.userId, limit + 1);
+    const where = ["user_id = ?"];
+    const params: unknown[] = [c.var.device.userId];
+    if (before) {
+      where.push("created_at < ?");
+      params.push(before);
+    }
+    if (epochBelow !== undefined) {
+      where.push("key_epoch < ?");
+      params.push(Number(epochBelow) || 0);
+    }
 
-    const { results } = await stmt.all<ClipRow>();
+    const { results } = await c.env.DB.prepare(
+      `SELECT * FROM clips WHERE ${where.join(" AND ")}
+        ORDER BY created_at DESC LIMIT ?`,
+    )
+      .bind(...params, limit + 1)
+      .all<ClipRow>();
     const page = results.slice(0, limit);
 
     return c.json<ListClipsResponse>({
       clips: page.map(toClip),
       nextCursor:
         results.length > limit ? (page.at(-1)?.created_at ?? null) : null,
+    });
+  })
+
+  /**
+   * Move clips to the current vault key after a re-key.
+   *
+   * The client decrypts each with the key it was stored under and sends it
+   * back encrypted under the current one, with a fresh dedupe tag. Each write
+   * is conditional on the clip still being at `fromEpoch` and the account
+   * still being at the epoch this request targets, so a replay, a race with
+   * another device doing the same, or a second re-key all write nothing.
+   */
+  .post("/reencrypt", async (c) => {
+    const body = await c.req
+      .json<Partial<ReencryptClipsRequest>>()
+      .catch(() => ({}) as Partial<ReencryptClipsRequest>);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length || items.length > MAX_REENCRYPT_BATCH) {
+      throw new HTTPException(400, {
+        message: `items must hold 1 to ${MAX_REENCRYPT_BATCH} clips`,
+      });
+    }
+    for (const item of items) {
+      if (
+        !item ||
+        typeof item.id !== "string" ||
+        !Number.isInteger(item.fromEpoch) ||
+        typeof item.envelope !== "string" ||
+        !item.envelope.startsWith("v1.") ||
+        item.envelope.length > MAX_ENVELOPE_BYTES ||
+        typeof item.contentHash !== "string" ||
+        !item.contentHash
+      ) {
+        throw new HTTPException(400, {
+          message: "each item needs id, fromEpoch, a v1 envelope and contentHash",
+        });
+      }
+    }
+
+    const userId = c.var.device.userId;
+    const current = await c.env.DB.prepare(
+      "SELECT key_epoch FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{ key_epoch: number }>();
+    const epoch = current?.key_epoch ?? 0;
+
+    const results = await c.env.DB.batch(
+      items.map((item) =>
+        c.env.DB.prepare(
+          `UPDATE clips SET envelope = ?, content_hash = ?, key_epoch = ?
+            WHERE id = ? AND user_id = ? AND key_epoch = ? AND key_epoch < ?
+              AND (SELECT key_epoch FROM users WHERE id = ?) = ?`,
+        ).bind(
+          item.envelope,
+          item.contentHash,
+          epoch,
+          item.id,
+          userId,
+          item.fromEpoch,
+          epoch,
+          userId,
+          epoch,
+        ),
+      ),
+    );
+
+    return c.json<ReencryptClipsResponse>({
+      updated: results.reduce((n, r) => n + (r.meta.changes ?? 0), 0),
+      epoch,
     });
   })
 
