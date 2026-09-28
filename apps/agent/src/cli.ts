@@ -28,10 +28,12 @@ import { toString as qrToString } from "qrcode";
 import { detectClipboard } from "./clipboard";
 import {
   clearConfig,
+  clearTrayCredentials,
   configPath,
   ensureDeviceKey,
   freshRing,
   loadConfig,
+  loadTrayCredentials,
   requireConfig,
   saveConfig,
   storedRing,
@@ -147,6 +149,15 @@ function progress(count: number): void {
   process.stdout.write(`\r  re-encrypted ${plural(count, "clip")}`);
 }
 
+/**
+ * Revoke a device that enrolled but cannot be used -- the passphrase did not
+ * unlock the vault -- so a typo does not leave a phantom device behind.
+ * Best effort: the enrolment already failed, and this must not mask why.
+ */
+async function undoEnrolment(api: ApiClient): Promise<void> {
+  await api.revokeSelf().catch(() => undefined);
+}
+
 /* ------------------------------ commands ------------------------------- */
 
 async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
@@ -164,13 +175,25 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
   );
 
   const api = new ApiClient(baseUrl, creds.token);
-  const { vaultKey, migrated, proofConflict } = await unlockVault(
-    api,
-    passphrase,
-    creds.kdfSalt,
-    creds.wrappedVaultKey,
-    creds.createdAccount ?? false,
-  );
+  let unlocked;
+  try {
+    unlocked = await unlockVault(
+      api,
+      passphrase,
+      creds.kdfSalt,
+      creds.wrappedVaultKey,
+      creds.createdAccount ?? false,
+    );
+  } catch (err) {
+    await undoEnrolment(api);
+    if (err instanceof DecryptError) {
+      throw new Error(
+        "that passphrase does not unlock this account -- re-run `clipsync login` with the right one",
+      );
+    }
+    throw err;
+  }
+  const { vaultKey, migrated, proofConflict } = unlocked;
 
   await enrol(baseUrl, deviceName, creds, vaultKey);
   if (migrated && !creds.createdAccount) {
@@ -216,10 +239,14 @@ async function cmdPair(
       creds.kdfSalt,
       creds.wrappedVaultKey,
     ));
-  } catch {
-    throw new Error(
-      "that passphrase does not unlock this account -- re-run `clipsync pair` with the right one",
-    );
+  } catch (err) {
+    await undoEnrolment(api);
+    if (err instanceof DecryptError) {
+      throw new Error(
+        "that passphrase does not unlock this account -- mint a new code and re-run `clipsync pair` with the right one",
+      );
+    }
+    throw err;
   }
 
   await enrol(baseUrl, deviceName, creds, vaultKey);
@@ -653,6 +680,33 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
+/**
+ * Forget this machine: revoke its device (and the tray panel's, which is this
+ * machine too) on the server, then delete the local credentials. Revoking
+ * first means the device stops being listed and stops being sealed to by
+ * re-keys; a machine that is offline still logs out, with a note on how to
+ * finish the job from elsewhere.
+ */
+async function cmdLogout(): Promise<void> {
+  const config = await loadConfig();
+  const tray = await loadTrayCredentials();
+  for (const device of [config, tray]) {
+    if (!device) continue;
+    try {
+      await new ApiClient(device.baseUrl, device.token).revokeSelf();
+      console.log(`Revoked "${device.deviceName}" on the server.`);
+    } catch (err) {
+      console.warn(
+        `Could not revoke "${device.deviceName}" on the server (${err instanceof Error ? err.message : err}).\n` +
+          `Revoke it from another device: clipsync devices --revoke ${device.deviceId}`,
+      );
+    }
+  }
+  await clearConfig();
+  await clearTrayCredentials();
+  console.log("Local credentials removed.");
+}
+
 /* -------------------------------- main --------------------------------- */
 
 async function main(): Promise<void> {
@@ -710,9 +764,7 @@ async function main(): Promise<void> {
     case "status":
       return cmdStatus();
     case "logout":
-      await clearConfig();
-      console.log("Local credentials removed.");
-      return;
+      return cmdLogout();
     default:
       console.error(`unknown command: ${command}\n`);
       console.log(USAGE);

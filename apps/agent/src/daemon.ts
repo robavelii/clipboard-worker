@@ -16,6 +16,9 @@
  *
  * A re-key changes the key every dedupe hash is taken under, so picking one
  * up (see `refresh`) re-primes those guards under the new key.
+ *
+ * Events are not queued for a device that is offline, so a reconnect also
+ * catches up on the newest clip -- see `catchUp`.
  */
 
 import {
@@ -54,6 +57,13 @@ const POLL_INTERVAL_MS = 600;
 const PING_INTERVAL_MS = 30_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/**
+ * How old a clip missed while disconnected may be and still land on the
+ * clipboard after a reconnect. Long enough for a laptop lid closed over a
+ * copy on the phone; short enough that yesterday's clip never overwrites
+ * whatever is on the clipboard now.
+ */
+const CATCH_UP_WINDOW_MS = 10 * 60 * 1000;
 
 export interface DaemonOptions {
   /** Push whatever is already on the clipboard when the agent starts. */
@@ -100,6 +110,14 @@ export class Daemon {
    * and onto every other device's clipboard.
    */
   private applied = 0;
+
+  /**
+   * When the local clipboard last changed to something new, by this clock.
+   * A clip missed while disconnected is older than that is stale news.
+   */
+  private localChangedAt = 0;
+  /** Whether a socket has been ready before: the next ready is a reconnect. */
+  private connectedBefore = false;
 
   /** One poll at a time: a slow read must not stack another behind it. */
   private polling = false;
@@ -202,6 +220,7 @@ export class Daemon {
       }
       if (hash !== this.candidate) {
         this.candidate = hash;
+        this.localChangedAt = Date.now();
         return;
       }
 
@@ -279,6 +298,34 @@ export class Daemon {
     }
   }
 
+  /**
+   * After a reconnect, apply the newest clip if it arrived while this device
+   * was not listening: another device's, recent, newer than anything copied
+   * here since, and not already what this clipboard holds. Only the newest --
+   * replaying every missed clip would just flicker the clipboard through
+   * them, and history holds the rest.
+   *
+   * Not on first start: a restart (a rebuild, a login) must not replace what
+   * the user copied while the agent was down.
+   */
+  private async catchUp(): Promise<void> {
+    try {
+      const {
+        clips: [newest],
+      } = await this.api.listClips(1);
+      if (!newest || newest.deviceId === this.config.deviceId) return;
+      if (Date.now() - newest.createdAt > CATCH_UP_WINDOW_MS) return;
+      if (newest.createdAt <= this.localChangedAt) return;
+      if (newest.keyEpoch === this.keys.current && newest.contentHash === this.lastHandled) {
+        return;
+      }
+      await this.apply(newest, `${newest.deviceId} (missed while offline)`);
+    } catch (err) {
+      if (this.isRevocation(err)) return;
+      log("catch-up failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
   private handleMessage(raw: string): void {
     let msg: ServerMessage;
     try {
@@ -293,6 +340,8 @@ export class Daemon {
         break;
 
       case "ready":
+        if (this.connectedBefore) void this.catchUp();
+        this.connectedBefore = true;
         log(
           msg.connected.length
             ? `connected — also online: ${msg.connected.join(", ")}`
