@@ -1,0 +1,105 @@
+# Standalone `clipsync` binaries (decisions §29), built on each platform's
+# own runner so every one of them is run once before it ships.
+#
+# A pull request that touches the agent builds and smoke-tests all five. A
+# tag such as v0.2.0 does the same, then publishes them to a GitHub Release
+# with a SHA256SUMS file.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "apps/agent/**"
+      - "packages/**"
+      - "scripts/build-id.mjs"
+      - "package-lock.json"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, runner: ubuntu-24.04 }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm }
+          - { target: darwin-arm64, runner: macos-15 }
+          - { target: darwin-x64, runner: macos-15-intel }
+          - { target: windows-x64, runner: windows-2025 }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Releases carry their tag as the build id; other runs, the commit.
+      CLIPSYNC_BUILD_ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:binary
+      - name: Smoke test
+        run: |
+          bin=apps/agent/dist/bin/${{ matrix.target }}/clipsync
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" --version
+          "$bin" --version | grep -q '^clipsync ' || { echo "unexpected --version output"; exit 1; }
+          # With no config it must say so and exit cleanly, having loaded
+          # every module the CLI imports.
+          XDG_CONFIG_HOME="$RUNNER_TEMP/empty" "$bin" status | tee status.txt
+          grep -q "Not configured" status.txt
+      - name: Archive
+        run: |
+          cd apps/agent/dist/bin/${{ matrix.target }}
+          if [ "${{ matrix.target }}" = windows-x64 ]; then
+            7z a -tzip "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.zip" clipsync.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.tar.gz" clipsync
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipsync-${{ matrix.target }}
+          path: clipsync-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum clipsync-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

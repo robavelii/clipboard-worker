@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { hostname, platform as osPlatform } from "node:os";
 import { basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isSea } from "node:sea";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
 import { DecryptError } from "@clipsync/crypto";
@@ -67,6 +68,7 @@ Usage
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
   clipsync logout                                       Forget local credentials
+  clipsync --version                                    Show which build this is
 `;
 
 /**
@@ -438,7 +440,16 @@ async function cmdRun(opts: {
 const EXIT_RESTART = 75;
 
 /**
- * Hand over to a freshly built agent when this bundle is replaced on disk.
+ * The file this agent runs from: the executable itself when it is a
+ * standalone binary (a Node single executable), else the bundle Node runs.
+ */
+function runningFile(): string {
+  return isSea() ? process.execPath : fileURLToPath(import.meta.url);
+}
+
+/**
+ * Hand over to a freshly built agent when this bundle or binary is replaced
+ * on disk.
  *
  * The service runs the bundle straight from the checkout, so without this a
  * rebuild changes nothing until someone remembers to restart it -- and a
@@ -448,7 +459,7 @@ const EXIT_RESTART = 75;
  * CLIPSYNC_SUPERVISOR) -- where exiting means being restarted, not stopped.
  */
 function restartOnRebuild(daemon: Daemon): void {
-  const bundle = fileURLToPath(import.meta.url);
+  const bundle = runningFile();
   watchFile(bundle, { interval: 5_000 }, (curr, prev) => {
     if (curr.mtimeMs === prev.mtimeMs || curr.size === 0) return;
     log(`new build on disk -- restarting to pick it up (was ${__CLIPSYNC_BUILD__})`);
@@ -829,10 +840,16 @@ async function main(): Promise<void> {
       "push-current": { type: "boolean" },
       verbose: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "V" },
     },
   });
 
   const [command, arg] = positionals;
+
+  if (values.version || command === "version") {
+    console.log(`clipsync ${__CLIPSYNC_BUILD__}`);
+    return;
+  }
 
   if (values.help || !command) {
     console.log(USAGE);

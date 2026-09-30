@@ -783,3 +783,55 @@ Traps:
 - Windows re-encodes a clipboard image to PNG on every read, which for a
   4K screenshot every two seconds is most of a core. The helper checks the
   clipboard's sequence number and answers "unchanged" instead.
+
+## 29. Standalone binaries: Node single executables, built where they run
+
+Running the agent took Node 22, npm and a checkout, which is a lot to ask of
+a machine that only needs to watch a clipboard. The agent now also ships as
+one executable per platform.
+
+**Node SEA, not Bun.** `bun build --compile` cross-compiles every target
+from one machine, which is tempting. But the agent is tested on Node, and
+its riskiest code paths (WebCrypto's PBKDF2 at 600k iterations, ECDH, the
+WebSocket client, `child_process` holding a PowerShell helper open) would
+all run on a runtime nothing else exercises. A Node single executable is
+the Node already tested, with the bundle inside. It costs about 120 MB per
+binary (about 45 MB compressed), roughly what Bun's would.
+
+**CommonJS inside.** On Node 22 a SEA's entry script must be CommonJS, so
+`build-binary.mjs` bundles the CLI a second time in that format.
+`import.meta.url` does not exist there, so the CLI finds its own file
+through `node:sea`'s `isSea()`: the executable when it is one, the bundle
+otherwise.
+
+**Built on each platform's own runner.** The blob carries no snapshot or
+code cache, so it is portable, and `--node`/`--target` can inject it into
+another platform's `node`. CI builds each binary on its own OS and CPU
+anyway, for two reasons. Each binary is run before it ships: a
+cross-built one could only be inspected, never run. And an arm64 macOS
+binary must be re-signed after the injection, which takes `codesign`, and
+only macOS has it.
+
+**Archives and one checksum file.** Each release holds a `.tar.gz` per Unix
+target (to keep the executable bit), a `.zip` for Windows, and a
+`SHA256SUMS` covering them all. An installer can fetch and verify from
+the release alone.
+
+**Unsigned, for now.** The macOS builds are signed ad hoc, which is what
+Apple Silicon requires to run at all. They are not notarized: that needs a
+paid developer account. Injection invalidates the Windows `node.exe`
+signature, and nothing re-signs it. A checksum from the same release guards
+against a corrupt download, not a compromised release. Signing is a
+separate decision.
+
+Traps:
+- `postject` prints "Can't find string offset for section name '.note'"
+  for Linux ELF binaries, and "The signature seems corrupted!" for Windows
+  ones. Both are expected; the binaries run.
+- Replacing a running binary with `cp` fails on Linux ("Text file busy").
+  Install by writing a new file and renaming it over the old one. The
+  running agent's `watchFile` sees the rename and exits 75 to be restarted
+  onto it, as it does for a rebuilt bundle.
+- A blob must be made by the same Node version as the binary it goes into.
+  CI uses the runner's own `node` for both. A cross build needs `--node`
+  from the matching release.
