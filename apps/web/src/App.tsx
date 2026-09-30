@@ -18,9 +18,13 @@ import {
 import { PairScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
-import { ShareScreen, readSharedText } from "./ShareScreen";
+import { ShareScreen } from "./ShareScreen";
+import { dropStaleShares, readShareSource } from "./shares";
 import { Compose } from "./Compose";
 import { FileView } from "./FileView";
+import { LatestCard, latestFromElsewhere } from "./Latest";
+import { PhoneSetup } from "./PhoneSetup";
+import { canCopy, copyClip, isTouchFirst } from "./clipboard";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
 export function App() {
@@ -32,17 +36,30 @@ export function App() {
   const [needsPassphrase, setNeedsPassphrase] = useState(false);
   const [link, setLink] = useState(readLinkFromLocation);
   const [invite, setInvite] = useState(readInviteFromLocation);
-  const [shared, setShared] = useState(readSharedText);
+  const [shared, setShared] = useState(() => readShareSource());
+  const [setup, setSetup] = useState(() => window.location.pathname === "/phone");
 
   // A share carried in the fragment (the iOS Shortcut's form) does not reload
   // the page when it lands on a tab that is already at /share.
   useEffect(() => {
     const onHash = () => {
-      const text = readSharedText();
-      if (text) setShared(text);
+      const source = readShareSource();
+      if (source) setShared(source);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Back from /phone to wherever it was opened from.
+  useEffect(() => {
+    const onPop = () => setSetup(window.location.pathname === "/phone");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Plaintext kept for a share nobody finished sending does not stay forever.
+  useEffect(() => {
+    void dropStaleShares();
   }, []);
 
   const closeLink = useCallback(() => {
@@ -122,13 +139,31 @@ export function App() {
     );
   }
 
+  if (setup) {
+    return (
+      <Centered>
+        <PhoneSetup
+          onClose={() => {
+            // Opened from the app: step back, so history holds no extra entry.
+            if ((window.history.state as { setup?: boolean } | null)?.setup) {
+              window.history.back();
+              return;
+            }
+            window.history.replaceState(null, "", "/");
+            setSetup(false);
+          }}
+        />
+      </Centered>
+    );
+  }
+
   // Arriving from a share sheet: save first, browse second.
   if (shared && creds) {
     return (
       <Centered>
         <ShareScreen
-          key={shared}
-          text={shared}
+          key={JSON.stringify(shared)}
+          source={shared}
           credentials={creds}
           onDone={() => {
             window.history.replaceState(null, "", "/");
@@ -194,6 +229,10 @@ export function App() {
       stranded={stranded}
       onRefreshRing={refreshRing}
       onUnlockAgain={() => setNeedsPassphrase(true)}
+      onSetup={() => {
+        window.history.pushState({ setup: true }, "", "/phone");
+        setSetup(true);
+      }}
       onSignOut={() => {
         // Revoke before forgetting: otherwise the device stays listed and
         // keeps being sealed to by every re-key. Offline, it unpairs anyway;
@@ -227,6 +266,7 @@ function Workspace({
   stranded,
   onRefreshRing,
   onUnlockAgain,
+  onSetup,
   onSignOut,
   onLock,
 }: {
@@ -238,6 +278,7 @@ function Workspace({
   stranded: boolean;
   onRefreshRing: () => Promise<void>;
   onUnlockAgain: () => void;
+  onSetup: () => void;
   onSignOut: () => void;
   onLock: () => void;
 }) {
@@ -294,6 +335,13 @@ function Workspace({
     [devices],
   );
 
+  // On a phone, the newest copy from elsewhere sits one tap from the clipboard.
+  const touchFirst = useMemo(isTouchFirst, []);
+  const latest = useMemo(
+    () => (touchFirst ? latestFromElsewhere(clips, deviceId) : null),
+    [touchFirst, clips, deviceId],
+  );
+
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return clips;
@@ -332,6 +380,7 @@ function Workspace({
         >
           Add device
         </button>
+        <button onClick={onSetup}>Phone setup</button>
         <button onClick={onLock}>Lock</button>
         <button className="link" onClick={onSignOut}>
           Unpair
@@ -382,6 +431,16 @@ function Workspace({
           </p>
           <button onClick={onUnlockAgain}>Unlock with passphrase</button>
         </div>
+      )}
+
+      {latest && !query && (
+        <LatestCard
+          clip={latest}
+          api={api}
+          keys={keys}
+          account={account}
+          origin={deviceNames.get(latest.deviceId) ?? "another device"}
+        />
       )}
 
       <Compose
@@ -442,13 +501,18 @@ function ClipRow({
   onDelete: () => void;
   onTogglePin: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"Copied" | "Copy failed" | null>(null);
 
-  async function copy() {
-    if (clip.text === null) return;
-    await navigator.clipboard.writeText(clip.text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+  function copy() {
+    // Straight from the tap: iOS refuses a clipboard write made after an await.
+    const flash = (label: "Copied" | "Copy failed") => {
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    };
+    copyClip(api, keys, account, clip).then(
+      () => flash("Copied"),
+      () => flash("Copy failed"),
+    );
   }
 
   return (
@@ -470,9 +534,9 @@ function ClipRow({
         <button onClick={onTogglePin} title="Pinned clips never expire">
           {clip.pinned ? "Unpin" : "Pin"}
         </button>
-        {!clip.file && (
-          <button onClick={() => void copy()} disabled={clip.text === null}>
-            {copied ? "Copied" : "Copy"}
+        {(!clip.file || canCopy(clip)) && (
+          <button onClick={copy} disabled={!canCopy(clip)}>
+            {copied ?? "Copy"}
           </button>
         )}
         <button className="danger" onClick={onDelete}>

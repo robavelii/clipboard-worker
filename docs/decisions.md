@@ -250,7 +250,7 @@ two platforms therefore converge on one endpoint rather than growing separate
 paths.
 
 **The URL is the one place the text is plaintext.** Android's share target
-can only put it in a query string, and a query string is sent to the server
+put it in a query string (a POST form since §35), and a query string is sent to the server
 with the page request, so every shared clip used to cross the edge
 unencrypted, in a URL that proxies and request logs record. The service
 worker now answers `/share` navigations itself, with the app shell fetched
@@ -1069,3 +1069,65 @@ Trap: an agent refused at a gate that covered every non-GET request could
 not even take a socket ticket (a POST), so it went deaf as well as mute.
 The gate lets through the few requests that write nothing another device
 reads.
+
+## 35. The phone as a device: shared files stay on it until they are sealed
+
+A phone could send text (§13, §15) but not photos or files from the share
+sheet. Sending what it had just copied took several taps, and copying what a
+desktop had just sent took several more.
+
+**The share sheet POSTs, and the service worker answers.** Files can only be
+shared to a web app as a `POST` form (`share_target` with `enctype:
+multipart/form-data`), and a form sent to the network would carry the
+plaintext to the edge. So `public/sw.js` answers `POST /share` itself. It
+reads the form, keeps title, text, url and files in IndexedDB, and redirects
+to `/share?pending=<id>`. The database is `clipsync-shares`, separate from
+the device-key database, so neither's schema version depends on the other.
+The page seals and uploads each part, then deletes the kept copy. Text shares
+take the same path, so they no longer appear in a URL at all. The GET handler
+stays for installs whose manifest predates this, and the Shortcut's fragment
+form is unchanged. A share nobody finishes sending (the phone left locked) is
+dropped after a day. If storing fails, the worker still does not forward the
+form: it sends the page to `/share?failed`, which says nothing was sent.
+
+**The Worker never sees `/share`.** With no service worker in the way, the
+assets layer answers a `POST /share` with a bare 405 and invokes no Worker
+code. Routing `/share` through the Worker (`run_worker_first`) would give that
+case a friendlier page. But the Worker would then also see every `GET
+/share?text=…` from an install without the worker, and Workers Logs record
+request URLs. The rare unhelpful 405 is the better failure.
+
+**A paste dock, beside the paste box.** §15 chose a textarea over a "paste"
+button, because a programmatic read asks for permission where a manual paste
+asks nothing. That still holds, and the textarea stays. But on a phone the
+common case is "I just copied something elsewhere, now send it", and the
+textarea makes that five steps. So when the page comes into view on a
+touch-first device (`pointer: coarse`), a bar offers "Paste to ClipSync". The
+tap calls `navigator.clipboard.read()`, takes an image if there is one and
+text otherwise, and sends it. iOS answers the read with its own Paste bubble,
+and Chrome asks for the permission once. A refusal says so, and the textarea
+is still there. Nothing is read without the tap. No browser allows it, and a
+page that read the clipboard whenever it was looked at would send whatever
+happened to be there.
+
+**"Copy latest", one tap.** A phone has no agent to apply another device's
+copy, and a page may write the clipboard only inside a tap. So on a
+touch-first device, the newest clip from another device sits in a card above
+the history, with a Copy button. Images are copied as images through
+`ClipboardItem`. The bytes are passed as a promise, because iOS Safari refuses
+a clipboard write made after an await, and a file clip has to be fetched and
+decrypted first. Chrome accepts only PNG, so other formats are converted on a
+canvas. The history's Copy button does the same for image clips.
+
+**`/phone` explains the rest.** It covers installing the app on Android, the
+paste dock and Attach on iOS, and how to build the Shortcut that opens
+`/share#text=` from Back Tap or the Action Button. It gives no iCloud link,
+because building the Shortcut is a one-time step and a published one would
+name this deployment's host. `SHORTCUT_URL` in `PhoneSetup.tsx` takes a link
+if one is ever shared. The Shortcut opens Safari, whose storage on iOS is
+separate from the Home Screen app's, so Safari needs pairing too; the page
+says so.
+
+Trap: the Shortcut's fragment was parsed with `URLSearchParams`, which splits
+at an unencoded `&` and turns `+` into a space. Everything after `#text=` is
+now the text, decoded once.
