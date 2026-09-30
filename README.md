@@ -214,6 +214,8 @@ letting you discover the mistake later.
 | `clipsync rekey [--finish]` | Move every device to a new vault key (see below) |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync logout` | Revoke this machine's devices, then forget local credentials |
+| `clipsync install [--dry-run]` | Run the agent in the background at every login (see below) |
+| `clipsync uninstall` | Stop and remove that background service |
 
 `clipsync run` does not push whatever happened to be on the clipboard when it
 started; pass `--push-current` if you want that.
@@ -259,16 +261,23 @@ or `wl-clipboard`.
 base=https://github.com/robavelii/clipboard-worker/releases/latest/download
 curl -fsSLO "$base/clipsync-linux-x64.tar.gz" -fsSLO "$base/SHA256SUMS"
 sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf clipsync-linux-x64.tar.gz && mkdir -p ~/.local/bin && mv clipsync ~/.local/bin/
-clipsync link --url https://clip.rfh.et
+tar -xzf clipsync-linux-x64.tar.gz
+./clipsync link --url https://clip.rfh.et
+./clipsync install
 ```
+
+`clipsync install` copies the binary to `~/.local/bin/clipsync`
+(`%LOCALAPPDATA%\Programs\clipsync\clipsync.exe` on Windows) and starts it
+as a service at every login: a systemd user unit on Linux, a launchd agent
+on macOS, a Task Scheduler task on Windows. Running it again installs the
+binary it is run from, and the running agent restarts onto it.
+`clipsync uninstall` stops and removes the service; `clipsync status` shows
+its state.
 
 The macOS builds are signed ad hoc, not notarized. A copy downloaded with a
 browser needs `xattr -d com.apple.quarantine clipsync` before macOS will run
 it; one fetched with `curl` does not. The Windows build is unsigned, so
-SmartScreen may ask before the first run. The binary does not install a
-service itself yet: `scripts/install-agent.sh` still sets that up from a
-checkout.
+SmartScreen may ask before the first run.
 
 To build one for this machine, run `npm run build:binary`. The result is at
 `apps/agent/dist/bin/<os>-<arch>/clipsync`. To publish a release, push a tag:
@@ -283,13 +292,17 @@ publishing anything, on every pull request that touches the agent.
 
 ### Running it as a service
 
+`clipsync install` sets up the service for whichever `clipsync` runs it: a
+release binary (above), or the bundle in a checkout. From a checkout, the
+script does that and more:
+
 ```bash
 scripts/install-agent.sh
 ```
 
 Builds the agent and, when a Rust toolchain is present, the tray app; puts
-`clipsync` and `clipsync-desktop` on your PATH; installs a systemd user service
-and a tray autostart entry; then restarts both so they run the code just built.
+`clipsync` and `clipsync-desktop` on your PATH; runs `clipsync install` and
+adds a tray autostart entry; then restarts both so they run the code just built.
 Re-run it after pulling changes. `--no-tray` skips the tray build, which takes
 a few minutes, and `--uninstall` reverses everything. Needs no root.
 
@@ -312,7 +325,8 @@ RestartSec=5
 # Exit 75 is the agent handing over to a rebuilt bundle, not a crash.
 SuccessExitStatus=75
 RestartForceExitStatus=75
-# Exit 78: this device was revoked, or re-keyed out; restarting cannot fix that.
+# Exit 78: this device was revoked, re-keyed out, or never enrolled;
+# restarting cannot fix that.
 RestartPreventExitStatus=78
 
 [Install]
@@ -321,7 +335,11 @@ WantedBy=graphical-session.target
 
 Logs: `journalctl --user -u clipsync -f`.
 
-**macOS.** The same script installs a launchd agent instead
+A service installed before the device is enrolled waits: the agent exits 78
+until `clipsync link` (or `login`, or `pair`) enrols it, which restarts the
+service.
+
+**macOS.** `clipsync install` sets up a launchd agent instead
 (`~/Library/LaunchAgents/clipsync.agent.plist`, logs in
 `~/Library/Logs/clipsync.log`) and skips the tray. The clipboard is read with
 `pbpaste`/`pbcopy`, which ship with macOS, under a UTF-8 locale: launchd
@@ -332,17 +350,12 @@ onto a rebuilt bundle (which it restarts).
 
 **Windows.** The agent uses one long-lived PowerShell process for the
 clipboard (Windows PowerShell 5.1, which every Windows 10 and 11 has; set
-`CLIPSYNC_POWERSHELL=pwsh` for PowerShell 7). There is no installer yet. Run
-`node apps\agent\dist\clipsync.mjs run` in a terminal, or register a logon
-task. The task below has **not been tried on Windows yet**:
-
-```powershell
-$node = (Get-Command node).Source
-$cli  = "$PWD\apps\agent\dist\clipsync.mjs"
-$run  = New-ScheduledTaskAction -Execute powershell.exe `
-  -Argument "-WindowStyle Hidden -NoProfile -Command `"& '$node' '$cli' run`""
-Register-ScheduledTask -TaskName ClipSync -Action $run -Trigger (New-ScheduledTaskTrigger -AtLogOn)
-```
+`CLIPSYNC_POWERSHELL=pwsh` for PowerShell 7). `clipsync install` registers a
+logon task, `ClipSync`, that runs `clipsync supervise` through
+`conhost --headless`, so no console window stays open. Task Scheduler cannot
+tell one exit status from another, so the supervisor applies systemd's
+rules itself: restart at once on 75, stop on 78, restart after 5 s on
+anything else. The agent's log is `%LOCALAPPDATA%\clipsync\clipsync.log`.
 
 **Images.** A copied image (a screenshot, a browser's "Copy image") syncs
 through the clipboard like text, encrypted and stored the way `clipsync send`
@@ -574,7 +587,7 @@ assertion that no plaintext appears in any API response.
 Putting a received file (other than an image) on another computer's
 clipboard (it waits in history for the web UI and the CLI), sharing files
 into the web app from a phone's share sheet, semantic search, a one-command
-installer and a Windows service, and the tray panel on macOS and Windows.
+installer, and the tray panel on macOS and Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or

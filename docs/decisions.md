@@ -905,3 +905,55 @@ it again.
 takes to answer from here, and the extra cost of each database query.
 Whether a further change is worth it depends on that second number, which
 depends on where the person is.
+
+## 32. `clipsync install`: the service belongs to the CLI
+
+With a standalone binary (§29) there is no checkout to run
+`scripts/install-agent.sh` from, and Windows never had a service at all. The
+service definitions moved into the CLI, and the script now calls
+`clipsync install` for its part.
+
+**One command per OS, same exit-code contract.** A systemd user unit on
+Linux and a launchd agent on macOS, unchanged from the script. On Windows, a
+Task Scheduler task at logon. Every one of them must restart on 75 (a new
+build is on disk) and never on 78 (revoked, re-keyed out, not enrolled).
+
+**A supervisor inside the agent, for Windows.** Task Scheduler's "restart
+on failure" cannot tell one exit status from another. So the task runs `clipsync supervise`, which runs
+`clipsync run` and applies systemd's rules itself. The alternatives were
+worse: NSSM or WinSW would be one more download to trust, and a real
+Windows service runs in session 0, which has no clipboard.
+
+**Hidden, without VBScript.** A console program started by Task Scheduler
+keeps a console window open for as long as it runs. The task runs the
+supervisor through `conhost.exe --headless`, which gives it a console
+nobody sees. The usual alternative, a `wscript` shim, depends on VBScript,
+which Windows is removing.
+
+**No orphans.** Ending the task ends conhost, which need not take its
+descendants with it, so the supervisor records its pid for `uninstall` to
+stop. The agent runs with its stdin piped from the supervisor and exits
+when that pipe closes, so however the supervisor dies, nothing is left
+syncing on its own.
+
+**Install copies the binary to a fixed place.** A service pointing into a
+Downloads folder breaks when that folder is cleaned out. `install` copies a
+standalone binary to `~/.local/bin` (`%LOCALAPPDATA%\Programs\clipsync` on
+Windows), by writing beside it and renaming, then points the service there.
+From a checkout, the service runs node and the bundle where they are.
+
+**Not enrolled is a permanent stop, until enrolment.** `clipsync run` with
+no credentials used to exit 1, which every supervisor restarts every five
+seconds, for ever. It now exits 78, like revocation. Installing before
+enrolling is allowed, and `link`, `login` and `pair` restart an installed
+service once they have written credentials.
+
+Traps:
+- `schtasks /XML` wants UTF-16. The task file is written as UTF-16LE with a
+  BOM, and declares that encoding.
+- In Git Bash on Windows (CI), `schtasks /Query` has its switches rewritten
+  into paths unless `MSYS_NO_PATHCONV=1`. The agent's own calls do not go
+  through a shell and are unaffected.
+- A machine with systemd installed but no user session reachable (WSL
+  without systemd, a container, an SSH login) would get a binary copied and
+  a unit written before `systemctl` failed. `install` asks systemd first.

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# Builds and installs the clipsync agent for the current user: a launcher on
-# PATH and a service so it starts with the desktop session -- a systemd user
-# service on Linux, a launchd agent on macOS -- plus, on Linux, the tray app
-# when a Rust toolchain is available.
+# Builds and installs the clipsync agent from this checkout for the current
+# user: a launcher on PATH and a service so it starts with the desktop
+# session (`clipsync install`: a systemd user service on Linux, a launchd
+# agent on macOS), plus, on Linux, the tray app when a Rust toolchain is
+# available. A standalone binary from a release needs none of this: it runs
+# `clipsync install` itself.
 #
 # Re-run it after pulling changes: it rebuilds, then restarts whatever is
 # running, so nothing is left on the old code.
@@ -20,31 +22,19 @@ CLI="$REPO/apps/agent/dist/clipsync.mjs"
 DESKTOP_BIN="$REPO/apps/desktop/src-tauri/target/release/clipsync-desktop"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-UNIT_DIR="$CONFIG_DIR/systemd/user"
-UNIT="$UNIT_DIR/clipsync.service"
 AUTOSTART="$CONFIG_DIR/autostart/clipsync-desktop.desktop"
-LABEL="clipsync.agent"
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-MAC_LOG="$HOME/Library/Logs/clipsync.log"
 IS_MAC=0
 [ "$(uname -s)" = Darwin ] && IS_MAC=1
 
-uninstall_macos() {
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  rm -f "$PLIST" "$BIN_DIR/clipsync"
-  echo "Removed the launcher and the launchd agent."
-  echo "Your credentials in $CONFIG_DIR/clipsync are untouched."
-  exit 0
-}
-
 uninstall() {
-  [ "$IS_MAC" = 1 ] && uninstall_macos
-  systemctl --user disable --now clipsync.service 2>/dev/null || true
-  pkill -f "release/clipsync-desktop" 2>/dev/null || true
-  rm -f "$UNIT" "$BIN_DIR/clipsync" "$BIN_DIR/clipsync-desktop" "$AUTOSTART"
-  systemctl --user daemon-reload 2>/dev/null || true
-  echo "Removed the launchers, the service and the tray autostart."
-  echo "Your credentials in $CONFIG_DIR/clipsync are untouched."
+  if [ -f "$CLI" ] && command -v node >/dev/null; then
+    node "$CLI" uninstall || true
+  fi
+  if [ "$IS_MAC" = 0 ]; then
+    pkill -f "release/clipsync-desktop" 2>/dev/null || true
+  fi
+  rm -f "$BIN_DIR/clipsync" "$BIN_DIR/clipsync-desktop" "$AUTOSTART"
+  echo "Removed the launchers and the tray autostart."
   exit 0
 }
 
@@ -65,8 +55,8 @@ if [ "$IS_MAC" = 0 ] && [ "$BUILD_TRAY" = 1 ] && command -v cargo >/dev/null; th
   (cd "$REPO" && npm run --silent build -w @clipsync/desktop >/dev/null)
 fi
 
-# systemd does not read your shell profile, so a version-manager shim on PATH
-# is invisible to it. Resolve the interpreter now and write it in absolutely.
+# systemd and launchd do not read your shell profile, so a version-manager
+# shim on PATH is invisible to them. Resolve the interpreter now.
 NODE="$(command -v node)"
 if [ -z "$NODE" ]; then
   echo "error: node not found on PATH" >&2
@@ -82,110 +72,9 @@ case ":$PATH:" in
   *) echo "warning: $BIN_DIR is not on your PATH -- add it to your shell profile" >&2 ;;
 esac
 
-# Paths go into XML below.
-xml_escape() {
-  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-}
-
-if [ "$IS_MAC" = 1 ]; then
-  mkdir -p "$(dirname "$PLIST")" "$(dirname "$MAC_LOG")"
-  # KeepAlive restarts any exit but a clean one. launchd cannot be told to
-  # leave one failure status alone, as systemd's RestartPreventExitStatus
-  # does, so CLIPSYNC_SUPERVISOR tells the agent to exit 0 when revoked or
-  # re-keyed out -- and to exit 75 onto a rebuilt bundle, which launchd
-  # restarts like any failure. LimitLoadToSessionType: the clipboard belongs
-  # to the logged-in desktop (Aqua) session.
-  cat > "$PLIST" <<PLISTFILE
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$(xml_escape "$NODE")</string>
-    <string>$(xml_escape "$CLI")</string>
-    <string>run</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>CLIPSYNC_SUPERVISOR</key>
-    <string>launchd</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>5</integer>
-  <key>ProcessType</key>
-  <string>Interactive</string>
-  <key>LimitLoadToSessionType</key>
-  <string>Aqua</string>
-  <key>StandardOutPath</key>
-  <string>$(xml_escape "$MAC_LOG")</string>
-  <key>StandardErrorPath</key>
-  <string>$(xml_escape "$MAC_LOG")</string>
-</dict>
-</plist>
-PLISTFILE
-  echo "service   $PLIST"
-
-  # bootout then bootstrap, not kickstart alone: a plist that changed since
-  # it was loaded is only re-read on load.
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST"
-  echo
-  echo "Logs:    tail -f $MAC_LOG"
-  echo "Stop:    launchctl bootout gui/\$(id -u)/$LABEL"
-  echo "Remove:  scripts/install-agent.sh --uninstall"
-  exit 0
-fi
-
-mkdir -p "$UNIT_DIR"
-cat > "$UNIT" <<UNITFILE
-[Unit]
-Description=ClipSync clipboard agent
-Documentation=https://github.com/robavelii/clipboard-worker
-# The clipboard belongs to the graphical session, so the agent is useless
-# without one and should stop when it ends.
-After=graphical-session.target
-PartOf=graphical-session.target
-# Never stop retrying: a laptop that wakes to a dead network should reconnect
-# on its own rather than needing a manual restart.
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=$NODE $CLI run
-Restart=on-failure
-RestartSec=5
-# The agent exits 75 when its bundle is rebuilt, to be restarted onto the new
-# code. That is a handover, not a failure.
-SuccessExitStatus=75
-RestartForceExitStatus=75
-# The agent exits 78 when its device has been revoked, or the vault re-keyed
-# without a copy for it. Restarting would only retry what can never work.
-RestartPreventExitStatus=78
-
-[Install]
-WantedBy=graphical-session.target
-UNITFILE
-echo "service   $UNIT"
-
-# The service needs to reach the same display the clipboard lives on. These
-# are set by the graphical session, not by systemd, so hand them over.
-systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY 2>/dev/null || true
-
-systemctl --user daemon-reload
-systemctl --user enable clipsync.service
-# restart, not start: an agent that is already running would otherwise keep
-# the code it was started with.
-systemctl --user restart clipsync.service
+# The service runs this node, by its real path, and this checkout's bundle.
+"$NODE" "$CLI" install
+[ "$IS_MAC" = 1 ] && exit 0
 
 # The tray app is optional: it needs a Rust toolchain to build, and the agent
 # is fully usable without it.
@@ -220,8 +109,4 @@ else
 fi
 
 echo
-systemctl --user --no-pager --lines=0 status clipsync.service | head -4
-echo
-echo "Logs:    journalctl --user -u clipsync -f"
-echo "Stop:    systemctl --user stop clipsync"
-echo "Remove:  scripts/install-agent.sh --uninstall"
+echo "Remove everything:  scripts/install-agent.sh --uninstall"
