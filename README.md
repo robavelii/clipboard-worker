@@ -102,6 +102,24 @@ npx wrangler secret put ADMIN_SECRET --config apps/worker/wrangler.jsonc
 npm run deploy
 ```
 
+### Deploying from CI
+
+Every push to `main` that passes CI (typecheck, unit tests, e2e) applies any
+new migrations to the production database, then deploys the Worker, then
+checks that it answers. It needs two repository secrets (Settings → Secrets
+and variables → Actions):
+
+- `CLOUDFLARE_API_TOKEN`: a token from the **Edit Cloudflare Workers**
+  template, plus **Account → D1 → Edit** for migrations. Scope it to your
+  account and to the Worker's zone, which needs **Zone → Workers Routes →
+  Edit** for the custom domain.
+- `CLOUDFLARE_ACCOUNT_ID`: from the dashboard's Workers & Pages sidebar, or
+  `npx wrangler whoami`.
+
+Without them the deploy job fails and says so; the checks still run. Runs
+on `main` queue rather than cancel each other, so a deploy is never cut off
+between its migration and the deploy itself.
+
 `wrangler.jsonc` binds the Worker to `clip.rfh.et` as a custom domain and sets
 `workers_dev: false` — one public door, not two. Change the `routes` entry for
 your own hostname, or set `workers_dev: true` to use the generated
