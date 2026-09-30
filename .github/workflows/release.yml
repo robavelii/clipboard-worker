@@ -72,7 +72,7 @@ jobs:
           CLIPSYNC_BUILD_ID=v0.0.1 npm run build:binary
           cp "apps/agent/dist/bin/$t/$exe" "$old/$exe"
           node apps/agent/test/fake-releases.mjs "$rel" v0.0.2 8766 &
-          sleep 2
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8766/releases/latest && break; sleep 1; done
           # Running while it is replaced, as under a service: it waits at a prompt.
           (sleep 90 | "$old/$exe" login --url http://127.0.0.1:9 >/dev/null 2>&1) &
           sleep 3
@@ -121,7 +121,9 @@ jobs:
           (cd release && if command -v sha256sum >/dev/null; then sha256sum clipsync-*; else shasum -a 256 clipsync-*; fi > SHA256SUMS)
           py=python3; command -v python3 >/dev/null || py=python
           "$py" -m http.server 8765 --bind 127.0.0.1 --directory release >/dev/null 2>&1 &
-          sleep 2
+          # Wait for it to answer: a first Python start on a fresh runner can
+          # take longer than any fixed pause.
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8765/SHA256SUMS && break; sleep 1; done
           if [ "$RUNNER_OS" = Windows ]; then
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
           else
