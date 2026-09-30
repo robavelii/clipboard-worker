@@ -21,8 +21,11 @@
  * catches up on the newest clip -- see `catchUp`.
  */
 
+import { readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import {
   MAX_ENVELOPE_BYTES,
+  MAX_FILE_BYTES,
   PING_FRAME,
   REVOKED_CLOSE_CODE,
   R2_BUDGET_ERROR,
@@ -48,7 +51,7 @@ import {
   type RingKeys,
   type VaultRing,
 } from "@clipsync/client/ring";
-import { detectClipboard, type ClipboardBackend } from "./clipboard";
+import { detectClipboard, type ClipboardBackend, type ClipboardImage } from "./clipboard";
 import {
   ensureDeviceKey,
   refreshRing,
@@ -56,6 +59,7 @@ import {
   storedRing,
   type AgentConfig,
 } from "./config";
+import { extensionFor, mimeFor } from "./mime";
 
 const POLL_INTERVAL_MS = 600;
 const PING_INTERVAL_MS = 30_000;
@@ -76,23 +80,53 @@ const CATCH_UP_WINDOW_MS = 10 * 60 * 1000;
 const REPLAY_WINDOW_MS = CATCH_UP_WINDOW_MS;
 
 /**
- * Images are looked for only when the clipboard holds no text, and only on
- * every third poll (about 2 s): reading one means fetching and hashing the
- * whole picture, which is not worth doing ten times a second.
+ * Images and copied files are looked for only when the clipboard holds no
+ * text, and only on every third poll (about 2 s): reading an image means
+ * fetching and hashing the whole picture, which is not worth doing ten
+ * times a second.
  */
 const IMAGE_POLL_EVERY = 3;
 
 /**
- * Images synced through the clipboard, in bytes. Anything bigger stays in
+ * The largest image another device's copy puts on this clipboard, in bytes.
+ * Anything bigger is still uploaded, up to MAX_FILE_BYTES, but stays in
  * history for the web UI or `clipsync get`, rather than every device
  * downloading it unasked.
  */
 const MAX_CLIPBOARD_IMAGE_BYTES = 5 * 1024 * 1024;
 
-const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
+/** Files sent from one copy in a file manager; a folder's worth is not a clip. */
+const MAX_COPIED_FILES = 10;
+
+const kb = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : bytes >= 1024
+      ? `${(bytes / 1024).toFixed(1)} KB`
+      : `${bytes} B`;
 
 /** Echo-guard tags for images: their digest, apart from text's HMAC tags. */
 const imageTag = (sha256: string) => `img:${sha256}`;
+
+/**
+ * Echo-guard tag for a copy of files with no text beside it (Windows
+ * Explorer): the paths, sizes and times, so the same copy is sent once.
+ */
+async function filesTag(paths: string[]): Promise<string> {
+  const seen = await Promise.all(
+    paths.map(async (path) => {
+      const info = await stat(path).catch(() => null);
+      return [path, info?.size ?? null, info?.mtimeMs ?? null];
+    }),
+  );
+  return `files:${await sha256Hex(new TextEncoder().encode(JSON.stringify(seen)))}`;
+}
+
+/** Tags that are plain digests, not keyed by the vault, and so survive a re-key. */
+const isDigestTag = (tag: string) => tag.startsWith("img:") || tag.startsWith("files:");
+
+/** A browser's "Copy image" in Firefox offers the image and its address as text. */
+const isLoneUrl = (text: string) => /^https?:\/\/\S+$/.test(text.trim());
 
 export interface DaemonOptions {
   /** Push whatever is already on the clipboard when the agent starts. */
@@ -150,6 +184,8 @@ export class Daemon {
 
   /** Whether images sync through the clipboard (CLIPSYNC_IMAGES=off stops it). */
   private readonly images: boolean;
+  /** Whether files copied in a file manager are sent (CLIPSYNC_FILES=off stops it). */
+  private readonly files: boolean;
   private imageTick = 0;
 
   /** One poll at a time: a slow read must not stack another behind it. */
@@ -166,7 +202,9 @@ export class Daemon {
     private readonly options: DaemonOptions = {},
   ) {
     this.api = new ApiClient(config.baseUrl, config.token);
-    this.images = !/^(0|off|false|no)$/i.test(process.env.CLIPSYNC_IMAGES ?? "");
+    const off = (value: string | undefined) => /^(0|off|false|no)$/i.test(value ?? "");
+    this.images = !off(process.env.CLIPSYNC_IMAGES);
+    this.files = !off(process.env.CLIPSYNC_FILES);
   }
 
   async start(): Promise<void> {
@@ -201,8 +239,10 @@ export class Daemon {
         this.lastHandled = await dedupeHash(currentKeys(this.keys), current);
       }
     } else {
-      const image = await this.readImage();
-      if (image) this.lastHandled = imageTag(await sha256Hex(image));
+      const files = await this.readFilesWithoutText();
+      const image = files.length ? null : await this.readImage();
+      if (files.length) this.lastHandled = await filesTag(files);
+      else if (image) this.lastHandled = imageTag(await sha256Hex(image.bytes));
     }
 
     this.connect();
@@ -222,7 +262,22 @@ export class Daemon {
 
   /* ---------------------------- local -> cloud --------------------------- */
 
-  private async readImage(): Promise<Uint8Array | null> {
+  private async readFiles(): Promise<string[]> {
+    if (!this.files || !this.clipboard.readFiles) return [];
+    try {
+      return await this.clipboard.readFiles();
+    } catch (err) {
+      if (this.options.verbose) log("clipboard file read failed:", err);
+      return [];
+    }
+  }
+
+  /** Files on a clipboard that holds no text, where a file copy can. */
+  private async readFilesWithoutText(): Promise<string[]> {
+    return this.clipboard.filesOfferText ? [] : this.readFiles();
+  }
+
+  private async readImage(): Promise<ClipboardImage | null> {
     if (!this.images || !this.clipboard.readImage) return null;
     try {
       return await this.clipboard.readImage();
@@ -257,7 +312,7 @@ export class Daemon {
       const generation = this.applied;
       const text = await this.readClipboard();
       if (!text) {
-        await this.pollImage(generation);
+        await this.pollBinary(generation);
         return;
       }
 
@@ -265,71 +320,149 @@ export class Daemon {
       // Stale: a remote clip landed while this read was in flight, so the
       // read holds what the clipboard *was* -- not even a candidate.
       if (generation !== this.applied) return;
-      if (hash === this.lastHandled) {
-        this.candidate = null;
-        return;
-      }
-      if (hash !== this.candidate) {
-        this.candidate = hash;
-        this.localChangedAt = Date.now();
-        return;
-      }
+      if (!this.settled(hash)) return;
 
-      this.candidate = null;
+      // New content has settled. Its text may only stand for what was really
+      // copied: files in a file manager read as their paths (or, from Finder,
+      // their names), and Firefox's "Copy image" as the image's address.
+      // Checked once per copy, not per poll, so the extra reads cost nothing.
+      const files = await this.readFiles();
+      if (generation !== this.applied) return;
+      if (files.length) {
+        await this.pushFiles(files, hash);
+        return;
+      }
+      if (isLoneUrl(text)) {
+        const image = await this.readImage();
+        if (generation !== this.applied) return;
+        if (image) {
+          await this.pushImage(image, hash);
+          return;
+        }
+      }
       await this.push(text, hash);
     } finally {
       this.polling = false;
     }
   }
 
-  /** The image half of poll(): the same guards, keyed by the image's digest. */
-  private async pollImage(generation: number): Promise<void> {
-    if (!this.images || !this.clipboard.readImage) return;
-    if (++this.imageTick % IMAGE_POLL_EVERY !== 0) return;
-    const png = await this.readImage();
-    if (!png || generation !== this.applied) return;
-
-    const tag = imageTag(await sha256Hex(png));
+  /**
+   * The settle rule, for text, images and files alike: true once `tag` has
+   * been read on two polls in a row and is not what this agent last pushed
+   * or applied.
+   */
+  private settled(tag: string): boolean {
     if (tag === this.lastHandled) {
       this.candidate = null;
-      return;
+      return false;
     }
     if (tag !== this.candidate) {
       this.candidate = tag;
       this.localChangedAt = Date.now();
-      return;
+      return false;
     }
     this.candidate = null;
-    await this.pushImage(png, tag);
+    return true;
   }
 
-  private async pushImage(png: Uint8Array, tag: string): Promise<void> {
+  /**
+   * poll() for a clipboard with no text: copied files (Windows Explorer
+   * offers no text for them), else an image, keyed by digest.
+   */
+  private async pollBinary(generation: number): Promise<void> {
+    if (++this.imageTick % IMAGE_POLL_EVERY !== 0) return;
+
+    const files = await this.readFilesWithoutText();
+    if (generation !== this.applied) return;
+    if (files.length) {
+      const tag = await filesTag(files);
+      if (this.settled(tag)) await this.pushFiles(files, tag);
+      return;
+    }
+
+    const image = await this.readImage();
+    if (!image || generation !== this.applied) return;
+    const tag = imageTag(await sha256Hex(image.bytes));
+    if (this.settled(tag)) await this.pushImage(image, tag);
+  }
+
+  private async pushImage(image: ClipboardImage, tag: string): Promise<void> {
     this.lastHandled = tag;
-    if (png.length > MAX_CLIPBOARD_IMAGE_BYTES) {
-      log(`skipped a ${kb(png.length)} image -- over the clipboard limit; use clipsync send`);
+    if (image.bytes.length > MAX_FILE_BYTES) {
+      log(`skipped a ${kb(image.bytes.length)} image -- over the ${kb(MAX_FILE_BYTES)} file limit`);
       return;
     }
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const res = await uploadFile(this.api, this.keys, this.config.userId, this.config.deviceId, {
-        name: `image-${stamp}.png`,
-        mime: "image/png",
-        bytes: png,
+        name: `image-${stamp}.${extensionFor(image.mime)}`,
+        mime: image.mime,
+        bytes: image.bytes,
       });
-      if (!res.deduped) log(`pushed an image (${kb(png.length)})`);
+      if (!res.deduped) log(`pushed an image (${kb(image.bytes.length)})`);
     } catch (err) {
-      if (this.isRevocation(err)) return;
-      this.lastHandled = null;
-      if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
-        await this.refresh();
+      await this.uploadFailed(err, tag, "image push");
+    }
+  }
+
+  /**
+   * Send files copied in a file manager, each as `clipsync send` would.
+   * Folders are skipped: a clip is a file, not a tree.
+   */
+  private async pushFiles(paths: string[], tag: string): Promise<void> {
+    this.lastHandled = tag;
+    const picked = paths.slice(0, MAX_COPIED_FILES);
+    if (paths.length > picked.length) {
+      log(`copied ${paths.length} files -- sending the first ${picked.length}`);
+    }
+    for (const path of picked) {
+      const name = basename(path);
+      let bytes: Uint8Array;
+      try {
+        const info = await stat(path);
+        if (!info.isFile()) {
+          log(`skipped ${name} -- only files are sent, not folders`);
+          continue;
+        }
+        if (info.size === 0) continue;
+        if (info.size > MAX_FILE_BYTES) {
+          log(`skipped ${name} (${kb(info.size)}) -- over the ${kb(MAX_FILE_BYTES)} file limit`);
+          continue;
+        }
+        bytes = new Uint8Array(await readFile(path));
+      } catch (err) {
+        log(`could not read ${name}:`, err instanceof Error ? err.message : err);
+        continue;
+      }
+      try {
+        const res = await uploadFile(this.api, this.keys, this.config.userId, this.config.deviceId, {
+          name,
+          mime: mimeFor(name),
+          bytes,
+        });
+        if (!res.deduped) log(`pushed ${name} (${kb(bytes.length)})`);
+      } catch (err) {
+        // The rest would fail the same way; a retry sends them all again,
+        // and the ones already in history just move to the top.
+        await this.uploadFailed(err, tag, `sending ${name}`);
         return;
       }
-      // Past the R2 budget the next poll would only be refused again.
-      if (err instanceof ApiRequestError && err.code === R2_BUDGET_ERROR) {
-        this.lastHandled = tag;
-      }
-      log("image push failed:", err instanceof Error ? err.message : err);
     }
+  }
+
+  /** After a failed image or file upload: retry on a later poll, or not. */
+  private async uploadFailed(err: unknown, tag: string, what: string): Promise<void> {
+    if (this.isRevocation(err)) return;
+    this.lastHandled = null;
+    if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
+      await this.refresh();
+      return;
+    }
+    // Past the R2 budget the next poll would only be refused again.
+    if (err instanceof ApiRequestError && err.code === R2_BUDGET_ERROR) {
+      this.lastHandled = tag;
+    }
+    log(`${what} failed:`, err instanceof Error ? err.message : err);
   }
 
   private async push(text: string, knownHash?: string): Promise<void> {
@@ -426,7 +559,7 @@ export class Daemon {
       const opened = await this.openFresh(clip, from);
       const meta = opened?.file;
       if (!meta) return;
-      if (meta.mime !== "image/png" || meta.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+      if (!this.clipboard.imageTypes?.includes(meta.mime) || meta.size > MAX_CLIPBOARD_IMAGE_BYTES) {
         log(`image from ${from} (${kb(meta.size)}) is in history, not applied`);
         return;
       }
@@ -437,11 +570,12 @@ export class Daemon {
       this.lastHandled = imageTag(meta.sha256);
       this.applied++;
       this.candidate = null;
-      await this.clipboard.writeImage!(bytes);
+      await this.clipboard.writeImage!({ bytes, mime: meta.mime });
       // What the clipboard hands back may not be these bytes -- Windows
-      // re-encodes PNGs -- and the poller must recognise that as this image.
+      // re-encodes every image as PNG -- and the poller must recognise that
+      // as this image.
       const back = await this.readImage();
-      if (back) this.lastHandled = imageTag(await sha256Hex(back));
+      if (back) this.lastHandled = imageTag(await sha256Hex(back.bytes));
       log(`applied an image (${kb(bytes.length)}) from ${from}`);
     } catch (err) {
       log("image apply failed:", err instanceof Error ? err.message : err);
@@ -609,8 +743,8 @@ export class Daemon {
         // than let the next poll push the clipboard back as if it were new.
         this.applied++;
         this.candidate = null;
-        // Image tags are digests, not keyed: they survive a re-key as they are.
-        if (this.lastHandled !== null && !this.lastHandled.startsWith("img:")) {
+        // Image and file tags are digests, not keyed: they survive a re-key.
+        if (this.lastHandled !== null && !isDigestTag(this.lastHandled)) {
           const current = await this.readClipboard();
           this.lastHandled = current
             ? await dedupeHash(currentKeys(this.keys), current)

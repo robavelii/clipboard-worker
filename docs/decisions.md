@@ -723,7 +723,8 @@ its own key, chunks in R2, the free-tier budget. No second path to secure.
 fetching and hashing the whole picture. The agent looks for one only when
 the clipboard holds no text, and only on every third poll (about 2 s), which
 keeps the settle rule (two identical reads) at about 4 s for images. Images
-over 5 MB, the size a device downloads unasked, stay in history.
+over 5 MB, the size a device downloads unasked, stay in history. (As first
+built, they were not uploaded at all; §28 fixes that.)
 
 **The echo guard, keyed by digest.** Image tags are `img:<sha256>` in the
 same `lastHandled`/`candidate` slots as text, so the guards need no second
@@ -736,3 +737,49 @@ Traps:
   reads text only when `TARGETS` offers a text type.
 - Windows hands an image back re-encoded, so its bytes differ from what was
   written. After writing an image, the agent re-reads it and guards that.
+
+## 28. Copied files, and images in the form they were copied
+
+The first cut of §27 missed the two most common ways people copy a picture.
+In a file manager, a copied `photo.jpg` offers its path as text, so the
+agent pushed `/home/…/photo.jpg` and the other devices got a string. In a
+browser, "Copy image" offers `text/html` (and, in Firefox, the image's
+address as plain text) beside the picture, and `wl-paste`, asked for no
+type in particular, takes any `text/*`, so the markup won over the image.
+Images over 5 MB were not uploaded at all, despite §27 saying they stay in
+history.
+
+**Ask for a type by name.** The Linux backends list what the owner offers
+and request a plain-text flavour explicitly. An offer with no plain text is
+not text, however many markup flavours it has.
+
+**Look behind new text once, when it settles.** A file manager's text is
+only the paths, and Firefox's is only the address. Asking for files (and,
+for a lone URL, an image) on every poll would double the processes the
+poller starts. Asking once per new copy costs nothing, so the text path
+checks when content settles, before pushing it. Text that is not a lone URL
+wins over an image: an office suite offers a picture of copied cells beside
+their text, and the text is what was meant.
+
+**Files as files.** Each copied file (up to 10, 25 MB each) is uploaded as
+`clipsync send` would. Images among them are applied on the other side like
+any copied image. Other files wait in history: putting a file on a
+clipboard means writing it somewhere first, and a download nobody asked for
+is not a paste. Windows Explorer offers no text for a file copy, so a
+clipboard with no text is asked for files before images. The echo tag is a
+digest of the paths, sizes and times, so the same copy is sent once. Finder
+always offers text (the names), so macOS skips that check and its
+`osascript` process.
+
+**Images keep their type.** A JPEG is uploaded as a JPEG and written back
+as `image/jpeg`, rather than converted. Converting needs an image library,
+and a Linux or Windows paste takes JPEG as readily. Each backend says which
+types it can write, and a clip in any other type stays in history.
+
+Traps:
+- `xclip -o` without `-t` asks for `UTF8_STRING`. An owner that offers only
+  `text/plain` read as empty, so the backend now requests the flavour
+  `TARGETS` named.
+- Windows re-encodes a clipboard image to PNG on every read, which for a
+  4K screenshot every two seconds is most of a core. The helper checks the
+  clipboard's sequence number and answers "unchanged" instead.

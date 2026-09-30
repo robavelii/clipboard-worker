@@ -12,16 +12,71 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export interface ClipboardImage {
+  bytes: Uint8Array;
+  /** One of the backend's `imageTypes`. */
+  mime: string;
+}
 
 export interface ClipboardBackend {
   readonly name: string;
+  /**
+   * The clipboard's text, or "" when it offers none. Never a markup flavour
+   * such as text/html: a browser's "Copy image" offers one beside the image.
+   */
   read(): Promise<string>;
   write(text: string): Promise<void>;
-  /** PNG bytes when the clipboard holds an image, else null. */
-  readImage?(): Promise<Uint8Array | null>;
-  writeImage?(png: Uint8Array): Promise<void>;
+  /** The image on the clipboard, in the first of `imageTypes` it offers. */
+  readImage?(): Promise<ClipboardImage | null>;
+  writeImage?(image: ClipboardImage): Promise<void>;
+  /** Image types writeImage takes, and readImage looks for, best first. */
+  readonly imageTypes?: readonly string[];
+  /**
+   * Local paths of files copied in a file manager, or none. Their text
+   * flavour is only the paths, which is not what anyone copied them for.
+   */
+  readFiles?(): Promise<string[]>;
+  /**
+   * Whether a copy of files always offers text too (Finder: their names), so
+   * a clipboard without text need not be asked for files -- worth knowing
+   * where asking means starting a process.
+   */
+  readonly filesOfferText?: boolean;
   /** Release anything the backend holds open. */
   close?(): void;
+}
+
+/** Image types the Linux tools read and write as they are, best first. */
+const LINUX_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"] as const;
+
+/** The first of `wanted` that a list of offered targets or MIME types holds. */
+function firstOffered(offered: string, wanted: readonly string[]): string | null {
+  const lines = new Set(offered.split(/\r?\n/).map((line) => line.trim()));
+  return wanted.find((type) => lines.has(type)) ?? null;
+}
+
+/**
+ * Local paths from a text/uri-list. Comments are skipped; anything that is
+ * not a local file (a web link dragged from a browser, a file on another
+ * host) means this is not a file copy at all, so nothing is returned.
+ */
+export function parseUriList(list: string): string[] {
+  const paths: string[] = [];
+  for (const raw of list.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    try {
+      const url = new URL(line);
+      if (url.protocol !== "file:" || (url.hostname && url.hostname !== "localhost")) return [];
+      url.hostname = "";
+      paths.push(fileURLToPath(url));
+    } catch {
+      return [];
+    }
+  }
+  return paths;
 }
 
 /**
@@ -95,41 +150,64 @@ async function has(cmd: string): Promise<boolean> {
 
 /* -------------------------------- Linux -------------------------------- */
 
+/** Plain-text flavours, best first. Both tools list X11 and MIME names alike. */
+const TEXT_TYPES = [
+  "text/plain;charset=utf-8",
+  "UTF8_STRING",
+  "text/plain",
+  "STRING",
+  "TEXT",
+] as const;
+
+/** What the Wayland clipboard offers, one type per line; "" when it is empty. */
+async function waylandTypes(): Promise<string> {
+  const { code, stdout, stderr } = await run("wl-paste", ["--list-types"], {
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  if (code === 0) return stdout;
+  // Wording differs across wl-clipboard versions.
+  if (/Nothing is copied|No selection|clipboard is empty|No suitable type/i.test(stderr)) return "";
+  throw new Error(`wl-paste failed: ${stderr.trim()}`);
+}
+
+async function wlPaste(type: string): Promise<Buffer | null> {
+  const { code, bytes } = await run("wl-paste", ["--no-newline", "--type", type], {
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  return code === 0 && bytes.length ? bytes : null;
+}
+
 const wayland: ClipboardBackend = {
   name: "wl-clipboard",
+  imageTypes: LINUX_IMAGE_TYPES,
   async read() {
-    const { code, stdout, stderr } = await run("wl-paste", ["--no-newline"], {
-      timeoutMs: READ_TIMEOUT_MS,
-    });
-    // wl-paste exits non-zero when the clipboard holds no text (e.g. an
-    // image was copied). That is an empty read, not a failure.
-    if (code !== 0) {
-      if (/No suitable type|clipboard is empty/i.test(stderr)) return "";
-      throw new Error(`wl-paste failed: ${stderr.trim()}`);
-    }
-    return stdout;
+    // Name the type: left to choose, wl-paste takes any text/* flavour, and
+    // a browser's "Copy image" offers text/html beside the picture.
+    const type = firstOffered(await waylandTypes(), TEXT_TYPES);
+    if (!type) return "";
+    return (await wlPaste(type))?.toString("utf8") ?? "";
   },
   async write(text) {
     const { code, stderr } = await run("wl-copy", [], { stdin: text, settleOn: "exit" });
     if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
   },
   async readImage() {
-    const types = await run("wl-paste", ["--list-types"], { timeoutMs: READ_TIMEOUT_MS });
-    if (types.code !== 0 || !/^image\/png$/m.test(types.stdout)) return null;
-    const { code, bytes } = await run("wl-paste", ["--type", "image/png"], { timeoutMs: READ_TIMEOUT_MS });
-    return code === 0 && bytes.length ? new Uint8Array(bytes) : null;
+    const mime = firstOffered(await waylandTypes(), LINUX_IMAGE_TYPES);
+    const bytes = mime ? await wlPaste(mime) : null;
+    return mime && bytes ? { bytes: new Uint8Array(bytes), mime } : null;
   },
-  async writeImage(png) {
-    const { code, stderr } = await run("wl-copy", ["--type", "image/png"], {
-      stdin: png,
+  async writeImage({ bytes, mime }) {
+    const { code, stderr } = await run("wl-copy", ["--type", mime], {
+      stdin: bytes,
       settleOn: "exit",
     });
     if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
   },
+  async readFiles() {
+    if (!firstOffered(await waylandTypes(), ["text/uri-list"])) return [];
+    return parseUriList((await wlPaste("text/uri-list"))?.toString("utf8") ?? "");
+  },
 };
-
-/** Targets an X11 selection owner offers text under. */
-const X11_TEXT_TARGETS = /^(UTF8_STRING|STRING|TEXT|COMPOUND_TEXT|text\/plain(;.*)?)$/m;
 
 async function x11Targets(): Promise<string | null> {
   const { code, stdout } = await run("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
@@ -138,17 +216,29 @@ async function x11Targets(): Promise<string | null> {
   return code === 0 ? stdout : null;
 }
 
+async function xclipOut(target: string): Promise<Buffer | null> {
+  const { code, bytes } = await run("xclip", ["-selection", "clipboard", "-t", target, "-o"], {
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  return code === 0 && bytes.length ? bytes : null;
+}
+
 const x11: ClipboardBackend = {
   name: "xclip",
+  imageTypes: LINUX_IMAGE_TYPES,
   async read() {
     // Ask what the owner offers first. An owner that answers every request
     // with whatever it holds -- xclip itself does, after putting an image on
     // the clipboard -- would otherwise hand back a PNG as "text".
+    // An owner that cannot list its targets gets xclip's default request.
     const targets = await x11Targets();
-    if (targets !== null && !X11_TEXT_TARGETS.test(targets)) return "";
-    const { code, stdout, stderr } = await run("xclip", ["-selection", "clipboard", "-o"], {
-      timeoutMs: READ_TIMEOUT_MS,
-    });
+    const type = targets === null ? null : firstOffered(targets, TEXT_TYPES);
+    if (targets !== null && !type) return "";
+    const { code, stdout, stderr } = await run(
+      "xclip",
+      ["-selection", "clipboard", ...(type ? ["-t", type] : []), "-o"],
+      { timeoutMs: READ_TIMEOUT_MS },
+    );
     if (code !== 0) {
       if (/Error: target .* not available/i.test(stderr)) return "";
       throw new Error(`xclip failed: ${stderr.trim()}`);
@@ -163,19 +253,20 @@ const x11: ClipboardBackend = {
     if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
   },
   async readImage() {
-    const targets = await x11Targets();
-    if (targets === null || !/^image\/png$/m.test(targets)) return null;
-    const { code, bytes } = await run("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"], {
-      timeoutMs: READ_TIMEOUT_MS,
-    });
-    return code === 0 && bytes.length ? new Uint8Array(bytes) : null;
+    const mime = firstOffered((await x11Targets()) ?? "", LINUX_IMAGE_TYPES);
+    const bytes = mime ? await xclipOut(mime) : null;
+    return mime && bytes ? { bytes: new Uint8Array(bytes), mime } : null;
   },
-  async writeImage(png) {
-    const { code, stderr } = await run("xclip", ["-selection", "clipboard", "-t", "image/png", "-i"], {
-      stdin: png,
+  async writeImage({ bytes, mime }) {
+    const { code, stderr } = await run("xclip", ["-selection", "clipboard", "-t", mime, "-i"], {
+      stdin: bytes,
       settleOn: "exit",
     });
     if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
+  },
+  async readFiles() {
+    if (!firstOffered((await x11Targets()) ?? "", ["text/uri-list"])) return [];
+    return parseUriList((await xclipOut("text/uri-list"))?.toString("utf8") ?? "");
   },
 };
 
@@ -190,6 +281,13 @@ function utf8Env(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const current = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   return /utf-?8/i.test(current) ? env : { ...env, LC_ALL: "en_US.UTF-8" };
 }
+
+/** The pasteboard class each image type is written under. */
+const MAC_IMAGE_CLASSES: Record<string, string> = {
+  "image/png": "PNGf",
+  "image/jpeg": "JPEG",
+  "image/gif": "GIFf",
+};
 
 export const macos: ClipboardBackend = {
   name: "pbcopy",
@@ -210,29 +308,44 @@ export const macos: ClipboardBackend = {
     if (code !== 0) throw new Error(`pbcopy failed: ${stderr.trim()}`);
   },
   // pbcopy and pbpaste carry text only; AppleScript reaches the pasteboard's
-  // PNG flavour. It prints data as «data PNGf<hex>» and reads it from a file.
+  // image flavours. It prints data as «data PNGf<hex>» and reads it from a file.
+  imageTypes: Object.keys(MAC_IMAGE_CLASSES),
   async readImage() {
     const { code, stdout } = await run("osascript", ["-e", "the clipboard as «class PNGf»"], {
       timeoutMs: READ_TIMEOUT_MS,
       env: utf8Env(),
     });
     const hex = /«data PNGf([0-9A-Fa-f]+)»/.exec(stdout)?.[1];
-    return code === 0 && hex ? new Uint8Array(Buffer.from(hex, "hex")) : null;
+    return code === 0 && hex ? { bytes: new Uint8Array(Buffer.from(hex, "hex")), mime: "image/png" } : null;
   },
-  async writeImage(png) {
+  async writeImage({ bytes, mime }) {
+    const flavour = MAC_IMAGE_CLASSES[mime];
+    if (!flavour) throw new Error(`cannot put ${mime} on the clipboard`);
     const dir = await mkdtemp(join(tmpdir(), "clipsync-"));
-    const file = join(dir, "clip.png");
+    const file = join(dir, "clip");
     try {
-      await writeFile(file, png, { mode: 0o600 });
+      await writeFile(file, bytes, { mode: 0o600 });
       const { code, stderr } = await run(
         "osascript",
-        ["-e", `set the clipboard to (read (POSIX file "${file}") as «class PNGf»)`],
+        ["-e", `set the clipboard to (read (POSIX file "${file}") as «class ${flavour}»)`],
         { settleOn: "exit", env: utf8Env() },
       );
       if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  },
+  filesOfferText: true,
+  // A Finder copy reads as text as the bare file name. AppleScript gives the
+  // first file's path; a copy of several sends only that one.
+  async readFiles() {
+    const { code, stdout } = await run(
+      "osascript",
+      ["-e", "POSIX path of (the clipboard as «class furl»)"],
+      { timeoutMs: READ_TIMEOUT_MS, env: utf8Env() },
+    );
+    const path = stdout.trim();
+    return code === 0 && path.startsWith("/") ? [path] : [];
   },
 };
 
@@ -245,9 +358,16 @@ export const macos: ClipboardBackend = {
  *
  *   R          ->  OK <base64 of the clipboard text>
  *   W <base64> ->  OK
- *   I          ->  OK <base64 of the clipboard image as PNG>, or OK and nothing
- *   J <base64> ->  OK, having put that PNG on the clipboard
+ *   I          ->  OK <base64 of the clipboard image as PNG>, or OK and nothing,
+ *                  or OK = when the clipboard has not changed since the last I
+ *   J <base64> ->  OK, having put that image (PNG, JPEG, GIF or BMP) on the clipboard
+ *   F          ->  OK <base64 of the copied files' paths, one per line>, or OK and nothing
  *   anything that fails -> ERR <message>
+ *
+ * "OK =" spares re-encoding a picture that has sat on the clipboard since
+ * the last look: GDI+ turning a 4K screenshot into PNG every two seconds is
+ * a core's worth of work. The clipboard's sequence number says whether
+ * anything changed; where it cannot be had, every I reads afresh.
  *
  * Works in Windows PowerShell 5.1 (every Windows 10 and 11) and PowerShell 7.
  */
@@ -256,6 +376,7 @@ $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding $false
 $in = [Console]::In
 $out = [Console]::Out
+$lastImageSeq = $null
 while ($null -ne ($line = $in.ReadLine())) {
   try {
     if ($line -eq 'R') {
@@ -267,12 +388,26 @@ while ($null -ne ($line = $in.ReadLine())) {
       $out.WriteLine('OK')
     } elseif ($line -eq 'I') {
       Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-      $img = [System.Windows.Forms.Clipboard]::GetImage()
-      if ($null -eq $img) { $out.WriteLine('OK ') } else {
-        $ms = New-Object System.IO.MemoryStream
-        $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-        $out.WriteLine('OK ' + [Convert]::ToBase64String($ms.ToArray()))
+      $seq = $null
+      try {
+        if (-not ('ClipSync.Native' -as [type])) {
+          Add-Type -Namespace ClipSync -Name Native -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();'
+        }
+        $seq = [ClipSync.Native]::GetClipboardSequenceNumber()
+      } catch { $seq = $null }
+      if ($null -ne $seq -and $seq -eq $lastImageSeq) { $out.WriteLine('OK =') } else {
+        $img = [System.Windows.Forms.Clipboard]::GetImage()
+        if ($null -eq $img) { $out.WriteLine('OK ') } else {
+          $ms = New-Object System.IO.MemoryStream
+          $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+          $out.WriteLine('OK ' + [Convert]::ToBase64String($ms.ToArray()))
+        }
+        $lastImageSeq = $seq
       }
+    } elseif ($line -eq 'F') {
+      Add-Type -AssemblyName System.Windows.Forms
+      $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
+      $out.WriteLine('OK ' + [Convert]::ToBase64String($utf8.GetBytes(($files -join "\`n"))))
     } elseif ($line.StartsWith('J ')) {
       Add-Type -AssemblyName System.Windows.Forms, System.Drawing
       $ms = New-Object System.IO.MemoryStream(,[Convert]::FromBase64String($line.Substring(2)))
@@ -319,6 +454,8 @@ export function powershellBackend(
   let buffer = "";
   let waiting: { resolve: (line: string) => void; reject: (err: Error) => void } | null = null;
   let queue: Promise<unknown> = Promise.resolve();
+  /** What the helper last read as an image, for its "unchanged" answer. */
+  let lastImage: ClipboardImage | null = null;
 
   const stop = () => {
     child?.kill();
@@ -336,6 +473,8 @@ export function powershellBackend(
     );
     answered = false;
     buffer = "";
+    // A new helper has no memory of the last image, so never answers "=" first.
+    lastImage = null;
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk: string) => {
       buffer += chunk;
@@ -408,14 +547,23 @@ export function powershellBackend(
     async write(text) {
       expectOk(await request(`W ${Buffer.from(text, "utf8").toString("base64")}`, writeMs));
     },
+    // GDI+ decodes all of these, and hands every one back as PNG.
+    imageTypes: ["image/png", "image/jpeg", "image/gif", "image/bmp"],
     // Windows re-encodes what it hands back, so these bytes are not the ones
     // written; the daemon re-reads after writing an image for that reason.
     async readImage() {
       const payload = expectOk(await request("I", readMs));
-      return payload ? new Uint8Array(Buffer.from(payload, "base64")) : null;
+      if (payload !== "=") {
+        lastImage = payload ? { bytes: new Uint8Array(Buffer.from(payload, "base64")), mime: "image/png" } : null;
+      }
+      return lastImage;
     },
-    async writeImage(png) {
-      expectOk(await request(`J ${Buffer.from(png).toString("base64")}`, writeMs));
+    async writeImage({ bytes }) {
+      expectOk(await request(`J ${Buffer.from(bytes).toString("base64")}`, writeMs));
+    },
+    async readFiles() {
+      const payload = expectOk(await request("F", readMs));
+      return Buffer.from(payload, "base64").toString("utf8").split("\n").map((p) => p.trim()).filter(Boolean);
     },
     close: stop,
   };

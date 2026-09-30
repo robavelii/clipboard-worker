@@ -21,8 +21,9 @@ an opaque ciphertext envelope.
 
 v0.1 — text, images and files, real-time sync, encrypted history, device
 pairing and revocation. The agent runs on Linux, macOS and Windows; the tray
-panel on Linux. Copied images (PNG, up to 5 MB) sync through the clipboard like
-text; other files go through the web UI and `clipsync send` / `clipsync get`.
+panel on Linux. Copied images sync through the clipboard like text, and
+files copied in a file manager are sent to history; files also go through
+the web UI and `clipsync send` / `clipsync get`.
 
 ## Quick start (local)
 
@@ -291,12 +292,23 @@ $run  = New-ScheduledTaskAction -Execute powershell.exe `
 Register-ScheduledTask -TaskName ClipSync -Action $run -Trigger (New-ScheduledTaskTrigger -AtLogOn)
 ```
 
-**Images.** A copied image (PNG, up to 5 MB) syncs through the clipboard like
-text, encrypted and stored the way `clipsync send` stores a file. Bigger ones
-stay in history for the web UI or `clipsync get`. The agent looks for an
-image only when the clipboard holds no text, every couple of seconds.
-`CLIPSYNC_IMAGES=off` turns this off. On macOS it uses `osascript` and on
-Windows the PowerShell helper; neither has been tried on a real machine yet.
+**Images.** A copied image (a screenshot, a browser's "Copy image") syncs
+through the clipboard like text, encrypted and stored the way `clipsync send`
+stores a file. Every image up to 25 MB goes to history; other devices put it
+on their clipboard if it is 5 MB or less, and the rest stay in history for
+the web UI or `clipsync get`. The agent looks for an image only when the
+clipboard holds no text (or only the image's web address), every couple of
+seconds. `CLIPSYNC_IMAGES=off` turns this off.
+
+**Files.** Copying files in a file manager (Nautilus, Dolphin, Finder,
+Explorer) sends the files themselves, up to 10 at a time and 25 MB each, not
+their paths. Images among them land on the other devices' clipboards as
+above; other files wait in history. Folders are skipped.
+`CLIPSYNC_FILES=off` turns this off.
+
+On macOS both use `osascript`, which reads only the first of several copied
+files, and on Windows the PowerShell helper. Neither has been tried on a
+real machine yet.
 
 `CLIPSYNC_CLIPBOARD` (`wayland`, `x11`, `macos` or `windows`) overrides the
 backend the agent picks, if it guesses wrong.
@@ -507,8 +519,8 @@ assertion that no plaintext appears in any API response.
 
 ## Not built yet
 
-Files other than images on the clipboard (they sync through the web UI and
-the CLI), sharing files into the web app from a phone's share sheet,
+Putting a received file (other than an image) on another computer's
+clipboard (it waits in history for the web UI and the CLI), sharing files into the web app from a phone's share sheet,
 semantic search, a Windows installer, and the tray panel on macOS and
 Windows.
 
