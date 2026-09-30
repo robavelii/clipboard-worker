@@ -3,9 +3,12 @@
  *
  * Shells out rather than binding a native addon. On Linux, `wl-clipboard`
  * and `xclip` are the tools that actually work across compositors; on macOS,
- * `pbpaste`/`pbcopy`. A spawn every ~600ms is not a cost worth optimising
- * away -- except on Windows, where starting PowerShell is, so one PowerShell
- * process stays up and answers requests (see `powershellBackend`).
+ * `pbpaste`/`pbcopy`. On Windows, starting PowerShell is too slow to repeat,
+ * so one PowerShell process stays up and answers requests (see
+ * `powershellBackend`).
+ *
+ * Each backend can also say when the clipboard changes (`watch`, decisions
+ * §36), so the daemon reads it after a copy instead of every 600 ms.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -13,11 +16,19 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { watchClipboardOwner } from "./x11";
 
 export interface ClipboardImage {
   bytes: Uint8Array;
   /** One of the backend's `imageTypes`. */
   mime: string;
+}
+
+/** A running subscription to clipboard changes. */
+export interface ClipboardWatch {
+  /** What delivers the events, for the log: "XFixes", "wl-paste --watch". */
+  readonly via: string;
+  stop(): void;
 }
 
 export interface ClipboardBackend {
@@ -44,6 +55,13 @@ export interface ClipboardBackend {
    * where asking means starting a process.
    */
   readonly filesOfferText?: boolean;
+  /**
+   * Call `onChange` whenever the clipboard may have changed: every copy,
+   * this agent's own writes included, and perhaps more. Resolves once
+   * watching; rejects when this machine cannot (the daemon then polls).
+   * `onLost` is called if watching stops by itself later.
+   */
+  watch?(onChange: () => void, onLost: (why: string) => void): Promise<ClipboardWatch>;
   /** Release anything the backend holds open. */
   close?(): void;
 }
@@ -148,6 +166,78 @@ async function has(cmd: string): Promise<boolean> {
   }
 }
 
+/** How long a watcher may take to start before the daemon polls instead. */
+const WATCH_START_MS = 5_000;
+
+/**
+ * A long-lived process that prints a line when the clipboard changes. Its
+ * first line means it is watching, and is not itself a change. A process
+ * that exits before that could not watch; one that exits after is lost.
+ */
+function lineWatcher(
+  via: string,
+  cmd: string,
+  args: string[],
+  stream: "stdout" | "stderr",
+  onChange: () => void,
+  onLost: (why: string) => void,
+  env?: NodeJS.ProcessEnv,
+): Promise<ClipboardWatch> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "pipe", env, windowsHide: true });
+    let watching = false;
+    let stopped = false;
+    let output = "";
+    let buffer = "";
+    const watch: ClipboardWatch = {
+      via,
+      stop() {
+        stopped = true;
+        child.kill();
+      },
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${via} did not start in time`));
+    }, WATCH_START_MS);
+
+    child.stdin.end();
+    child[stream].setEncoding("utf8");
+    child[stream].on("data", (chunk: string) => {
+      buffer += chunk;
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        buffer = buffer.slice(newline + 1);
+        if (watching) {
+          onChange();
+        } else {
+          watching = true;
+          clearTimeout(timer);
+          resolve(watch);
+        }
+      }
+    });
+    const other = stream === "stdout" ? child.stderr : child.stdout;
+    other.setEncoding("utf8");
+    other.on("data", (chunk: string) => {
+      output = (output + chunk).slice(-500);
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      if (watching) {
+        if (!stopped) onLost(err.message);
+      } else reject(err);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      const why = `${via} exited (${code})${output.trim() ? `: ${output.trim()}` : ""}`;
+      if (watching) {
+        if (!stopped) onLost(why);
+      } else reject(new Error(why));
+    });
+  });
+}
+
 /* -------------------------------- Linux -------------------------------- */
 
 /** Plain-text flavours, best first. Both tools list X11 and MIME names alike. */
@@ -206,6 +296,27 @@ const wayland: ClipboardBackend = {
   async readFiles() {
     if (!firstOffered(await waylandTypes(), ["text/uri-list"])) return [];
     return parseUriList((await wlPaste("text/uri-list"))?.toString("utf8") ?? "");
+  },
+  // wl-paste runs the command for every new selection, and once at start.
+  // The command drains what it is handed, so the copying app's write
+  // completes, and prints a line. Compositors without the data-control
+  // protocol (GNOME's) refuse --watch; XWayland's clipboard, which the
+  // compositor keeps in step, can still announce copies there.
+  async watch(onChange, onLost) {
+    try {
+      return await lineWatcher(
+        "wl-paste --watch",
+        "wl-paste",
+        ["--watch", "sh", "-c", "cat >/dev/null; echo"],
+        "stdout",
+        onChange,
+        onLost,
+      );
+    } catch (err) {
+      if (!process.env.DISPLAY) throw err;
+      const watch = await watchClipboardOwner(onChange, { onLost });
+      return { via: "XFixes (XWayland)", stop: watch.stop };
+    }
   },
 };
 
@@ -268,6 +379,10 @@ const x11: ClipboardBackend = {
     if (!firstOffered((await x11Targets()) ?? "", ["text/uri-list"])) return [];
     return parseUriList((await xclipOut("text/uri-list"))?.toString("utf8") ?? "");
   },
+  async watch(onChange, onLost) {
+    const watch = await watchClipboardOwner(onChange, { onLost });
+    return { via: "XFixes", stop: watch.stop };
+  },
 };
 
 /* -------------------------------- macOS -------------------------------- */
@@ -281,6 +396,29 @@ function utf8Env(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const current = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   return /utf-?8/i.test(current) ? env : { ...env, LC_ALL: "en_US.UTF-8" };
 }
+
+/**
+ * macOS has no clipboard notification; `changeCount` is how everything on
+ * the Mac notices a copy. Asking it is one call to the pasteboard server, so
+ * a long-lived osascript asks ten times a second -- no process per look,
+ * unlike pbpaste. JavaScript for Automation reaches AppKit through its ObjC
+ * bridge; running the run loop (not a bare sleep) lets AppKit see changes.
+ * console.log goes to stderr.
+ */
+const MACOS_WATCHER = `
+ObjC.import('AppKit');
+var pb = $.NSPasteboard.generalPasteboard;
+var last = pb.changeCount;
+console.log('ready ' + last);
+for (;;) {
+  $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
+  var now = pb.changeCount;
+  if (now !== last) {
+    last = now;
+    console.log('changed ' + now);
+  }
+}
+`;
 
 /** The pasteboard class each image type is written under. */
 const MAC_IMAGE_CLASSES: Record<string, string> = {
@@ -347,6 +485,16 @@ export const macos: ClipboardBackend = {
     const path = stdout.trim();
     return code === 0 && path.startsWith("/") ? [path] : [];
   },
+  watch: (onChange, onLost) =>
+    lineWatcher(
+      "NSPasteboard changeCount",
+      "osascript",
+      ["-l", "JavaScript", "-e", MACOS_WATCHER],
+      "stderr",
+      onChange,
+      onLost,
+      utf8Env(),
+    ),
 };
 
 /* ------------------------------- Windows ------------------------------- */
@@ -362,12 +510,18 @@ export const macos: ClipboardBackend = {
  *                  or OK = when the clipboard has not changed since the last I
  *   J <base64> ->  OK, having put that image (PNG, JPEG, GIF or BMP) on the clipboard
  *   F          ->  OK <base64 of the copied files' paths, one per line>, or OK and nothing
+ *   L          ->  OK, then a line "C" whenever the clipboard changes, between replies
  *   anything that fails -> ERR <message>
  *
  * "OK =" spares re-encoding a picture that has sat on the clipboard since
  * the last look: GDI+ turning a 4K screenshot into PNG every two seconds is
  * a core's worth of work. The clipboard's sequence number says whether
  * anything changed; where it cannot be had, every I reads afresh.
+ *
+ * L registers a message-only window for WM_CLIPBOARDUPDATE
+ * (AddClipboardFormatListener) and pumps its messages on a thread of its
+ * own. Plain Win32 through P/Invoke, not Windows Forms, so it compiles the
+ * same in PowerShell 5.1 and 7.
  *
  * Works in Windows PowerShell 5.1 (every Windows 10 and 11) and PowerShell 7.
  */
@@ -377,6 +531,77 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 $in = [Console]::In
 $out = [Console]::Out
 $lastImageSeq = $null
+$watching = $false
+$watcherSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+namespace ClipSync {
+  public static class Watcher {
+    delegate IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct WNDCLASS {
+      public uint style; public WndProc lpfnWndProc; public int cbClsExtra; public int cbWndExtra;
+      public IntPtr hInstance; public IntPtr hIcon; public IntPtr hCursor; public IntPtr hbrBackground;
+      public string lpszMenuName; public string lpszClassName;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int x; public int y; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern ushort RegisterClassW(ref WNDCLASS wc);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateWindowExW(uint exStyle, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
+    [DllImport("user32.dll")] static extern IntPtr DefWindowProcW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int GetMessageW(out MSG msg, IntPtr hwnd, uint min, uint max);
+    [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG msg);
+    [DllImport("user32.dll")] static extern IntPtr DispatchMessageW(ref MSG msg);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandleW(string name);
+    const uint WM_CLIPBOARDUPDATE = 0x031D;
+    static readonly IntPtr HWND_MESSAGE = new IntPtr(-3);
+    // Kept in a field: the collector must not take a callback Windows holds.
+    static WndProc proc;
+    static string failure;
+    static IntPtr Receive(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam) {
+      if (msg == WM_CLIPBOARDUPDATE) {
+        Console.Out.WriteLine("C");
+        Console.Out.Flush();
+        return IntPtr.Zero;
+      }
+      return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    static void Pump(object ready) {
+      try {
+        proc = Receive;
+        WNDCLASS wc = new WNDCLASS();
+        wc.lpfnWndProc = proc;
+        wc.hInstance = GetModuleHandleW(null);
+        wc.lpszClassName = "ClipSyncWatcher";
+        if (RegisterClassW(ref wc) == 0) { failure = "RegisterClass failed (" + Marshal.GetLastWin32Error() + ")"; return; }
+        IntPtr hwnd = CreateWindowExW(0, wc.lpszClassName, "ClipSync", 0, 0, 0, 0, 0, HWND_MESSAGE, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero) { failure = "CreateWindowEx failed (" + Marshal.GetLastWin32Error() + ")"; return; }
+        if (!AddClipboardFormatListener(hwnd)) { failure = "AddClipboardFormatListener failed (" + Marshal.GetLastWin32Error() + ")"; return; }
+        ((ManualResetEvent)ready).Set();
+        MSG msg;
+        while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0) {
+          TranslateMessage(ref msg);
+          DispatchMessageW(ref msg);
+        }
+      } catch (Exception e) {
+        failure = e.Message;
+      } finally {
+        ((ManualResetEvent)ready).Set();
+      }
+    }
+    public static string Start() {
+      ManualResetEvent ready = new ManualResetEvent(false);
+      Thread thread = new Thread(Pump);
+      thread.IsBackground = true;
+      thread.Start(ready);
+      ready.WaitOne();
+      return failure;
+    }
+  }
+}
+'@
 while ($null -ne ($line = $in.ReadLine())) {
   try {
     if ($line -eq 'R') {
@@ -408,6 +633,14 @@ while ($null -ne ($line = $in.ReadLine())) {
       Add-Type -AssemblyName System.Windows.Forms
       $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
       $out.WriteLine('OK ' + [Convert]::ToBase64String($utf8.GetBytes(($files -join "\`n"))))
+    } elseif ($line -eq 'L') {
+      if (-not $watching) {
+        if (-not ('ClipSync.Watcher' -as [type])) { Add-Type -TypeDefinition $watcherSource }
+        $failure = [ClipSync.Watcher]::Start()
+        if ($failure) { throw $failure }
+        $watching = $true
+      }
+      $out.WriteLine('OK')
     } elseif ($line.StartsWith('J ')) {
       Add-Type -AssemblyName System.Windows.Forms, System.Drawing
       $ms = New-Object System.IO.MemoryStream(,[Convert]::FromBase64String($line.Substring(2)))
@@ -456,6 +689,8 @@ export function powershellBackend(
   let queue: Promise<unknown> = Promise.resolve();
   /** What the helper last read as an image, for its "unchanged" answer. */
   let lastImage: ClipboardImage | null = null;
+  /** Whoever asked the helper to watch (L); its "C" lines go here. */
+  let watcher: { onChange: () => void; onLost: (why: string) => void } | null = null;
 
   const stop = () => {
     child?.kill();
@@ -482,6 +717,11 @@ export function powershellBackend(
       while ((newline = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
+        // A change, from the watching thread, between replies.
+        if (line === "C") {
+          watcher?.onChange();
+          continue;
+        }
         const current = waiting;
         waiting = null;
         current?.resolve(line);
@@ -492,6 +732,10 @@ export function powershellBackend(
       const current = waiting;
       waiting = null;
       current?.reject(new Error(`PowerShell ${why}`));
+      // A new helper would not be watching.
+      const lost = watcher;
+      watcher = null;
+      lost?.onLost(`PowerShell ${why}`);
     };
     proc.on("error", (err) => gone(`could not start: ${err.message}`));
     proc.on("exit", (code) => gone(`exited (${code})`));
@@ -564,6 +808,18 @@ export function powershellBackend(
     async readFiles() {
       const payload = expectOk(await request("F", readMs));
       return Buffer.from(payload, "base64").toString("utf8").split("\n").map((p) => p.trim()).filter(Boolean);
+    },
+    async watch(onChange, onLost) {
+      // Compiling the listener is PowerShell's slow part: allow for it.
+      expectOk(await request("L", startMs));
+      const mine = { onChange, onLost };
+      watcher = mine;
+      return {
+        via: "AddClipboardFormatListener",
+        stop() {
+          if (watcher === mine) watcher = null;
+        },
+      };
     },
     close: stop,
   };

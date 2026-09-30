@@ -243,6 +243,7 @@ letting you discover the mistake later.
 | `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
 | `clipsync rekey [--finish]` | Move every device to a new vault key (see below) |
 | `clipsync status` | Config, clipboard backend, token validity |
+| `clipsync watch` | Print each clipboard change as it happens: shows whether the agent hears of copies or polls |
 | `clipsync logout` | Revoke this machine's devices, then forget local credentials |
 | `clipsync install [--dry-run]` | Run the agent in the background at every login (see below) |
 | `clipsync uninstall` | Stop and remove that background service |
@@ -418,8 +419,21 @@ through the clipboard like text, encrypted and stored the way `clipsync send`
 stores a file. Every image up to 25 MB goes to history; other devices put it
 on their clipboard if it is 5 MB or less, and the rest stay in history for
 the web UI or `clipsync get`. The agent looks for an image only when the
-clipboard holds no text (or only the image's web address), every couple of
-seconds. `CLIPSYNC_IMAGES=off` turns this off.
+clipboard holds no text (or only the image's web address): after each copy,
+or every couple of seconds where it polls. `CLIPSYNC_IMAGES=off` turns this
+off.
+
+**Noticing a copy.** Where the clipboard can say it changed, the agent
+reads it once the copy settles (100 ms of quiet) and sends it straight away:
+between two agents on one machine, a copy reached the other clipboard in
+about 150 ms, against about 1.1 s when polling, with a quarter of the idle
+CPU. The events come from XFixes on X11, `wl-paste --watch` on Wayland
+compositors with the data-control protocol (wlroots ones such as sway; on
+GNOME, from XWayland's clipboard instead), `changeCount` on macOS, and
+`AddClipboardFormatListener` on Windows. A check every 5 s makes sure none
+was missed; if one was, the agent says so and polls from then on, every
+0.6 s, as it does wherever there are no events. `clipsync watch` shows
+which applies; `CLIPSYNC_WATCH=off` makes the agent poll.
 
 **Files.** Copying files in a file manager (Nautilus, Dolphin, Finder,
 Explorer) sends the files themselves, up to 10 at a time and 25 MB each, not

@@ -33,6 +33,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The X11 change-event tests run against Xvfb, and copy with xclip.
+      - run: sudo apt-get install -y --no-install-recommends xclip xvfb
       - run: npm run typecheck
       - run: npm test
 

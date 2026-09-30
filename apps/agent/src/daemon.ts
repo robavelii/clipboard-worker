@@ -19,6 +19,11 @@
  *
  * Events are not queued for a device that is offline, so a reconnect also
  * catches up on the newest clip -- see `catchUp`.
+ *
+ * Where the clipboard can say it changed (decisions §36), a change is read
+ * once it goes quiet and pushed at once; a slow poll remains, to catch what
+ * the events miss. Elsewhere the clipboard is polled, and a change must hold
+ * for two polls before it is pushed.
  */
 
 import { readFile, stat } from "node:fs/promises";
@@ -52,7 +57,12 @@ import {
   type RingKeys,
   type VaultRing,
 } from "@clipsync/client/ring";
-import { detectClipboard, type ClipboardBackend, type ClipboardImage } from "./clipboard";
+import {
+  detectClipboard,
+  type ClipboardBackend,
+  type ClipboardImage,
+  type ClipboardWatch,
+} from "./clipboard";
 import {
   ensureDeviceKey,
   refreshRing,
@@ -63,6 +73,22 @@ import {
 import { extensionFor, mimeFor } from "./mime";
 
 const POLL_INTERVAL_MS = 600;
+/**
+ * After a change event, how long the clipboard must stay quiet before it is
+ * read. A copy is often several writes in a burst (plain text, then rich
+ * text; a clipboard manager taking ownership again); this reads the last.
+ */
+const CHANGE_QUIET_MS = 100;
+/**
+ * The poll that remains while change events arrive. It only checks that
+ * none was missed; the events do the syncing.
+ */
+const SAFETY_POLL_MS = 5_000;
+/**
+ * How recent an event must be for a change the safety poll finds to count
+ * as announced (its read may simply be waiting out the quiet time).
+ */
+const MISS_GRACE_MS = 2_000;
 const PING_INTERVAL_MS = 30_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -196,6 +222,21 @@ export class Daemon {
 
   /** One poll at a time: a slow read must not stack another behind it. */
   private polling = false;
+  /** A remote clip is being written: reads now would see it half-done. */
+  private writing = false;
+  /** A change event arrived while busy: read again once free. */
+  private recheck = false;
+
+  /** Change events from the clipboard, where it offers them. */
+  private watch: ClipboardWatch | null = null;
+  private quietTimer: NodeJS.Timeout | null = null;
+  private lastEventAt = 0;
+  /**
+   * The tag last read after a change event. A safety poll that finds
+   * anything else, with no event to account for it, means the events miss
+   * copies here, and polling takes over.
+   */
+  private eventSeen: string | null = null;
   /** When "this release is too old" was last logged. */
   private outdatedSaidAt = 0;
 
@@ -254,14 +295,90 @@ export class Daemon {
     }
 
     this.connect();
+    await this.startWatching();
+  }
+
+  /**
+   * Use the clipboard's change events if it has them and they are not
+   * turned off (CLIPSYNC_WATCH=off); otherwise poll.
+   */
+  private async startWatching(): Promise<void> {
+    const off = /^(0|off|false|no)$/i.test(process.env.CLIPSYNC_WATCH ?? "");
+    if (!off && this.clipboard.watch) {
+      try {
+        const watch = await this.clipboard.watch(
+          () => this.changed(),
+          (why) => this.stopWatching(`clipboard change events stopped (${why})`),
+        );
+        if (this.stopped) {
+          watch.stop();
+          return;
+        }
+        this.watch = watch;
+        this.eventSeen = this.lastHandled;
+        log(`watching the clipboard for changes (${watch.via})`);
+        this.pollEvery(SAFETY_POLL_MS);
+        // A copy made while the watcher was starting announced itself to
+        // nobody: look once now, as if an event had come.
+        this.changed();
+        return;
+      } catch (err) {
+        log(
+          `no clipboard change events here (${err instanceof Error ? err.message : err}) -- polling every ${POLL_INTERVAL_MS} ms`,
+        );
+      }
+    }
+    this.pollEvery(POLL_INTERVAL_MS);
+  }
+
+  /** Back to polling: the events stopped, or missed a copy. */
+  private stopWatching(why: string): void {
+    if (this.stopped || !this.watch) return;
+    this.watch.stop();
+    this.watch = null;
+    log(`${why} -- polling every ${POLL_INTERVAL_MS} ms instead`);
+    this.pollEvery(POLL_INTERVAL_MS);
+  }
+
+  private pollEvery(ms: number): void {
+    if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = setInterval(() => {
       void this.poll();
-    }, POLL_INTERVAL_MS);
+    }, ms);
+  }
+
+  /** A change event: read once the clipboard has been quiet for a moment. */
+  private changed(): void {
+    if (this.stopped) return;
+    this.lastEventAt = Date.now();
+    if (this.quietTimer) clearTimeout(this.quietTimer);
+    this.quietTimer = setTimeout(() => {
+      this.quietTimer = null;
+      void this.poll(true);
+    }, CHANGE_QUIET_MS);
+  }
+
+  /**
+   * Whether a safety poll's read is a copy no event announced: new, not
+   * what the last event's read found, and no event just now.
+   */
+  private missed(tag: string): boolean {
+    if (!this.watch || tag === this.lastHandled || tag === this.eventSeen) return false;
+    return Date.now() - this.lastEventAt > MISS_GRACE_MS;
+  }
+
+  /** A safety poll's read, checked against the events. */
+  private seen(tag: string, afterChange: boolean): void {
+    if (afterChange) this.eventSeen = tag;
+    else if (this.missed(tag)) this.stopWatching("the clipboard changed without a change event");
   }
 
   stop(): void {
     this.stopped = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.quietTimer) clearTimeout(this.quietTimer);
+    this.watch?.stop();
+    this.watch = null;
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.socket?.close(1000, "shutdown");
     this.socket = null;
@@ -305,22 +422,28 @@ export class Daemon {
   }
 
   /**
-   * Push clipboard content once it has held for two consecutive polls.
+   * Read the clipboard and push what is new.
    *
    * Some copies are several writes in quick succession -- clipboard managers
    * re-owning the selection, apps that set plain text and then rich text, a
-   * quick copy corrected by a second one. Waiting one interval (0.6-1.2s in
-   * all) means only the value that stuck is uploaded, rather than every
-   * intermediate one landing on the other devices and in history.
+   * quick copy corrected by a second one. Only the value that stuck should
+   * be uploaded, rather than every intermediate one landing on the other
+   * devices and in history. After a change event (`afterChange`) the quiet
+   * time has already waited for that; a poll instead pushes content once it
+   * has held for two polls in a row (0.6-1.2 s in all).
    */
-  private async poll(): Promise<void> {
-    if (this.polling || this.stopped) return;
+  private async poll(afterChange = false): Promise<void> {
+    if (this.stopped) return;
+    if (this.polling || this.writing) {
+      if (afterChange) this.recheck = true;
+      return;
+    }
     this.polling = true;
     try {
       const generation = this.applied;
       const text = await this.readClipboard();
       if (!text) {
-        await this.pollBinary(generation);
+        await this.pollBinary(generation, afterChange);
         return;
       }
 
@@ -328,7 +451,8 @@ export class Daemon {
       // Stale: a remote clip landed while this read was in flight, so the
       // read holds what the clipboard *was* -- not even a candidate.
       if (generation !== this.applied) return;
-      if (!this.settled(hash)) return;
+      this.seen(hash, afterChange);
+      if (!this.settled(hash, afterChange)) return;
 
       // New content has settled. Its text may only stand for what was really
       // copied: files in a file manager read as their paths (or, from Finder,
@@ -351,18 +475,31 @@ export class Daemon {
       await this.push(text, hash);
     } finally {
       this.polling = false;
+      this.readAgainIfAsked();
     }
   }
 
+  /** A change event that came while busy is read now. */
+  private readAgainIfAsked(): void {
+    if (!this.recheck || this.polling || this.writing) return;
+    this.recheck = false;
+    void this.poll(true);
+  }
+
   /**
-   * The settle rule, for text, images and files alike: true once `tag` has
-   * been read on two polls in a row and is not what this agent last pushed
-   * or applied.
+   * The settle rule, for text, images and files alike: true once `tag` is
+   * not what this agent last pushed or applied and has been read on two
+   * polls in a row -- or once, after a change event has gone quiet.
    */
-  private settled(tag: string): boolean {
+  private settled(tag: string, afterChange = false): boolean {
     if (tag === this.lastHandled) {
       this.candidate = null;
       return false;
+    }
+    if (afterChange) {
+      this.candidate = null;
+      this.localChangedAt = Date.now();
+      return true;
     }
     if (tag !== this.candidate) {
       this.candidate = tag;
@@ -377,18 +514,20 @@ export class Daemon {
    * poll() for a clipboard with no text: copied files (Windows Explorer
    * offers no text for them), else an image, keyed by digest.
    */
-  private async pollBinary(generation: number): Promise<void> {
+  private async pollBinary(generation: number, afterChange: boolean): Promise<void> {
     // Something already seen once is read again on the very next poll: that
     // second read is what lets it go, and waiting for the next third poll
-    // would hold every screenshot back by another 1.2 s.
+    // would hold every screenshot back by another 1.2 s. After a change
+    // event, look at once.
     const settling = this.candidate !== null && isDigestTag(this.candidate);
-    if (++this.imageTick % IMAGE_POLL_EVERY !== 0 && !settling) return;
+    if (!afterChange && ++this.imageTick % IMAGE_POLL_EVERY !== 0 && !settling) return;
 
     const files = await this.readFilesWithoutText();
     if (generation !== this.applied) return;
     if (files.length) {
       const tag = await filesTag(files);
-      if (this.settled(tag)) await this.pushFiles(files, tag);
+      this.seen(tag, afterChange);
+      if (this.settled(tag, afterChange)) await this.pushFiles(files, tag);
       return;
     }
 
@@ -400,7 +539,8 @@ export class Daemon {
     }
     if (generation !== this.applied) return;
     const tag = imageTag(await sha256Hex(image.bytes));
-    if (this.settled(tag)) await this.pushImage(image, tag);
+    this.seen(tag, afterChange);
+    if (this.settled(tag, afterChange)) await this.pushImage(image, tag);
   }
 
   private async pushImage(image: ClipboardImage, tag: string): Promise<void> {
@@ -564,7 +704,13 @@ export class Daemon {
       this.applied++;
       // Whatever was waiting to settle has just been overwritten.
       this.candidate = null;
-      await this.clipboard.write(text);
+      this.writing = true;
+      try {
+        await this.clipboard.write(text);
+      } finally {
+        this.writing = false;
+        this.readAgainIfAsked();
+      }
       log(`applied ${text.length} chars from ${from}`);
     } catch (err) {
       log("apply failed:", err instanceof Error ? err.message : err);
@@ -587,12 +733,20 @@ export class Daemon {
       this.lastHandled = imageTag(meta.sha256);
       this.applied++;
       this.candidate = null;
-      await this.clipboard.writeImage!({ bytes, mime: meta.mime });
-      // What the clipboard hands back may not be these bytes -- Windows
-      // re-encodes every image as PNG -- and the poller must recognise that
-      // as this image.
-      const back = await this.readImage();
-      if (back) this.lastHandled = imageTag(await sha256Hex(back.bytes));
+      // Held until the read-back below: the write's own change event must not
+      // be read before the guard knows what the clipboard hands back.
+      this.writing = true;
+      try {
+        await this.clipboard.writeImage!({ bytes, mime: meta.mime });
+        // What the clipboard hands back may not be these bytes -- Windows
+        // re-encodes every image as PNG -- and the poller must recognise
+        // that as this image.
+        const back = await this.readImage();
+        if (back) this.lastHandled = imageTag(await sha256Hex(back.bytes));
+      } finally {
+        this.writing = false;
+        this.readAgainIfAsked();
+      }
       log(`applied an image (${kb(bytes.length)}) from ${from}`);
     } catch (err) {
       log("image apply failed:", err instanceof Error ? err.message : err);

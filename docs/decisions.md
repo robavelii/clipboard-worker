@@ -1131,3 +1131,62 @@ says so.
 Trap: the Shortcut's fragment was parsed with `URLSearchParams`, which splits
 at an unencoded `&` and turns `+` into a space. Everything after `#text=` is
 now the text, decoded once.
+
+## 36. Hearing about a copy instead of polling for it
+
+The agent read the clipboard every 600 ms and pushed a change once two reads
+agreed, so a copy took 0.6 to 1.2 s to leave the machine. Every read also
+started a process (`xclip`, `wl-paste`, `pbpaste`) or a PowerShell cmdlet,
+several times a second, all day. Each platform can say when its clipboard
+changes, so the agent now listens and reads only then.
+
+**One mechanism per platform, none of them native code.** The single binary
+(§29) rules out addons, so each is something the agent can drive from Node:
+
+- **X11:** XFixes announces every new owner of the CLIPBOARD selection, and a
+  copy is exactly that. No tool the agent can count on exposes it (xclip and
+  xsel do not; `clipnotify` is rarely installed), so `src/x11.ts` speaks the
+  protocol itself: the connection handshake with the Xauthority cookie, one
+  atom, one extension query, one subscription, then events. It is under 300
+  lines and needs nothing but the display's socket.
+- **Wayland:** `wl-paste --watch` runs a command for every new selection. The
+  command drains what it is handed, so the copying app's write completes,
+  and prints a line. GNOME's compositor lacks the data-control protocol this
+  needs, so there the agent listens to XWayland's clipboard through XFixes
+  instead: the compositor keeps it in step.
+- **macOS:** there is no notification; `NSPasteboard.changeCount` is how
+  every Mac clipboard tool notices a copy. A long-lived `osascript` in
+  JavaScript for Automation asks ten times a second, one call to the
+  pasteboard server each time, instead of the agent starting `pbpaste`.
+- **Windows:** the PowerShell helper that already serves reads and writes
+  registers a message-only window with `AddClipboardFormatListener` and
+  pumps its messages on a thread of its own, printing `C` between replies.
+  It is plain Win32 through P/Invoke rather than Windows Forms, so the same
+  C# compiles in PowerShell 5.1 and 7.
+
+**Quiet, then push.** A copy is often a burst of writes (plain text, then
+rich; a clipboard manager taking ownership again). Polling handled that by
+waiting for two reads to agree. With events, the agent waits for 100 ms
+without one, reads once, and pushes at once. Between two agents on
+Xvfb displays and a local Worker, a copy reached the other clipboard in a
+median of 144 ms (worst of ten: 317 ms), against 1,088 ms when polling, and
+each idle agent used a quarter of the CPU (8 clock ticks in 15 s, against
+35).
+
+**Trusted, but checked.** An event source that misses copies would be worse
+than polling, silently. So a poll remains every 5 s. If it finds content that
+is neither what the agent last handled nor what the last event's read found,
+with no event in the last 2 s, the events have missed a copy. The agent says
+so, stops listening and polls every 600 ms from then on. A watcher that
+cannot start at all (no XFixes, a compositor without data-control, no
+desktop session) means polling from the start, as does `CLIPSYNC_WATCH=off`.
+`clipsync watch` prints each event, to check a machine; the Release workflow
+runs it against each platform's own clipboard tools on all five runners.
+
+Trap: an event arrives for the agent's own writes too. Text is fine: the
+read after it matches `lastHandled`. An image is not: Windows re-encodes it,
+and the agent only learns the bytes it will read back by reading them. An
+event read between the write and that read-back would have pushed the
+re-encoded image as a new copy. Reads now wait while a remote clip is being
+written and read back (`writing`), and an event that came meanwhile is read
+afterwards.
