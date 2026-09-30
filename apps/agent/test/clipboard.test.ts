@@ -69,6 +69,9 @@ let files = process.env.FAKE_FILES ?? "";
 let seq = 0;
 let imageSeq = -1;
 let served = 0;
+let watching = false;
+// Like the real helper's listener thread: a change line, ahead of the reply.
+const changed = () => { if (watching) process.stdout.write("C\\n"); };
 let buf = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => {
@@ -84,12 +87,15 @@ process.stdin.on("data", (d) => {
     } else if (line.startsWith("W ")) {
       const text = Buffer.from(line.slice(2), "base64").toString();
       if (text === "fail") process.stdout.write("ERR the clipboard is busy\\n");
-      else { clip = text; seq++; process.stdout.write("OK\\n"); }
+      else { clip = text; seq++; changed(); process.stdout.write("OK\\n"); }
     } else if (line === "I") {
       process.stdout.write(seq === imageSeq ? "OK =\\n" : "OK " + image + "\\n");
       imageSeq = seq;
     } else if (line.startsWith("J ")) {
-      image = line.slice(2); seq++; process.stdout.write("OK\\n");
+      image = line.slice(2); seq++; changed(); process.stdout.write("OK\\n");
+    } else if (line === "L") {
+      watching = true;
+      process.stdout.write("OK\\n");
     } else if (line === "F") {
       process.stdout.write("OK " + Buffer.from(files.split("|").join("\\n")).toString("base64") + "\\n");
     }
@@ -174,6 +180,27 @@ describe("Windows backend", () => {
   it("lists no files when none were copied", async () => {
     expect(await make().readFiles!()).toEqual([]);
   });
+
+  it("announces changes between replies, without mistaking them for one", async () => {
+    const b = make();
+    let changes = 0;
+    const watch = await b.watch!(() => changes++, () => undefined);
+    expect(watch.via).toBe("AddClipboardFormatListener");
+    await b.write("one");
+    expect(await b.read()).toBe("one");
+    await b.writeImage!({ bytes: new Uint8Array([1, 2]), mime: "image/png" });
+    expect(await b.read()).toBe("one");
+    expect(changes).toBe(2);
+    watch.stop();
+    await b.write("two");
+    expect(changes).toBe(2);
+  });
+
+  it("says so when the helper that was watching dies", async () => {
+    const b = make("die");
+    const lost = new Promise<string>((resolve) => void b.watch!(() => undefined, resolve));
+    expect(await lost).toMatch(/PowerShell exited/);
+  });
 });
 
 /**
@@ -188,6 +215,22 @@ describe("Wayland backend", () => {
       join(dir, "wl-paste"),
       `#!/bin/sh
 d="${join(dir, "offers")}"
+if [ "$1" = "--watch" ]; then
+  shift
+  if [ "$FAKE_WATCH" = refuse ]; then
+    echo "Watch mode requires a compositor that supports the wlroots data-control protocol" >&2
+    exit 1
+  fi
+  # Once at start, as wl-paste does, then once per FAKE_WATCH_EVENTS copy.
+  i=0
+  while :; do
+    echo copied | "$@"
+    i=$((i + 1))
+    [ "$i" -gt "\${FAKE_WATCH_EVENTS:-0}" ] && break
+    sleep 0.05
+  done
+  exec sleep 60
+fi
 if [ "$1" = "--list-types" ]; then
   [ -n "$(ls "$d" 2>/dev/null)" ] || { echo "No selection" >&2; exit 1; }
   ls "$d" | sed 's#_#/#'
@@ -247,6 +290,27 @@ cat "$d/$(printf '%s' "$t" | sed 's#/#_#')"
     expect(await clip.readImage!()).toBeNull();
     expect(await clip.readFiles!()).toEqual([]);
   });
+
+  it("announces each copy through wl-paste --watch, not the state at start", async () => {
+    process.env.FAKE_WATCH_EVENTS = "3";
+    const clip = await offer({ "text/plain": "hi" });
+    let changes = 0;
+    const watch = await clip.watch!(() => changes++, () => undefined);
+    try {
+      expect(watch.via).toBe("wl-paste --watch");
+      await new Promise((r) => setTimeout(r, 600));
+      expect(changes).toBe(3);
+    } finally {
+      watch.stop();
+    }
+  });
+
+  it("cannot watch on a compositor without data-control", async () => {
+    process.env.FAKE_WATCH = "refuse";
+    delete process.env.DISPLAY;
+    const clip = await offer({ "text/plain": "hi" });
+    await expect(clip.watch!(() => undefined, () => undefined)).rejects.toThrow(/data-control/);
+  });
 });
 
 describe("uri lists", () => {
@@ -283,6 +347,17 @@ describe("MIME types", () => {
 // cmdlets go through xclip, so this needs a display. Set CLIPSYNC_TEST_PWSH
 // to a pwsh binary to run it.
 describe.skipIf(!process.env.CLIPSYNC_TEST_PWSH || !process.env.DISPLAY)("PowerShell helper", () => {
+  // The listener's C# compiles here; only Windows has the user32 it calls.
+  it.skipIf(process.platform === "win32")("compiles the change listener, and says it cannot listen off Windows", async () => {
+    const b = powershellBackend([process.env.CLIPSYNC_TEST_PWSH!], { start: 60_000 });
+    try {
+      // The helper's own refusal ("clipboard: ..."), not a helper that died.
+      await expect(b.watch!(() => undefined, () => undefined)).rejects.toThrow(/^clipboard: /);
+    } finally {
+      b.close?.();
+    }
+  }, 90_000);
+
   it("reads and writes the clipboard", async () => {
     const b = powershellBackend([process.env.CLIPSYNC_TEST_PWSH!], { read: 10_000, write: 10_000 });
     try {

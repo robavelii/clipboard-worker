@@ -77,6 +77,7 @@ Usage
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
+  clipsync watch                                        Print each clipboard change as it happens (a check)
   clipsync install [--dry-run]                          Run the agent in the background at login
   clipsync uninstall                                    Stop and remove that background service
   clipsync update                                       Update to the newest release (the service does it daily)
@@ -463,6 +464,43 @@ async function cmdRun(opts: {
     restartOnRebuild(daemon);
     autoUpdate = scheduleUpdates(daemon);
   }
+}
+
+/**
+ * Print a line for every clipboard change this machine announces: shows
+ * whether the agent gets change events here or has to poll (decisions §36).
+ */
+async function cmdWatch(): Promise<void> {
+  const clipboard = await detectClipboard();
+  if (!clipboard.watch) {
+    throw new Error(`${clipboard.name} cannot announce changes -- the agent polls it`);
+  }
+  let watch;
+  try {
+    watch = await clipboard.watch(
+      () => console.log(`[${new Date().toISOString()}] clipboard changed`),
+      (why) => {
+        console.error(`stopped: ${why}`);
+        clipboard.close?.();
+        process.exit(1);
+      },
+    );
+  } catch (err) {
+    clipboard.close?.();
+    throw new Error(
+      `no change events here (${err instanceof Error ? err.message : err}) -- the agent polls instead`,
+    );
+  }
+  console.log(`watching ${clipboard.name} through ${watch.via} -- copy something; Ctrl-C to stop`);
+  const stop = () => {
+    watch.stop();
+    clipboard.close?.();
+    process.exit(0);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  // The Windows helper does not hold the process open by itself.
+  setInterval(() => undefined, 1 << 30);
 }
 
 /** Set while a supervised agent keeps itself up to date; see scheduleUpdates. */
@@ -1038,6 +1076,8 @@ async function main(): Promise<void> {
       return cmdRekey({ finish: values.finish });
     case "status":
       return cmdStatus();
+    case "watch":
+      return cmdWatch();
     case "logout":
       return cmdLogout();
     case "install":

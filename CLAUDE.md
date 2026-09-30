@@ -130,12 +130,12 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 
 ### Agent daemon (`apps/agent/src/daemon.ts`)
 
-It polls the clipboard every 600 ms. Echo suppression is the whole design problem, and there are four guards:
+It learns of copies from the clipboard's change events where the backend has them (`watch`, decisions §36): XFixes on X11 (`src/x11.ts`, a minimal X11 protocol client over the display socket, no native addon), `wl-paste --watch` on Wayland (falling back to XFixes through XWayland, since GNOME refuses `--watch`), a long-lived `osascript` JXA loop reading `NSPasteboard.changeCount` on macOS, and `AddClipboardFormatListener` in the Windows helper (request `L`; the helper then prints `C` lines between replies). After an event it waits for 100 ms of quiet, reads, and pushes at once. A safety poll every 5 s remains; if it finds a change no event announced (`missed()`), the daemon stops watching and polls every 600 ms, as it does wherever `watch` fails or `CLIPSYNC_WATCH=off`. `clipsync watch` prints events, for checking a machine; the Release workflow runs it on all five platforms. Echo suppression is the whole design problem, and there are four guards:
 
 1. ignore events from its own `origin` (and, separately, never apply a v2 clip whose authenticated copy time is over 10 minutes old: that is a replay, not a copy);
 2. `lastHandled` = the hash of whatever it last pushed *or* applied;
-3. the `applied` generation counter drops a read that was in flight when a remote clip was written;
-4. the settle rule: push only after the content holds for two consecutive polls.
+3. the `applied` generation counter drops a read that was in flight when a remote clip was written, and `writing` holds reads off while a remote clip is being written (and, for an image, read back);
+4. the settle rule: push only after the content holds for two consecutive polls, or once after a change event has gone quiet.
 
 Clipboard backends (`apps/agent/src/clipboard.ts`): `wl-clipboard` or `xclip` on Linux, `pbpaste`/`pbcopy` on macOS (forced to a UTF-8 locale, since launchd starts jobs without one), and on Windows one long-lived PowerShell helper that answers `R`/`W <base64>` requests on stdin. That avoids starting PowerShell every poll; it also normalises CRLF to LF on read, or applied clips would echo back. `CLIPSYNC_CLIPBOARD` forces a backend. The real helper script runs in the agent tests when `CLIPSYNC_TEST_PWSH` points at a `pwsh` and `DISPLAY` is set (PowerShell 7 on Linux uses xclip).
 

@@ -90,6 +90,33 @@ jobs:
           # every module the CLI imports.
           XDG_CONFIG_HOME="$RUNNER_TEMP/empty" "$bin" status | tee status.txt
           grep -q "Not configured" status.txt
+      # Clipboard change events on each platform's own clipboard (decisions
+      # §36): `clipsync watch` must report copies made by the platform's own
+      # tools. Linux has no desktop here, so it gets an Xvfb display.
+      - name: Clipboard change events
+        run: |
+          bin=apps/agent/dist/bin/${{ matrix.target }}/clipsync
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get install -y --no-install-recommends xclip xvfb >/dev/null
+            Xvfb :99 -nolisten tcp >/dev/null 2>&1 &
+            export DISPLAY=:99 WAYLAND_DISPLAY=
+            for i in $(seq 1 50); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+          fi
+          copy() {
+            case "$RUNNER_OS" in
+              Linux) printf %s "$1" | xclip -selection clipboard -i ;;
+              macOS) printf %s "$1" | pbcopy ;;
+              Windows) powershell.exe -NoProfile -Command "Set-Clipboard -Value '$1'" ;;
+            esac
+          }
+          "$bin" watch > watch.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q "watching\|error" watch.txt && break; sleep 0.5; done
+          for text in one two three; do copy "$text"; sleep 1; done
+          kill $pid 2>/dev/null || true
+          cat watch.txt
+          [ "$(grep -c 'clipboard changed' watch.txt)" -ge 3 ]
       # An archive for people and installers, and the bare binary gzipped for
       # `clipsync update`, which needs no archive reader.
       - name: Archive
