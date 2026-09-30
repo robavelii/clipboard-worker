@@ -109,10 +109,21 @@ jobs:
         run: npm run db:migrate
       - name: Build and deploy the Worker
         run: npm run deploy
+      # A zone's bot protection may answer GitHub's runners with a challenge
+      # instead of the Worker. That proves the edge is up but not the
+      # Worker, so it passes with a warning; anything else is printed.
       - name: Check it answers
         run: |
           for i in $(seq 1 10); do
-            curl -sf https://clip.rfh.et/api/health && exit 0
+            code=$(curl -sS -o body.txt -D headers.txt -w '%{http_code}' https://clip.rfh.et/api/health || true)
+            if [ "$code" = 200 ] && grep -q '"ok":true' body.txt; then cat body.txt; exit 0; fi
+            if grep -qi '^cf-mitigated: *challenge' headers.txt 2>/dev/null; then
+              echo "::warning::clip.rfh.et answered with a Cloudflare challenge (HTTP $code): the zone's bot protection screens GitHub's runners, so the Worker could not be checked from here."
+              exit 0
+            fi
+            echo "attempt $i: HTTP $code"
             sleep 3
           done
-          echo "::error::clip.rfh.et did not answer after the deploy"; exit 1
+          echo "::error::clip.rfh.et did not answer after the deploy (last: HTTP $code)"
+          head -c 600 body.txt 2>/dev/null
+          exit 1

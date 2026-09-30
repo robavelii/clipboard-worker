@@ -733,6 +733,29 @@ async function cmdPassphrase(): Promise<void> {
   );
 }
 
+/**
+ * Where a copy's time goes on the way to the other devices. /api/health
+ * answers from the Worker alone; /api/auth/me makes two database queries one
+ * after the other, each a trip to D1's primary region. The difference, per
+ * query, is what every extra query on the write path costs from here. Best
+ * of three, so the first connection's handshake is not counted.
+ */
+async function measureLatency(baseUrl: string, api: ApiClient): Promise<string> {
+  const best = async (request: () => Promise<unknown>) => {
+    let fastest = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      await request();
+      fastest = Math.min(fastest, performance.now() - started);
+    }
+    return Math.round(fastest);
+  };
+  const worker = await best(() => fetch(new URL("/api/health", baseUrl)).then((r) => r.arrayBuffer()));
+  const withDatabase = await best(() => api.me());
+  const perQuery = Math.max(0, Math.round((withDatabase - worker) / 2));
+  return `${worker} ms to the Worker, about ${perQuery} ms more per database query`;
+}
+
 async function cmdStatus(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -777,6 +800,7 @@ async function cmdStatus(): Promise<void> {
   try {
     await api.me();
     console.log("worker     reachable, token valid");
+    console.log(`latency    ${await measureLatency(config.baseUrl, api)}`);
   } catch (err) {
     console.log(`worker     ${err instanceof Error ? err.message : err}`);
     return;

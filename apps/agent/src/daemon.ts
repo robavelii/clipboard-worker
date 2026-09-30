@@ -370,7 +370,11 @@ export class Daemon {
    * offers no text for them), else an image, keyed by digest.
    */
   private async pollBinary(generation: number): Promise<void> {
-    if (++this.imageTick % IMAGE_POLL_EVERY !== 0) return;
+    // Something already seen once is read again on the very next poll: that
+    // second read is what lets it go, and waiting for the next third poll
+    // would hold every screenshot back by another 1.2 s.
+    const settling = this.candidate !== null && isDigestTag(this.candidate);
+    if (++this.imageTick % IMAGE_POLL_EVERY !== 0 && !settling) return;
 
     const files = await this.readFilesWithoutText();
     if (generation !== this.applied) return;
@@ -381,7 +385,12 @@ export class Daemon {
     }
 
     const image = await this.readImage();
-    if (!image || generation !== this.applied) return;
+    if (!image) {
+      // Gone before it settled: stop reading every poll for it.
+      if (settling) this.candidate = null;
+      return;
+    }
+    if (generation !== this.applied) return;
     const tag = imageTag(await sha256Hex(image.bytes));
     if (this.settled(tag)) await this.pushImage(image, tag);
   }
