@@ -14,20 +14,37 @@ import type { DecryptedClip } from "@clipsync/react";
 /** Images up to this size preview on their own; bigger ones on request. */
 const AUTO_PREVIEW_BYTES = 5 * 1024 * 1024;
 
-/** Object URLs of files already fetched this session, by clip id. */
-const fetched = new Map<string, Promise<string>>();
+export interface FetchedFile {
+  blob: Blob;
+  /** An object URL for the blob, for previews and downloads. */
+  url: string;
+}
 
-function fetchUrl(api: ApiClient, keys: RingKeys, account: string, clip: DecryptedClip): Promise<string> {
-  let url = fetched.get(clip.id);
-  if (!url) {
-    url = downloadFile(api, keys, clip, account).then(
-      ({ meta, bytes }) => URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: meta.mime })),
-    );
+/** Files already fetched this session, by clip id. */
+const fetched = new Map<string, Promise<FetchedFile>>();
+
+/**
+ * Fetch and decrypt a file clip, once per page. The blob is kept beside its
+ * URL because the page cannot fetch its own blob: URLs back (the CSP's
+ * connect-src is 'self' only).
+ */
+export function fetchFile(
+  api: ApiClient,
+  keys: RingKeys,
+  account: string,
+  clip: DecryptedClip,
+): Promise<FetchedFile> {
+  let file = fetched.get(clip.id);
+  if (!file) {
+    file = downloadFile(api, keys, clip, account).then(({ meta, bytes }) => {
+      const blob = new Blob([new Uint8Array(bytes)], { type: meta.mime });
+      return { blob, url: URL.createObjectURL(blob) };
+    });
     // A failure is not cached: the next attempt tries again.
-    url.catch(() => fetched.delete(clip.id));
-    fetched.set(clip.id, url);
+    file.catch(() => fetched.delete(clip.id));
+    fetched.set(clip.id, file);
   }
-  return url;
+  return file;
 }
 
 export function formatBytes(n: number): string {
@@ -57,7 +74,7 @@ export function FileView({
     setBusy(true);
     setError(null);
     try {
-      const got = await fetchUrl(api, keys, account, clip);
+      const { url: got } = await fetchFile(api, keys, account, clip);
       setUrl(got);
       return got;
     } catch (err) {

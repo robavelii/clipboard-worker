@@ -164,8 +164,20 @@ it ever reaches the server, so there is nothing to compare and nothing the
 server could substitute. The trade is that the code on screen *is* the
 credential: it lasts five minutes and works once.
 
-A phone gets every clip and copies with a tap. Sending *from* a phone is a
-deliberate share rather than something automatic — see below.
+A phone gets every clip, and the newest from another device sits in a card
+at the top, one tap from the clipboard (images included). No browser lets a
+page read the clipboard by itself, so sending *from* a phone is a deliberate
+act:
+
+- **Share → ClipSync** (Android, once the app is installed): text, links,
+  photos and files, encrypted on the phone before they leave it.
+- **Paste to ClipSync:** when you come back to the app after copying
+  something, a bar at the bottom sends what is on the clipboard, text or an
+  image, in one tap.
+- **A Shortcut** (iPhone), run from Back Tap or the Action Button, that sends
+  the clipboard's text.
+
+`/phone` on your deployment walks through each (decisions §35).
 
 ### Linking (another computer, no passphrase typing)
 
@@ -629,8 +641,7 @@ assertion that no plaintext appears in any API response.
 ## Not built yet
 
 Putting a received file (other than an image) on another computer's
-clipboard (it waits in history for the web UI and the CLI), sharing files
-into the web app from a phone's share sheet, semantic search, signed
+clipboard (it waits in history for the web UI and the CLI), semantic search, signed
 releases, and the tray panel on macOS and Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
