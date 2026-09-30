@@ -835,3 +835,38 @@ Traps:
 - A blob must be made by the same Node version as the binary it goes into.
   CI uses the runner's own `node` for both. A cross build needs `--node`
   from the matching release.
+
+## 30. Deploying from CI on every merge
+
+A merge to `main` used to change nothing live until someone ran
+`npm run db:migrate` and `npm run deploy` by hand, from a machine logged in
+to Cloudflare. It was easy to forget the migration, and nothing showed what
+was live. CI now does both after the checks pass.
+
+**Migrate, then deploy, in one job after the checks.** The deploy job needs
+the typecheck/unit and e2e jobs, so nothing reaches production that CI has
+not passed. Within it, migrations go first: the new Worker may read tables
+they create. That order means the old Worker runs against the new schema
+for the length of the deploy, so migrations must only add. Dropping or
+renaming a column takes two merges: stop using it, then remove it.
+
+**Queue, never cancel, on `main`.** The workflow used to cancel an
+in-progress run when a newer push arrived. On `main` that could stop a run
+between its migration and its deploy, and nothing would finish the job. Pull
+requests still cancel; `main` runs queue.
+
+**Secrets, scoped narrowly.** The token comes from the Edit Cloudflare
+Workers template plus D1 Edit, limited to the one account and the one zone.
+Deploying a Worker with R2 and D1 bindings needs no permission on the
+bucket or database themselves; only migrations need D1. A missing secret
+fails the deploy job loudly rather than skipping it, so a green run on
+`main` always means the change is live.
+
+**A health check last.** The job fetches `/api/health` from the real domain
+after deploying. A deploy that uploaded but does not answer is a red run on
+`main`, not a surprise later.
+
+Trap: `wrangler d1 migrations apply` asks "continue?" before applying. In CI
+it detects the non-interactive terminal and answers its fallback, yes. It
+would do the same for a destructive migration, which is one more reason
+migrations here only add.

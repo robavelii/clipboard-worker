@@ -56,11 +56,11 @@ npm run build -w @clipsync/desktop     # tray: MUST go through the Tauri CLI (se
 scripts/install-agent.sh               # builds, installs systemd user service + tray autostart; re-run after a pull to upgrade
 ```
 
-Deploy (production): `npm run deploy`. Migrations: `npm run db:migrate` (remote).
+Deploy (production): CI does it on every push to `main` that passes, running `npm run db:migrate` then `npm run deploy` with the `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` secrets (decisions §30). By hand: the same two commands. **Migrations run while the old Worker is still live, so they must only add** (new tables, new nullable or defaulted columns): a Worker that the migration breaks is live until the deploy finishes.
 
 Worker unit tests (`apps/worker/test/`) call the real Worker through `SELF.fetch`, with a fresh D1 per test file and every migration applied (`test/apply-migrations.ts`). The pool bundles its own workerd, which trails wrangler's, so `vitest.config.ts` pins an older `compatibilityDate` for tests; bump it when the pool catches up.
 
-CI (`.github/workflows/ci.yml`) runs typecheck + unit tests, and the e2e suite against `npm run dev` followed by the Linux binary enrolling and sending a file, on every push to `main` and every PR. `.github/workflows/release.yml` builds and runs the five standalone binaries on their own runners for PRs that touch the agent, and on a `v*` tag publishes them with `SHA256SUMS` to a GitHub Release (decisions §29).
+CI (`.github/workflows/ci.yml`) runs typecheck + unit tests, and the e2e suite against `npm run dev` followed by the Linux binary enrolling and sending a file, on every push to `main` and every PR; on `main` a `deploy` job follows. `.github/workflows/release.yml` builds and runs the five standalone binaries on their own runners for PRs that touch the agent, and on a `v*` tag publishes them with `SHA256SUMS` to a GitHub Release (decisions §29).
 
 The standalone agent is a Node single executable (`apps/agent/build-binary.mjs`): the CLI bundled as CommonJS, turned into a blob and injected into a copy of `node` with postject. Code that needs its own file path must go through `runningFile()` in `cli.ts`, because `import.meta.url` does not exist in the CommonJS bundle. A binary replaced on disk triggers the same exit-75 restart as a rebuilt bundle, so it must be replaced by rename: overwriting a running executable fails on Linux ("Text file busy").
 
