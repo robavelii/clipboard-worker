@@ -705,6 +705,34 @@ Traps:
   reservation's INSERT is conditional on the running total.
 - R2 objects persist across Worker tests like D1 rows; the test setup
   clears the bucket before each test.
-- The agent daemon does not apply image or file clips. Fetching them on
-  every device would spend the download budget on bytes nobody asked to
-  paste, and the clipboard tools it drives carry text.
+- The agent daemon does not apply file clips. Fetching them on every
+  device would spend the download budget on bytes nobody asked to paste.
+  Images are the exception, since §27.
+
+## 27. Images through the clipboard
+
+Copying a screenshot on one machine and pasting it on another is the point
+of a clipboard sync, so PNG images now go through the agent like text. Other
+files stay in history: a clipboard "file" is a list of paths, different on
+every OS, and pasting one is not the same as having its bytes.
+
+**Stored as files.** An image is uploaded exactly as `clipsync send` would:
+its own key, chunks in R2, the free-tier budget. No second path to secure.
+
+**Only when there is no text, and not every poll.** Reading an image means
+fetching and hashing the whole picture. The agent looks for one only when
+the clipboard holds no text, and only on every third poll (about 2 s), which
+keeps the settle rule (two identical reads) at about 4 s for images. Images
+over 5 MB, the size a device downloads unasked, stay in history.
+
+**The echo guard, keyed by digest.** Image tags are `img:<sha256>` in the
+same `lastHandled`/`candidate` slots as text, so the guards need no second
+set of rules. Digests are not keyed, so they survive a re-key.
+
+Traps:
+- xclip, owning the selection with an image, answers any target, including
+  a text one, with the image's bytes. After applying an image, the poller's
+  next text read got a PNG and pushed it back as text. The X11 backend now
+  reads text only when `TARGETS` offers a text type.
+- Windows hands an image back re-encoded, so its bytes differ from what was
+  written. After writing an image, the agent re-reads it and guards that.
