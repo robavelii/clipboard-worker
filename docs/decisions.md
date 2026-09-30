@@ -870,3 +870,38 @@ Trap: `wrangler d1 migrations apply` asks "continue?" before applying. In CI
 it detects the non-interactive terminal and answers its fallback, yes. It
 would do the same for a destructive migration, which is one more reason
 migrations here only add.
+
+## 31. One database trip for a copy, not four
+
+A copy took a noticeable second or more to show up on the other devices,
+and most of that was not the agent. D1 keeps one primary, in eastern North
+America. The Worker runs at the edge near the person, so every query it
+makes is a crossing to that region and back, one after another. Writing a
+new clip made four such trips: the token, the key epoch, the dedupe lookup,
+then the insert. A re-copy made five. At a couple of hundred milliseconds a
+crossing, which is typical far from the US, that is about a second before
+anyone is told.
+
+**Reads and the write in one batch.** A D1 batch is one round trip and runs
+as one transaction, in order. The epoch read, the dedupe lookup and the
+newest-clip lookup go first, and the insert follows, guarded on the epoch
+and on no clip already holding this content. So a new copy (the common
+case) is written in the same trip that decided it should be, and a re-copy
+needs one more, for the update. With the token lookup that is two trips for
+a new copy and three for a re-copy, down from four and five.
+
+**Not Smart Placement.** Running the Worker next to the database would make
+every query cheap, but the person would then cross the ocean once per
+request, as would the WebSocket upgrade to a Durable Object that lives near
+them. Cutting the queries helps every path and moves nothing.
+
+**Images settle on the next poll.** The agent looks for an image only
+every third poll, and the settle rule wants two identical reads. Waiting
+for the next third poll for the second read added 1.2 s to every
+screenshot. Once an image or file copy has been seen, the next poll reads
+it again.
+
+**Measured, not guessed.** `clipsync status` prints how long the Worker
+takes to answer from here, and the extra cost of each database query.
+Whether a further change is worth it depends on that second number, which
+depends on where the person is.

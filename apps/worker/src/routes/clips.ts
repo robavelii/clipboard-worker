@@ -191,90 +191,6 @@ export const clipRoutes = new Hono<AppEnv>()
     // ciphertext under a key a revoked device may still hold. Older clients
     // send no epoch: they are on 0, and stop being accepted after a re-key.
     const keyEpoch = body.keyEpoch ?? 0;
-    const current = await c.env.DB.prepare(
-      "SELECT key_epoch FROM users WHERE id = ?",
-    )
-      .bind(userId)
-      .first<{ key_epoch: number }>();
-    if (current?.key_epoch !== keyEpoch) {
-      return staleEpoch(c, current?.key_epoch ?? 0);
-    }
-
-    // Dedupe across the whole history, not just the newest clip.
-    //
-    // Copying something you copied last week should move that entry back to
-    // the top, not add a second identical row -- which is what every clipboard
-    // manager does, and what stops a deleted secret quietly reappearing every
-    // time it is copied again.
-    const existing = await c.env.DB.prepare(
-      `SELECT * FROM clips WHERE user_id = ? AND content_hash = ?
-        ORDER BY created_at DESC LIMIT 1`,
-    )
-      .bind(userId, body.contentHash)
-      .first<ClipRow>();
-
-    if (existing) {
-      const newest = await c.env.DB.prepare(
-        `SELECT id FROM clips WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
-      )
-        .bind(userId)
-        .first<{ id: string }>();
-
-      // Already on top: nothing to reorder, and no reason to tell anyone.
-      // Clipboard managers re-announce the current selection constantly.
-      // The copy just uploaded is surplus: the stored one stays with its
-      // envelope, which holds the stored blob's key.
-      if (newest?.id === existing.id) {
-        if (blob) await deleteBlobs(c.env, [blob.id]);
-        return c.json<CreateClipResponse>({
-          id: existing.id,
-          createdAt: existing.created_at,
-          deduped: true,
-        });
-      }
-
-      const bumpedAt = now;
-      const expiresAt = existing.pinned
-        ? existing.expires_at
-        : expiryFor(existing.type, bumpedAt);
-
-      // The new envelope replaces the stored one. Same plaintext, but a v2
-      // envelope vouches for who copied it and when, and a device checks
-      // that against the row: the old one names the first copy.
-      // For an image or file the new envelope holds the new blob's key, so
-      // the row moves to the new blob and the old one goes.
-      await c.env.DB.batch([
-        c.env.DB.prepare(
-          `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?, envelope = ?,
-                  blob_id = COALESCE(?, blob_id)
-            WHERE id = ? AND user_id = ?`,
-        ).bind(bumpedAt, deviceId, expiresAt, body.envelope, blob?.id ?? null, existing.id, userId),
-        ...(blob
-          ? [c.env.DB.prepare("UPDATE blobs SET attached_at = ? WHERE id = ?").bind(now, blob.id)]
-          : []),
-      ]);
-      if (blob && existing.blob_id) await deleteBlobs(c.env, [existing.blob_id]);
-
-      const bumped = toClip({
-        ...existing,
-        created_at: bumpedAt,
-        device_id: deviceId,
-        expires_at: expiresAt,
-        envelope: body.envelope,
-        blob_id: blob?.id ?? existing.blob_id,
-      });
-
-      await publish(c, userId, {
-        ...event("clip.bumped", deviceId),
-        clip: bumped,
-      });
-
-      return c.json<CreateClipResponse>({
-        id: existing.id,
-        createdAt: bumpedAt,
-        deduped: true,
-      });
-    }
 
     const clip: Clip = {
       id: newId("clip"),
@@ -290,17 +206,38 @@ export const clipRoutes = new Hono<AppEnv>()
       blobId: blob?.id ?? null,
     };
 
-    // Guarded on the epoch again, in the same statement: a re-key landing
-    // between the check above and this write must not let it through.
-    // The blob is adopted in the same batch, and only if the clip was
-    // written: a stale epoch leaves it free for the retry.
-    const [inserted] = await c.env.DB.batch([
+    // Everything the write depends on, and the write itself, in one round
+    // trip (decisions §31). The database lives in one region, so from most
+    // places every separate query is a crossing there and back, and a copy
+    // waits on all of them before any other device hears of it.
+    //
+    // A batch runs as one transaction, in order. The insert -- a new copy,
+    // the common case -- is guarded on the epoch and on no clip already
+    // holding this content, so it lands only when the reads before it say it
+    // should. The blob is adopted only if the clip was written: a stale epoch
+    // leaves it free for the retry.
+    const [epochRead, existingRead, newestRead, inserted] = await c.env.DB.batch([
+      c.env.DB.prepare("SELECT key_epoch FROM users WHERE id = ?").bind(userId),
+      // Dedupe across the whole history, not just the newest clip.
+      //
+      // Copying something you copied last week should move that entry back
+      // to the top, not add a second identical row -- which is what every
+      // clipboard manager does, and what stops a deleted secret quietly
+      // reappearing every time it is copied again.
+      c.env.DB.prepare(
+        `SELECT * FROM clips WHERE user_id = ? AND content_hash = ?
+          ORDER BY created_at DESC LIMIT 1`,
+      ).bind(userId, body.contentHash),
+      c.env.DB.prepare(
+        `SELECT id FROM clips WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+      ).bind(userId),
       c.env.DB.prepare(
         `INSERT INTO clips
            (id, user_id, device_id, type, envelope, content_hash, size, pinned,
             created_at, expires_at, key_epoch, blob_id)
          SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?
-          WHERE (SELECT key_epoch FROM users WHERE id = ?) = ?`,
+          WHERE (SELECT key_epoch FROM users WHERE id = ?) = ?
+            AND NOT EXISTS (SELECT 1 FROM clips WHERE user_id = ? AND content_hash = ?)`,
       ).bind(
         clip.id,
         userId,
@@ -315,6 +252,8 @@ export const clipRoutes = new Hono<AppEnv>()
         clip.blobId,
         userId,
         keyEpoch,
+        userId,
+        clip.contentHash,
       ),
       ...(blob
         ? [
@@ -325,14 +264,80 @@ export const clipRoutes = new Hono<AppEnv>()
           ]
         : []),
     ]);
-    if (!inserted?.meta.changes) return staleEpoch(c, keyEpoch + 1);
 
-    await publish(c, userId, { ...event("clip.created", deviceId), clip });
+    const current = epochRead!.results[0] as { key_epoch: number } | undefined;
+    if (current?.key_epoch !== keyEpoch) {
+      return staleEpoch(c, current?.key_epoch ?? 0);
+    }
+
+    if (inserted!.meta.changes) {
+      await publish(c, userId, { ...event("clip.created", deviceId), clip });
+      return c.json<CreateClipResponse>({
+        id: clip.id,
+        createdAt: clip.createdAt,
+        deduped: false,
+      });
+    }
+
+    // Not inserted, with the epoch current: this content is already in
+    // history, and the copy moves it back to the top.
+    const existing = existingRead!.results[0] as ClipRow | undefined;
+    const newest = newestRead!.results[0] as { id: string } | undefined;
+    if (!existing) throw new Error("clip neither inserted nor already stored");
+
+    // Already on top: nothing to reorder, and no reason to tell anyone.
+    // Clipboard managers re-announce the current selection constantly.
+    // The copy just uploaded is surplus: the stored one stays with its
+    // envelope, which holds the stored blob's key.
+    if (newest?.id === existing.id) {
+      if (blob) await deleteBlobs(c.env, [blob.id]);
+      return c.json<CreateClipResponse>({
+        id: existing.id,
+        createdAt: existing.created_at,
+        deduped: true,
+      });
+    }
+
+    const bumpedAt = now;
+    const expiresAt = existing.pinned
+      ? existing.expires_at
+      : expiryFor(existing.type, bumpedAt);
+
+    // The new envelope replaces the stored one. Same plaintext, but a v2
+    // envelope vouches for who copied it and when, and a device checks
+    // that against the row: the old one names the first copy.
+    // For an image or file the new envelope holds the new blob's key, so
+    // the row moves to the new blob and the old one goes.
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE clips SET created_at = ?, device_id = ?, expires_at = ?, envelope = ?,
+                blob_id = COALESCE(?, blob_id)
+          WHERE id = ? AND user_id = ?`,
+      ).bind(bumpedAt, deviceId, expiresAt, body.envelope, blob?.id ?? null, existing.id, userId),
+      ...(blob
+        ? [c.env.DB.prepare("UPDATE blobs SET attached_at = ? WHERE id = ?").bind(now, blob.id)]
+        : []),
+    ]);
+    if (blob && existing.blob_id) await deleteBlobs(c.env, [existing.blob_id]);
+
+    const bumped = toClip({
+      ...existing,
+      created_at: bumpedAt,
+      device_id: deviceId,
+      expires_at: expiresAt,
+      envelope: body.envelope,
+      blob_id: blob?.id ?? existing.blob_id,
+    });
+
+    await publish(c, userId, {
+      ...event("clip.bumped", deviceId),
+      clip: bumped,
+    });
 
     return c.json<CreateClipResponse>({
-      id: clip.id,
-      createdAt: clip.createdAt,
-      deduped: false,
+      id: existing.id,
+      createdAt: bumpedAt,
+      deduped: true,
     });
   })
 
