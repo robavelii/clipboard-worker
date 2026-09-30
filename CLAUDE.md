@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Plans stay out of the repo.** Audits, roadmaps, proposals and other suggestions go in shared docs (artifacts), not in files committed here. The repo holds code, the README, and `docs/decisions.md`: the *why* behind decisions already built.
 - **Record real decisions in `docs/decisions.md`.** Use the numbered-section style already there: what was chosen, what the alternatives cost, and any trap worth recording. Add an entry when a change makes a real design choice, not for routine fixes.
 - Commit subjects follow `type(scope): summary`, e.g. `fix(worker): …`, `feat(agent): …`, `docs: …`. Bodies explain why.
+- **Commit authorship.** Feature work (`feat`, `perf`, `docs` for a feature, and `fix`es to how the product behaves) is authored *and* committed as the owner: `git -c user.name="Robel Fekadu" -c user.email="robelfekadu@gmail.com" commit …`. Routine automated work keeps the Claude identity: CI repairs, test-only fixes, fixes for a failing check, and chores. Releases are tags the owner pushes.
 
 ## What this is
 
