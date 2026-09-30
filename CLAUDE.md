@@ -63,6 +63,8 @@ Worker unit tests (`apps/worker/test/`) call the real Worker through `SELF.fetch
 
 CI (`.github/workflows/ci.yml`) runs typecheck + unit tests, and the e2e suite against `npm run dev` followed by the Linux binary enrolling and sending a file, on every push to `main` and every PR; on `main` a `deploy` job follows. `.github/workflows/release.yml` builds and runs the five standalone binaries on their own runners for PRs that touch the agent, and on a `v*` tag publishes them with `SHA256SUMS` to a GitHub Release (decisions §29).
 
+The one-command installers are `scripts/install.sh` (POSIX sh: everything in `main()`, called last, so a truncated `curl | sh` runs nothing) and `scripts/install.ps1` (PowerShell 5.1 and 7). The Worker bundles them as text (`rules` in `wrangler.jsonc`) and serves them at `/install.sh` and `/install.ps1` (`src/routes/install.ts`, in `run_worker_first`), replacing `__CLIPSYNC_URL__` with its own origin and `__CLIPSYNC_REPO__` with the `RELEASES_REPO` var. Each downloads a release archive, checks it against `SHA256SUMS`, runs `clipsync link` if not enrolled, then `clipsync install` (decisions §33). The Release workflow runs them on its macOS and Windows runners against a local copy of the job's own archive.
+
 The standalone agent is a Node single executable (`apps/agent/build-binary.mjs`): the CLI bundled as CommonJS, turned into a blob and injected into a copy of `node` with postject. Code that needs its own file path must go through `runningFile()` in `cli.ts`, because `import.meta.url` does not exist in the CommonJS bundle. A binary replaced on disk triggers the same exit-75 restart as a rebuilt bundle, so it must be replaced by rename: overwriting a running executable fails on Linux ("Text file busy").
 
 ## Architecture

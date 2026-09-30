@@ -25,6 +25,24 @@ panel on Linux. Copied images sync through the clipboard like text, and
 files copied in a file manager are sent to history; files also go through
 the web UI and `clipsync send` / `clipsync get`.
 
+## Install the agent
+
+On a computer you want to sync, one command downloads the agent, checks it,
+links the computer to your account by QR, and starts it at every login:
+
+```bash
+curl -fsSL https://clip.rfh.et/install.sh | sh        # Linux, macOS
+```
+
+```powershell
+irm https://clip.rfh.et/install.ps1 | iex             # Windows, in PowerShell
+```
+
+Scan the QR it shows with a device that is already set up (or open the
+link it prints there). Run the same command again to upgrade. The first
+device of a new account is set up with `clipsync login` instead; see
+"Adding a device" below. Details: [Standalone binary](#standalone-binary).
+
 ## Quick start (local)
 
 ```bash
@@ -257,6 +275,9 @@ builds for Linux (x64, arm64), macOS (Apple Silicon, Intel) and Windows
 (x64), each checked against a `SHA256SUMS` file. Linux still needs `xclip`
 or `wl-clipboard`.
 
+The installers above (`/install.sh`, `/install.ps1`, served by the Worker
+from `scripts/`) do these steps. By hand:
+
 ```bash
 base=https://github.com/robavelii/clipboard-worker/releases/latest/download
 curl -fsSLO "$base/clipsync-linux-x64.tar.gz" -fsSLO "$base/SHA256SUMS"
@@ -265,6 +286,14 @@ tar -xzf clipsync-linux-x64.tar.gz
 ./clipsync link --url https://clip.rfh.et
 ./clipsync install
 ```
+
+The installers take a few settings from the environment: `CLIPSYNC_VERSION`
+(a release tag instead of the latest), `CLIPSYNC_LINK=0` (install now,
+`clipsync link` later) and `CLIPSYNC_DOWNLOAD_BASE` (a mirror of the release
+files). The Windows one also adds the install folder to your user PATH. The
+Worker fills in its own address, so a self-hosted Worker's installer links
+to itself; `RELEASES_REPO` in `wrangler.jsonc` names the GitHub repo whose
+releases it downloads.
 
 `clipsync install` copies the binary to `~/.local/bin/clipsync`
 (`%LOCALAPPDATA%\Programs\clipsync\clipsync.exe` on Windows) and starts it
@@ -586,8 +615,8 @@ assertion that no plaintext appears in any API response.
 
 Putting a received file (other than an image) on another computer's
 clipboard (it waits in history for the web UI and the CLI), sharing files
-into the web app from a phone's share sheet, semantic search, a one-command
-installer, and the tray panel on macOS and Windows.
+into the web app from a phone's share sheet, semantic search, automatic
+agent updates, and the tray panel on macOS and Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or

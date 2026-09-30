@@ -15,6 +15,8 @@ on:
       - "apps/agent/**"
       - "packages/**"
       - "scripts/build-id.mjs"
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
       - "package-lock.json"
       - ".github/workflows/release.yml"
   workflow_dispatch:
@@ -63,23 +65,45 @@ jobs:
           # every module the CLI imports.
           XDG_CONFIG_HOME="$RUNNER_TEMP/empty" "$bin" status | tee status.txt
           grep -q "Not configured" status.txt
-      # A real install and uninstall where the runner has a desktop session
-      # to install into: Task Scheduler on Windows, launchd on macOS. The
-      # runner is not enrolled, so the agent the service starts says so in
-      # its log and stops for good -- which proves the whole chain ran.
-      - name: Install and remove the service
+      - name: Archive
+        run: |
+          cd apps/agent/dist/bin/${{ matrix.target }}
+          if [ "${{ matrix.target }}" = windows-x64 ]; then
+            7z a -tzip "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.zip" clipsync.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.tar.gz" clipsync
+          fi
+      # The one-command installer, then a real service, where the runner has
+      # a desktop session to install into: Task Scheduler on Windows, launchd
+      # on macOS. The installer fetches this job's own archive from a local
+      # server standing in for the release, and checks it against a
+      # SHA256SUMS made here. The runner is not enrolled (CLIPSYNC_LINK=0), so
+      # the agent the service starts says so in its log and stops for good,
+      # which proves the whole chain ran.
+      - name: Install with the installer, then remove
         if: runner.os != 'Linux'
         env:
           MSYS_NO_PATHCONV: "1"
+          CLIPSYNC_LINK: "0"
+          CLIPSYNC_URL: https://clipsync.invalid
+          CLIPSYNC_DOWNLOAD_BASE: http://127.0.0.1:8765
         run: |
-          bin=apps/agent/dist/bin/${{ matrix.target }}/clipsync
-          [ -f "$bin.exe" ] && bin="$bin.exe"
-          "$bin" install
+          mkdir -p release && cp clipsync-${{ matrix.target }}.* release/
+          (cd release && if command -v sha256sum >/dev/null; then sha256sum clipsync-*; else shasum -a 256 clipsync-*; fi > SHA256SUMS)
+          py=python3; command -v python3 >/dev/null || py=python
+          "$py" -m http.server 8765 --bind 127.0.0.1 --directory release >/dev/null 2>&1 &
+          sleep 2
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+          else
+            sh scripts/install.sh
+          fi
           sleep 10
           if [ "$RUNNER_OS" = Windows ]; then
             schtasks /Query /TN ClipSync /FO LIST
             log="$(cygpath "$LOCALAPPDATA")/clipsync/clipsync.log"
             installed="$(cygpath "$LOCALAPPDATA")/Programs/clipsync/clipsync.exe"
+            powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','User')" | grep -qi 'Programs\\clipsync'
           else
             launchctl print "gui/$(id -u)/clipsync.agent" | head -20
             log="$HOME/Library/Logs/clipsync.log"
@@ -88,19 +112,11 @@ jobs:
           "$installed" --version
           cat "$log"
           grep -q "not enrolled" "$log"
-          "$bin" uninstall
+          "$installed" uninstall
           if [ "$RUNNER_OS" = Windows ]; then
             ! schtasks /Query /TN ClipSync 2>/dev/null
           else
             ! launchctl print "gui/$(id -u)/clipsync.agent" >/dev/null 2>&1
-          fi
-      - name: Archive
-        run: |
-          cd apps/agent/dist/bin/${{ matrix.target }}
-          if [ "${{ matrix.target }}" = windows-x64 ]; then
-            7z a -tzip "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.zip" clipsync.exe
-          else
-            tar -czf "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.tar.gz" clipsync
           fi
       - uses: actions/upload-artifact@v4
         with:
