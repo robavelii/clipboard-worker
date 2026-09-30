@@ -5,6 +5,7 @@
  * nothing but `fetch` and `URL`, so it runs in Node and the browser alike.
  */
 
+import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
   ApiError,
   BlobUsageResponse,
@@ -49,6 +50,13 @@ export class ApiRequestError extends Error {
 
 export class ApiClient {
   /**
+   * The agent's build, sent on every request so the Worker can refuse writes
+   * from a release older than it accepts. Set once by the agent at startup;
+   * browsers and the tray leave it unset.
+   */
+  static agentVersion: string | null = null;
+
+  /**
    * @param baseUrl Absolute Worker URL, or "" when the caller is served from
    *   the Worker's own origin (the web UI).
    * @param token Device bearer token. Omitted for the pairing calls.
@@ -75,6 +83,7 @@ export class ApiClient {
     const headers = new Headers(init.headers);
     headers.set("content-type", contentType);
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
+    if (ApiClient.agentVersion) headers.set(AGENT_VERSION_HEADER, ApiClient.agentVersion);
 
     const res = await this.fetchImpl(this.url(path), { ...init, headers });
 

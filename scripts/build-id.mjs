@@ -10,6 +10,17 @@
 
 import { execFileSync } from "node:child_process";
 
+/**
+ * Where a standalone agent looks for newer releases of itself: the GitHub
+ * releases of the repo it was built from (GITHUB_REPOSITORY in CI). Baked in
+ * at build time, never taken from the server -- see decisions §34.
+ */
+export function releasesUrl() {
+  if (process.env.CLIPSYNC_RELEASES) return process.env.CLIPSYNC_RELEASES;
+  const repo = process.env.GITHUB_REPOSITORY || "robavelii/clipboard-worker";
+  return `https://github.com/${repo}/releases`;
+}
+
 export function buildId() {
   if (process.env.CLIPSYNC_BUILD_ID) return process.env.CLIPSYNC_BUILD_ID;
   try {

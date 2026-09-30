@@ -34,6 +34,8 @@ export default defineConfig(async () => {
             R2_STORAGE_BUDGET_BYTES: 3 * 1024 * 1024,
             R2_CLASS_A_BUDGET: 40,
             R2_CLASS_B_BUDGET: 40,
+            // Above v0.0.0, so the agent gate has releases to turn away.
+            MIN_AGENT_VERSION: "v0.5.0",
           },
         },
       }),

@@ -1007,3 +1007,65 @@ Trap: `wrangler dev` rewrites the request URL to the route's custom domain,
 so a locally served installer names `http://clip.rfh.et`. Set `CLIPSYNC_URL`
 when testing against a local Worker. In production the origin is the real
 one.
+
+## 34. Agents update themselves, from releases the server cannot choose
+
+With the Worker deploying on every merge (§30), the agents were what lagged:
+each machine ran whatever release it was installed with until someone
+re-ran the installer. A supervised release binary now updates itself.
+
+**The server does not choose the binary.** The obvious design has the
+Worker say "the latest agent is v0.4.0, fetch it from here". But the
+Worker is not trusted with anything readable: it sees only ciphertext.
+One that could name the next binary would be trusted with every device, so
+a compromised Worker, or anyone able to change its responses, could run
+code on all of them. So the releases an agent looks at are baked in when
+it is built (`__CLIPSYNC_RELEASES__`, the GitHub releases of the repo that
+built it). The agent asks GitHub directly: `releases/latest` redirects to
+the newest tag, which it reads without following, so there is no API call
+to rate-limit. The planned `/api/version` endpoint was dropped for the
+same reason: all it could safely say was the minimum below.
+
+**Checked three ways before it replaces anything.** The download must match
+the release's `SHA256SUMS`. It must run, and report itself as the release it
+was fetched as (`--version`), so a truncated, corrupt or mislabelled binary
+never replaces one that works. And the release must be newer: an agent never
+moves backwards, so an old release cannot be served as "latest" to undo a
+fix. The checksum comes from the same release as the binary, so it guards
+against corruption, not a compromised GitHub account; signing (§29) is what
+would. Releases publish each binary gzipped (`clipsync-<target>.gz`) beside
+the archives, so the agent needs `zlib` and no archive reader.
+
+**Swapped by rename, restarted by the supervisor.** The new binary is written
+beside the old and renamed over it, then the agent exits 75, and systemd,
+launchd or `clipsync supervise` starts the new file. Windows refuses to
+rename over a running executable, but lets it be renamed aside first. The
+aside gets a name of its own (`clipsync.exe.old-<time>`), because the
+Windows supervisor keeps running from the old file and it cannot be deleted
+yet. Leftovers are cleared at the next start. Only supervised agents update
+on their own: one started by hand in a terminal would have nobody to
+restart it.
+
+**When:** a minute after start (spread over that minute, so machines
+restarting together do not ask at once), then daily, and at once when the
+server refuses a write as too old. Only release builds: a build from a
+checkout names a commit, and git updates it. `CLIPSYNC_AUTO_UPDATE=off`
+stops the automatic checks; `clipsync update` still works.
+
+**A minimum the server enforces.** Every agent request carries
+`x-clipsync-agent: <build>`. Past a change that older agents would
+mishandle, `MIN_AGENT_VERSION` is raised, and the Worker refuses their
+writes with 426 `agent_outdated`. That is the one thing a stale agent
+could get wrong: a write in a form other devices no longer read. It can
+still read, take its socket ticket, register its key and log out, so it
+keeps receiving and hears that it must update, which it then does. The
+header is only a claim, so this protects against honest old agents, not
+against lying clients, which the envelope checks already handle. Browsers
+send no header and are never gated: they load the web app from the Worker
+itself, so they are always current. The tray sends none either; it is
+built from a checkout, like the agent it sits beside.
+
+Trap: an agent refused at a gate that covered every non-GET request could
+not even take a socket ticket (a POST), so it went deaf as well as mute.
+The gate lets through the few requests that write nothing another device
+reads.

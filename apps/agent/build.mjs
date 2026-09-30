@@ -8,7 +8,7 @@
  */
 
 import { build } from "esbuild";
-import { buildId } from "../../scripts/build-id.mjs";
+import { buildId, releasesUrl } from "../../scripts/build-id.mjs";
 
 await build({
   entryPoints: ["src/cli.ts"],
@@ -17,7 +17,10 @@ await build({
   platform: "node",
   target: "node20",
   format: "esm",
-  define: { __CLIPSYNC_BUILD__: JSON.stringify(buildId()) },
+  define: {
+    __CLIPSYNC_BUILD__: JSON.stringify(buildId()),
+    __CLIPSYNC_RELEASES__: JSON.stringify(releasesUrl()),
+  },
   banner: {
     js: [
       "#!/usr/bin/env node",
