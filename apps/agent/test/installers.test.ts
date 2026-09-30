@@ -21,7 +21,8 @@ describe("installer scripts", () => {
     execFileSync(shell, ["-n", join(scripts, "install.sh")]);
   });
 
-  it.skipIf(!has("pwsh"))("install.ps1 parses under PowerShell", () => {
+  // PowerShell alone can take over 7 s to start on a CI runner.
+  it.skipIf(!has("pwsh"))("install.ps1 parses under PowerShell", { timeout: 60_000 }, () => {
     // The path goes through the environment: arguments after -Command are
     // joined into the command, not passed as $args.
     const check =
