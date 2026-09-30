@@ -53,7 +53,8 @@ Agent and tray:
 ```bash
 npm run build -w @clipsync/agent && node apps/agent/dist/clipsync.mjs status
 npm run build -w @clipsync/desktop     # tray: MUST go through the Tauri CLI (see below)
-scripts/install-agent.sh               # builds, installs systemd user service + tray autostart; re-run after a pull to upgrade
+scripts/install-agent.sh               # from a checkout: builds, `clipsync install`, tray autostart; re-run after a pull to upgrade
+clipsync install [--dry-run]           # the service alone, for whichever clipsync runs it (binary or bundle)
 ```
 
 Deploy (production): CI does it on every push to `main` that passes, running `npm run db:migrate` then `npm run deploy` with the `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` secrets (decisions §30). By hand: the same two commands. **Migrations run while the old Worker is still live, so they must only add** (new tables, new nullable or defaulted columns): a Worker that the migration breaks is live until the deploy finishes.
@@ -139,10 +140,12 @@ Images and files (decisions §27, §28): backends may implement `readImage`/`wri
 
 Reads time out after 5 s; writes don't, and settle on the tool's `exit`, not `close`: `xclip -i`/`wl-copy` fork a selection-holding child that keeps the inherited stdio open until the next copy.
 
+**The service** (`apps/agent/src/service.ts`, decisions §32): `clipsync install` writes a systemd user unit, a launchd plist or a Task Scheduler task (UTF-16 XML via `schtasks`), after copying a standalone binary to `~/.local/bin` or `%LOCALAPPDATA%\Programs\clipsync`. Task Scheduler cannot act on exit codes, so the Windows task runs `clipsync supervise` under `conhost --headless`: it restarts `clipsync run` by systemd's rules and logs to `%LOCALAPPDATA%\clipsync\clipsync.log`. The agent under it exits when the supervisor's stdin pipe closes, so killing the supervisor leaves no orphan. `run` with no config exits 78, so a service installed before enrolment waits instead of looping; enrolling (`enrol()` in `cli.ts`) restarts an installed service. The generated definitions are validated in tests by `systemd-analyze verify`, `plistlib` and `xmllint` where installed; the Release workflow installs and removes the real service on its macOS and Windows runners.
+
 After a reconnect (not on first start) the daemon applies the newest clip if it is another device's, under 10 minutes old, newer than the last local copy and not already on the clipboard (decisions §23). Exit codes, which the systemd unit depends on:
 
 - **75:** the bundle was rebuilt on disk; restart onto it (`RestartForceExitStatus=75`).
-- **78:** the device was revoked, or re-keyed without a copy for it; never restart (`RestartPreventExitStatus=78`).
+- **78:** the device was revoked, re-keyed without a copy for it, or never enrolled; never restart (`RestartPreventExitStatus=78`).
 - Under launchd (`CLIPSYNC_SUPERVISOR=launchd`, set by the plist `scripts/install-agent.sh` writes on macOS) that exit is 0 instead, because launchd's `KeepAlive` restarts every failure and cannot exclude one status.
 
 A re-key changes the key every dedupe hash is taken under, so `refresh()` re-primes `lastHandled` under the new key when the epoch moves.

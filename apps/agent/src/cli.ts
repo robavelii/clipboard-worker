@@ -4,8 +4,6 @@ import { watchFile } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { hostname, platform as osPlatform } from "node:os";
 import { basename, extname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { isSea } from "node:sea";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
 import { DecryptError } from "@clipsync/crypto";
@@ -47,6 +45,17 @@ import {
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
+import { runningFile, selfCommand } from "./self";
+import {
+  EXIT_FOR_GOOD,
+  EXIT_RESTART,
+  installService,
+  restartServiceIfInstalled,
+  serviceStatus,
+  supervise,
+  supervisorPaths,
+  uninstallService,
+} from "./service";
 import { ask, askNewPassphrase, askSecret, closePrompts } from "./prompt";
 
 const USAGE = `clipsync — encrypted clipboard sync
@@ -67,6 +76,8 @@ Usage
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
+  clipsync install [--dry-run]                          Run the agent in the background at login
+  clipsync uninstall                                    Stop and remove that background service
   clipsync logout                                       Forget local credentials
   clipsync --version                                    Show which build this is
 `;
@@ -75,7 +86,7 @@ Usage
  * EX_CONFIG from sysexits.h: the configuration no longer works -- the device
  * was revoked, or the vault re-keyed without it.
  */
-const EXIT_REVOKED = 78;
+const EXIT_REVOKED = EXIT_FOR_GOOD;
 
 /**
  * Stop for good: revoked, or re-keyed out. systemd is told not to restart
@@ -151,6 +162,8 @@ async function enrol(
       `note: could not register this device's key yet (${err instanceof Error ? err.message : err})`,
     );
   }
+  // A service installed before enrolling stopped for want of credentials.
+  if (restartServiceIfInstalled()) console.log("Restarted the background service with these credentials.");
 }
 
 function plural(count: number, noun: string): string {
@@ -413,7 +426,13 @@ async function cmdRun(opts: {
   pushCurrent?: boolean;
   verbose?: boolean;
 }): Promise<void> {
-  const config = await requireConfig();
+  const config = await loadConfig();
+  if (!config) {
+    // Under a service this is permanent until someone enrols: say so and
+    // stop for good, rather than be restarted into it every five seconds.
+    console.error("error: not enrolled -- run `clipsync link --url <url>` or `clipsync login` first");
+    exitForGood();
+  }
   const daemon = new Daemon(config, {
     pushCurrent: opts.pushCurrent,
     verbose: opts.verbose,
@@ -430,21 +449,16 @@ async function cmdRun(opts: {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  // Under `clipsync supervise` the supervisor holds this pipe open for as
+  // long as it runs; when it goes, so does this agent.
+  if (process.env.CLIPSYNC_SUPERVISOR === "clipsync") {
+    process.stdin.on("end", shutdown).on("error", shutdown).resume();
+  }
+
   await daemon.start();
-  if (process.env.INVOCATION_ID || process.env.CLIPSYNC_SUPERVISOR === "launchd") {
+  if (process.env.INVOCATION_ID || process.env.CLIPSYNC_SUPERVISOR) {
     restartOnRebuild(daemon);
   }
-}
-
-/** Exit status systemd's Restart=on-failure acts on (EX_TEMPFAIL). */
-const EXIT_RESTART = 75;
-
-/**
- * The file this agent runs from: the executable itself when it is a
- * standalone binary (a Node single executable), else the bundle Node runs.
- */
-function runningFile(): string {
-  return isSea() ? process.execPath : fileURLToPath(import.meta.url);
 }
 
 /**
@@ -455,8 +469,9 @@ function runningFile(): string {
  * rebuild changes nothing until someone remembers to restart it -- and a
  * daemon quietly running last week's code is indistinguishable from one
  * that is up to date. Only under a supervisor that restarts it -- systemd
- * (INVOCATION_ID is set for every unit it starts) or launchd (the plist sets
- * CLIPSYNC_SUPERVISOR) -- where exiting means being restarted, not stopped.
+ * (INVOCATION_ID is set for every unit it starts), launchd or
+ * `clipsync supervise` (both set CLIPSYNC_SUPERVISOR) -- where exiting means
+ * being restarted, not stopped.
  */
 function restartOnRebuild(daemon: Daemon): void {
   const bundle = runningFile();
@@ -756,6 +771,34 @@ async function measureLatency(baseUrl: string, api: ApiClient): Promise<string> 
   return `${worker} ms to the Worker, about ${perQuery} ms more per database query`;
 }
 
+async function cmdInstall(dryRun = false): Promise<void> {
+  const result = installService({ dryRun });
+  const verb = dryRun ? "Would install" : "Installed";
+  console.log(`${verb} the background service: ${result.definition}`);
+  console.log(`It runs:  ${result.command.join(" ")}`);
+  if (dryRun) return;
+  console.log("It starts at every login, and restarts itself onto new builds.");
+  if (!(await loadConfig())) {
+    console.log("\nThis device is not enrolled yet, so the service is waiting.");
+    console.log("Enrol it and the service starts:  clipsync link --url https://<your-worker>");
+  }
+  console.log();
+  for (const hint of result.hints) console.log(hint);
+}
+
+async function cmdUninstall(): Promise<void> {
+  const { removed, binary } = uninstallService();
+  console.log(removed ? "Stopped and removed the background service." : "No background service was installed.");
+  if (binary && binary !== runningFile()) console.log(`The binary is still at ${binary}; delete it if you are done with it.`);
+  console.log("Your credentials are untouched: `clipsync logout` revokes this device and forgets them.");
+}
+
+/** The Windows task's entry point: run the agent, restarting it as systemd would. */
+async function cmdSupervise(): Promise<void> {
+  const { log, pidFile } = supervisorPaths();
+  process.exitCode = await supervise({ command: [...selfCommand(), "run"], log, pidFile });
+}
+
 async function cmdStatus(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -794,6 +837,12 @@ async function cmdStatus(): Promise<void> {
     console.log(`clipboard  ${clipboard.name}`);
   } catch (err) {
     console.log(`clipboard  unavailable — ${(err as Error).message}`);
+  }
+
+  try {
+    console.log(`service    ${serviceStatus() ?? "not installed -- \`clipsync install\` runs the agent at login"}`);
+  } catch {
+    // No service on this platform.
   }
 
   const api = new ApiClient(config.baseUrl, config.token);
@@ -865,6 +914,7 @@ async function main(): Promise<void> {
       verbose: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "V" },
+      "dry-run": { type: "boolean" },
     },
   });
 
@@ -916,6 +966,12 @@ async function main(): Promise<void> {
       return cmdStatus();
     case "logout":
       return cmdLogout();
+    case "install":
+      return cmdInstall(values["dry-run"]);
+    case "uninstall":
+      return cmdUninstall();
+    case "supervise":
+      return cmdSupervise();
     default:
       console.error(`unknown command: ${command}\n`);
       console.log(USAGE);
