@@ -45,6 +45,7 @@ import {
 } from "./config";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
+import { mimeFor } from "./mime";
 import { ask, askNewPassphrase, askSecret, closePrompts } from "./prompt";
 
 const USAGE = `clipsync — encrypted clipboard sync
@@ -517,22 +518,6 @@ async function cmdCopy(id: string | undefined): Promise<void> {
   console.log(`Copied ${text.length} chars to the clipboard.`);
 }
 
-/** Enough of the common types that images show inline in the web UI. */
-const MIME_BY_EXTENSION: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  avif: "image/avif",
-  bmp: "image/bmp",
-  pdf: "application/pdf",
-  txt: "text/plain",
-  md: "text/markdown",
-  json: "application/json",
-  zip: "application/zip",
-};
-
 /**
  * Send a file to every device: encrypted in chunks under a key of its own,
  * kept in R2 for FILE_TTL_DAYS unless pinned.
@@ -544,14 +529,13 @@ async function cmdSend(path: string | undefined): Promise<void> {
   const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
 
   const name = basename(path);
-  const extension = extname(name).slice(1).toLowerCase();
   const bytes = new Uint8Array(await readFile(path));
   const res = await uploadFile(
     api,
     keys,
     config.userId,
     config.deviceId,
-    { name, mime: MIME_BY_EXTENSION[extension] ?? "application/octet-stream", bytes },
+    { name, mime: mimeFor(name), bytes },
     (sent) => process.stdout.write(`\r  sent ${formatBytes(sent)} of ${formatBytes(bytes.length)}`),
   );
   console.log();

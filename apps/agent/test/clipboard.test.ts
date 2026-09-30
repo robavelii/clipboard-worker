@@ -1,9 +1,16 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { detectClipboard, macos, powershellBackend, type ClipboardBackend } from "../src/clipboard";
+import {
+  detectClipboard,
+  macos,
+  parseUriList,
+  powershellBackend,
+  type ClipboardBackend,
+} from "../src/clipboard";
+import { extensionFor, mimeFor } from "../src/mime";
 
 let dir: string;
 const saved = { ...process.env };
@@ -50,11 +57,17 @@ describe("macOS backend", () => {
 /**
  * A stand-in for the PowerShell helper, speaking its protocol. FAKE_MODE
  * makes it misbehave: `crlf` hands text back with CRLF as Windows does,
- * `die` exits after one reply, `mute` never answers.
+ * `die` exits after one reply, `mute` never answers. Like the real one, it
+ * answers "OK =" to an image request when nothing was written since the last.
+ * FAKE_FILES holds copied files' paths, separated by "|".
  */
 const FAKE_HELPER = `
 const mode = process.env.FAKE_MODE ?? "";
 let clip = "";
+let image = "";
+let files = process.env.FAKE_FILES ?? "";
+let seq = 0;
+let imageSeq = -1;
 let served = 0;
 let buf = "";
 process.stdin.setEncoding("utf8");
@@ -71,7 +84,14 @@ process.stdin.on("data", (d) => {
     } else if (line.startsWith("W ")) {
       const text = Buffer.from(line.slice(2), "base64").toString();
       if (text === "fail") process.stdout.write("ERR the clipboard is busy\\n");
-      else { clip = text; process.stdout.write("OK\\n"); }
+      else { clip = text; seq++; process.stdout.write("OK\\n"); }
+    } else if (line === "I") {
+      process.stdout.write(seq === imageSeq ? "OK =\\n" : "OK " + image + "\\n");
+      imageSeq = seq;
+    } else if (line.startsWith("J ")) {
+      image = line.slice(2); seq++; process.stdout.write("OK\\n");
+    } else if (line === "F") {
+      process.stdout.write("OK " + Buffer.from(files.split("|").join("\\n")).toString("base64") + "\\n");
     }
     served++;
     if (mode === "die" && served === 1) process.exit(3);
@@ -130,6 +150,133 @@ describe("Windows backend", () => {
   it("gives up on a helper that stops answering", async () => {
     await expect(make("mute").read()).rejects.toThrow(/did not answer/);
   });
+
+  it("round-trips an image, remembering it while the clipboard is unchanged", async () => {
+    const b = make();
+    expect(await b.readImage!()).toBeNull();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    await b.writeImage!({ bytes, mime: "image/png" });
+    const first = await b.readImage!();
+    expect(first?.mime).toBe("image/png");
+    expect([...first!.bytes]).toEqual([...bytes]);
+    // The helper now answers "unchanged"; the backend hands back what it had.
+    expect([...(await b.readImage!())!.bytes]).toEqual([...bytes]);
+    await b.write("text now");
+    expect(await b.readImage!()).not.toBeNull();
+  });
+
+  it("lists files copied in Explorer", async () => {
+    process.env.FAKE_FILES = "C:\\Users\\rob\\Downloads\\hadra.jpg|C:\\notes.pdf";
+    const b = make();
+    expect(await b.readFiles!()).toEqual(["C:\\Users\\rob\\Downloads\\hadra.jpg", "C:\\notes.pdf"]);
+  });
+
+  it("lists no files when none were copied", async () => {
+    expect(await make().readFiles!()).toEqual([]);
+  });
+});
+
+/**
+ * wl-paste stand-in: the clipboard is a directory with one file per MIME
+ * type, named with "/" as "_" -- `--list-types` lists them, `--type` reads one.
+ */
+describe("Wayland backend", () => {
+  let offers: string;
+  beforeAll(async () => {
+    offers = join(dir, "offers");
+    await writeFile(
+      join(dir, "wl-paste"),
+      `#!/bin/sh
+d="${join(dir, "offers")}"
+if [ "$1" = "--list-types" ]; then
+  [ -n "$(ls "$d" 2>/dev/null)" ] || { echo "No selection" >&2; exit 1; }
+  ls "$d" | sed 's#_#/#'
+  exit 0
+fi
+while [ $# -gt 0 ]; do [ "$1" = "--type" ] && t="$2"; shift; done
+[ -n "$t" ] || { echo "no --type: would pick any text/*" >&2; exit 1; }
+cat "$d/$(printf '%s' "$t" | sed 's#/#_#')"
+`,
+    );
+    await chmod(join(dir, "wl-paste"), 0o755);
+  });
+
+  const offer = async (types: Record<string, string | Uint8Array>) => {
+    await rm(offers, { recursive: true, force: true });
+    await mkdir(offers);
+    for (const [type, data] of Object.entries(types)) {
+      await writeFile(join(offers, type.replace("/", "_")), data);
+    }
+    process.env.PATH = `${dir}:${saved.PATH}`;
+    process.env.CLIPSYNC_CLIPBOARD = "wayland";
+    return detectClipboard();
+  };
+
+  // A browser's "Copy image": left to choose, wl-paste would take the
+  // text/html flavour and the agent would push markup instead of the image.
+  it("reads a browser's copied image, not its HTML", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9]);
+    const clip = await offer({ "text/html": '<img src="https://example.com/a.png">', "image/png": png });
+    expect(await clip.read()).toBe("");
+    const image = await clip.readImage!();
+    expect(image?.mime).toBe("image/png");
+    expect([...image!.bytes]).toEqual([...png]);
+  });
+
+  it("reads the plain-text flavour when there is one", async () => {
+    const clip = await offer({ "text/html": "<b>hi</b>", "text/plain;charset=utf-8": "hi ✓" });
+    expect(await clip.read()).toBe("hi ✓");
+  });
+
+  it("reads a JPEG when that is the only image type offered", async () => {
+    const clip = await offer({ "image/jpeg": new Uint8Array([0xff, 0xd8, 0xff]) });
+    expect((await clip.readImage!())?.mime).toBe("image/jpeg");
+  });
+
+  it("reads files copied in a file manager", async () => {
+    const clip = await offer({
+      "text/plain": "/home/rob/Downloads/hadra photo.jpg",
+      "text/uri-list": "file:///home/rob/Downloads/hadra%20photo.jpg\r\n",
+    });
+    expect(await clip.readFiles!()).toEqual(["/home/rob/Downloads/hadra photo.jpg"]);
+  });
+
+  it("treats an empty clipboard as empty, not as a failure", async () => {
+    const clip = await offer({});
+    expect(await clip.read()).toBe("");
+    expect(await clip.readImage!()).toBeNull();
+    expect(await clip.readFiles!()).toEqual([]);
+  });
+});
+
+describe("uri lists", () => {
+  it("decodes local file URIs to paths", () => {
+    expect(parseUriList("# comment\r\nfile:///tmp/a%20b.jpg\r\nfile://localhost/tmp/c.png\r\n")).toEqual([
+      "/tmp/a b.jpg",
+      "/tmp/c.png",
+    ]);
+  });
+
+  it("is not a file copy if any entry is not a local file", () => {
+    expect(parseUriList("file:///tmp/a.jpg\nhttps://example.com/b.jpg")).toEqual([]);
+    expect(parseUriList("file://otherhost/tmp/a.jpg")).toEqual([]);
+    expect(parseUriList("not a uri")).toEqual([]);
+  });
+});
+
+describe("MIME types", () => {
+  it("come from a file's extension, whatever its case", () => {
+    expect(mimeFor("hadra.JPG")).toBe("image/jpeg");
+    expect(mimeFor("notes.pdf")).toBe("application/pdf");
+    expect(mimeFor("Makefile")).toBe("application/octet-stream");
+    expect(mimeFor(".jpg")).toBe("application/octet-stream");
+  });
+
+  it("name an image that came without a name", () => {
+    expect(extensionFor("image/png")).toBe("png");
+    expect(extensionFor("image/jpeg")).toBe("jpg");
+    expect(extensionFor("image/x-unknown")).toBe("bin");
+  });
 });
 
 // The real helper script, run by PowerShell 7 -- on Linux its clipboard
@@ -161,11 +308,16 @@ const hasXclip = (() => {
 describe.skipIf(!hasXclip)("X11 backend", () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3, 255]);
 
-  it("round-trips an image", async () => {
+  it("round-trips an image, in its own type", async () => {
     process.env.CLIPSYNC_CLIPBOARD = "x11";
     const clip = await detectClipboard();
-    await clip.writeImage!(png);
-    expect([...(await clip.readImage!())!]).toEqual([...png]);
+    await clip.writeImage!({ bytes: png, mime: "image/png" });
+    expect([...(await clip.readImage!())!.bytes]).toEqual([...png]);
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+    await clip.writeImage!({ bytes: jpeg, mime: "image/jpeg" });
+    const back = await clip.readImage!();
+    expect(back?.mime).toBe("image/jpeg");
+    expect([...back!.bytes]).toEqual([...jpeg]);
   });
 
   // xclip, owning the selection with an image, answers a text request with
@@ -174,10 +326,22 @@ describe.skipIf(!hasXclip)("X11 backend", () => {
   it("reads no text while the clipboard holds only an image", async () => {
     process.env.CLIPSYNC_CLIPBOARD = "x11";
     const clip = await detectClipboard();
-    await clip.writeImage!(png);
+    await clip.writeImage!({ bytes: png, mime: "image/png" });
     expect(await clip.read()).toBe("");
     await clip.write("plain text");
     expect(await clip.read()).toBe("plain text");
     expect(await clip.readImage!()).toBeNull();
+    expect(await clip.readFiles!()).toEqual([]);
+  });
+
+  it("reads files from a uri list", async () => {
+    process.env.CLIPSYNC_CLIPBOARD = "x11";
+    const clip = await detectClipboard();
+    // xclip forks a child that holds the selection, and the pipes with it.
+    execFileSync("xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-i"], {
+      input: "file:///tmp/hadra%20photo.jpg\r\n",
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    expect(await clip.readFiles!()).toEqual(["/tmp/hadra photo.jpg"]);
   });
 });
