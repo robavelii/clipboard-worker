@@ -48,6 +48,39 @@ export const MAX_FILE_BYTES = 25 * 1024 * 1024;
  */
 export const R2_BUDGET_ERROR = "r2_budget";
 
+/**
+ * Header naming the agent build that makes a request: a release tag
+ * ("v0.3.0"), or a commit for a build from a checkout. Browsers and the
+ * tray send none.
+ */
+export const AGENT_VERSION_HEADER = "x-clipsync-agent";
+
+/**
+ * ApiError.error (HTTP 426) when an agent release older than the Worker's
+ * MIN_AGENT_VERSION tries to write. It may read, and should update.
+ */
+export const AGENT_OUTDATED_ERROR = "agent_outdated";
+
+/** A release tag, "v1.2.3", as numbers; null for anything else. */
+export function parseRelease(tag: string): [number, number, number] | null {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/**
+ * Whether release `a` is older than release `b`. False when either is not a
+ * release tag: a build from a checkout is never "old", and never updated.
+ */
+export function isOlderRelease(a: string, b: string): boolean {
+  const x = parseRelease(a);
+  const y = parseRelease(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) {
+    if (x[i] !== y[i]) return x[i]! < y[i]!;
+  }
+  return false;
+}
+
 export type Platform = "linux" | "macos" | "windows" | "web" | "other";
 
 export interface Device {

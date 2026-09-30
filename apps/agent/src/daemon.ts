@@ -29,6 +29,7 @@ import {
   PING_FRAME,
   REVOKED_CLOSE_CODE,
   R2_BUDGET_ERROR,
+  AGENT_OUTDATED_ERROR,
   STALE_EPOCH_ERROR,
   type Clip,
   type ServerMessage,
@@ -143,6 +144,11 @@ export interface DaemonOptions {
    * Like revocation, nothing short of enrolling again fixes it.
    */
   onStranded?: () => void;
+  /**
+   * Called when the server refuses this release's writes as too old (at
+   * most once an hour). The agent keeps applying other devices' copies.
+   */
+  onOutdated?: () => void;
 }
 
 export function log(...args: unknown[]): void {
@@ -190,6 +196,8 @@ export class Daemon {
 
   /** One poll at a time: a slow read must not stack another behind it. */
   private polling = false;
+  /** When "this release is too old" was last logged. */
+  private outdatedSaidAt = 0;
 
   private socket: WebSocket | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -461,7 +469,7 @@ export class Daemon {
 
   /** After a failed image or file upload: retry on a later poll, or not. */
   private async uploadFailed(err: unknown, tag: string, what: string): Promise<void> {
-    if (this.isRevocation(err)) return;
+    if (this.isRevocation(err) || this.isOutdated(err, tag)) return;
     this.lastHandled = null;
     if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
       await this.refresh();
@@ -492,7 +500,7 @@ export class Daemon {
 
       if (!res.deduped) log(`pushed ${text.length} chars`);
     } catch (err) {
-      if (this.isRevocation(err)) return;
+      if (this.isRevocation(err) || this.isOutdated(err, hash)) return;
       // Let the next poll retry: the clipboard still holds the content.
       this.lastHandled = null;
       if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
@@ -720,6 +728,22 @@ export class Daemon {
   private isRevocation(err: unknown): boolean {
     if (!(err instanceof ApiRequestError) || err.status !== 401) return false;
     this.revoked();
+    return true;
+  }
+
+  /**
+   * The server no longer takes writes from this release. The copy is not
+   * retried (it would be refused again every poll); the agent says so once
+   * an hour and asks to be updated.
+   */
+  private isOutdated(err: unknown, tag: string): boolean {
+    if (!(err instanceof ApiRequestError) || err.code !== AGENT_OUTDATED_ERROR) return false;
+    this.lastHandled = tag;
+    if (Date.now() - this.outdatedSaidAt > 60 * 60 * 1000) {
+      this.outdatedSaidAt = Date.now();
+      log(`${err.message} -- not syncing copies from this device until then`);
+      this.options.onOutdated?.();
+    }
     return true;
   }
 

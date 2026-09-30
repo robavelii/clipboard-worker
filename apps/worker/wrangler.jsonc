@@ -55,6 +55,10 @@
   "vars": {
     // Whose GitHub releases /install.sh and /install.ps1 download from.
     "RELEASES_REPO": "robavelii/clipboard-worker",
+    // The oldest agent release allowed to write (decisions §34). Raise it
+    // when a change would be mishandled by agents from before it; they are
+    // told to update, and do so on their own within a day.
+    "MIN_AGENT_VERSION": "v0.0.0",
     "R2_STORAGE_BUDGET_BYTES": 5368709120,
     "R2_CLASS_A_BUDGET": 500000,
     "R2_CLASS_B_BUDGET": 5000000

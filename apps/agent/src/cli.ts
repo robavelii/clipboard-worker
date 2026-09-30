@@ -45,7 +45,8 @@ import {
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
-import { runningFile, selfCommand } from "./self";
+import { isSea, removeAsideBinaries, runningFile, selfCommand } from "./self";
+import { latestRelease, updateTo } from "./update";
 import {
   EXIT_FOR_GOOD,
   EXIT_RESTART,
@@ -78,6 +79,7 @@ Usage
   clipsync status                                       Show current configuration
   clipsync install [--dry-run]                          Run the agent in the background at login
   clipsync uninstall                                    Stop and remove that background service
+  clipsync update                                       Update to the newest release (the service does it daily)
   clipsync logout                                       Forget local credentials
   clipsync --version                                    Show which build this is
 `;
@@ -440,6 +442,7 @@ async function cmdRun(opts: {
     // and not restart into the same 401 forever (RestartPreventExitStatus).
     onRevoked: exitForGood,
     onStranded: exitForGood,
+    onOutdated: () => void autoUpdate?.(),
   });
 
   const shutdown = () => {
@@ -458,7 +461,47 @@ async function cmdRun(opts: {
   await daemon.start();
   if (process.env.INVOCATION_ID || process.env.CLIPSYNC_SUPERVISOR) {
     restartOnRebuild(daemon);
+    autoUpdate = scheduleUpdates(daemon);
   }
+}
+
+/** Set while a supervised agent keeps itself up to date; see scheduleUpdates. */
+let autoUpdate: (() => Promise<void>) | null = null;
+
+const UPDATE_CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Keep a supervised release build up to date: check a minute after start,
+ * then daily, and whenever the server refuses this release's writes. An
+ * update replaces the binary on disk and exits 75, and the supervisor
+ * starts the new one. Not for a build from a checkout (git updates that),
+ * nor when CLIPSYNC_AUTO_UPDATE=off. Returns the check, or null.
+ */
+function scheduleUpdates(daemon: Daemon): (() => Promise<void>) | null {
+  if (!isSea() || /^(0|off|false|no)$/i.test(process.env.CLIPSYNC_AUTO_UPDATE ?? "")) return null;
+  removeAsideBinaries(runningFile());
+  let checking = false;
+  const check = async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      const result = await updateTo(__CLIPSYNC_BUILD__, runningFile());
+      if (result.status === "updated") {
+        log(`updated ${result.from} -> ${result.to} -- restarting onto it`);
+        daemon.stop();
+        process.exit(EXIT_RESTART);
+      }
+    } catch (err) {
+      log("update check failed:", err instanceof Error ? err.message : err);
+    } finally {
+      checking = false;
+    }
+  };
+  // Spread over the minute after start, so a fleet restarting together does
+  // not ask at once.
+  setTimeout(() => void check(), 30_000 + Math.random() * 60_000).unref();
+  setInterval(() => void check(), UPDATE_CHECK_EVERY_MS).unref();
+  return check;
 }
 
 /**
@@ -799,6 +842,33 @@ async function cmdSupervise(): Promise<void> {
   process.exitCode = await supervise({ command: [...selfCommand(), "run"], log, pidFile });
 }
 
+/**
+ * Update this binary to the newest release now. The background service,
+ * running from the same file, notices within seconds and restarts onto it.
+ */
+async function cmdUpdate(): Promise<void> {
+  if (!isSea()) {
+    const latest = await latestRelease().catch(() => null);
+    console.log(`This clipsync runs from a checkout (${__CLIPSYNC_BUILD__})${latest ? `; the newest release is ${latest}` : ""}.`);
+    console.log("Update it with: git pull && scripts/install-agent.sh");
+    return;
+  }
+  const result = await updateTo(__CLIPSYNC_BUILD__, runningFile());
+  switch (result.status) {
+    case "updated":
+      console.log(`Updated ${result.from} -> ${result.to}. A running service restarts onto it within seconds.`);
+      break;
+    case "current":
+      console.log(`Up to date: ${__CLIPSYNC_BUILD__} is the newest release.`);
+      break;
+    case "not-a-release":
+      console.log(`This binary (${result.build}) was not built as a release, so it has no release to update from.`);
+      break;
+    case "unknown":
+      throw new Error("could not find the newest release -- check the connection and try again");
+  }
+}
+
 async function cmdStatus(): Promise<void> {
   const config = await loadConfig();
   if (!config) {
@@ -920,6 +990,10 @@ async function main(): Promise<void> {
 
   const [command, arg] = positionals;
 
+  // Every request names this build, so the server can turn away writes from
+  // a release it no longer accepts (decisions §34).
+  ApiClient.agentVersion = __CLIPSYNC_BUILD__;
+
   if (values.version || command === "version") {
     console.log(`clipsync ${__CLIPSYNC_BUILD__}`);
     return;
@@ -972,6 +1046,8 @@ async function main(): Promise<void> {
       return cmdUninstall();
     case "supervise":
       return cmdSupervise();
+    case "update":
+      return cmdUpdate();
     default:
       console.error(`unknown command: ${command}\n`);
       console.log(USAGE);

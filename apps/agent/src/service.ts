@@ -34,7 +34,7 @@ import {
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { isSea, runningFile, selfCommand } from "./self";
+import { isSea, replaceExecutable, runningFile, selfCommand } from "./self";
 
 export type ServicePlatform = "linux" | "macos" | "windows";
 
@@ -257,10 +257,8 @@ function windowsUser(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Put a copy of this binary where the service will run it. Written beside
- * the target and renamed over it, never overwritten in place: Linux refuses
- * to write a running executable ("Text file busy"), and Windows refuses to
- * replace one but lets it be renamed out of the way.
+ * Put a copy of this binary where the service will run it: written beside
+ * the target, then swapped in by `replaceExecutable`.
  */
 function placeBinary(target: string): void {
   const source = runningFile();
@@ -269,15 +267,7 @@ function placeBinary(target: string): void {
   const fresh = `${target}.new`;
   copyFileSync(source, fresh);
   chmodSync(fresh, 0o755);
-  try {
-    renameSync(fresh, target);
-  } catch (err) {
-    if (process.platform !== "win32" || !existsSync(target)) throw err;
-    const aside = `${target}.old`;
-    rmSync(aside, { force: true });
-    renameSync(target, aside);
-    renameSync(fresh, target);
-  }
+  replaceExecutable(fresh, target);
 }
 
 export interface InstallResult {

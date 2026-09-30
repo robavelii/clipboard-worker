@@ -28,7 +28,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { inject } from "postject";
-import { buildId } from "../../scripts/build-id.mjs";
+import { buildId, releasesUrl } from "../../scripts/build-id.mjs";
 
 /** The fuse Node looks for to know a blob was injected; fixed by Node. */
 const SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
@@ -70,6 +70,7 @@ await build({
   format: "cjs",
   define: {
     __CLIPSYNC_BUILD__: JSON.stringify(buildId()),
+    __CLIPSYNC_RELEASES__: JSON.stringify(releasesUrl()),
     "import.meta.url": "undefined",
   },
   logLevel: "warning",

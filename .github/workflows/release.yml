@@ -54,6 +54,31 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Self-update, for real (decisions §34): a v0.0.1 build replaces itself,
+      # while it runs, with a v0.0.2 build served by a local stand-in for
+      # GitHub releases. On Windows that is the rename-aside path. The build
+      # the job publishes comes after, in the next step.
+      - name: Update itself from a release
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          t=${{ matrix.target }}
+          exe=clipsync; [ "$RUNNER_OS" = Windows ] && exe=clipsync.exe
+          rel="$RUNNER_TEMP/rel"; old="$RUNNER_TEMP/old"
+          mkdir -p "$rel" "$old"
+          CLIPSYNC_BUILD_ID=v0.0.2 npm run build:binary
+          gzip -9 -c "apps/agent/dist/bin/$t/$exe" > "$rel/clipsync-$t.gz"
+          (cd "$rel" && if command -v sha256sum >/dev/null; then sha256sum clipsync-*; else shasum -a 256 clipsync-*; fi > SHA256SUMS)
+          CLIPSYNC_BUILD_ID=v0.0.1 npm run build:binary
+          cp "apps/agent/dist/bin/$t/$exe" "$old/$exe"
+          node apps/agent/test/fake-releases.mjs "$rel" v0.0.2 8766 &
+          sleep 2
+          # Running while it is replaced, as under a service: it waits at a prompt.
+          (sleep 90 | "$old/$exe" login --url http://127.0.0.1:9 >/dev/null 2>&1) &
+          sleep 3
+          CLIPSYNC_RELEASES=http://127.0.0.1:8766/releases "$old/$exe" update | tee update.txt
+          grep -q "Updated v0.0.1 -> v0.0.2" update.txt
+          "$old/$exe" --version | grep -q "^clipsync v0.0.2"
       - run: npm run build:binary
       - name: Smoke test
         run: |
@@ -65,13 +90,17 @@ jobs:
           # every module the CLI imports.
           XDG_CONFIG_HOME="$RUNNER_TEMP/empty" "$bin" status | tee status.txt
           grep -q "Not configured" status.txt
+      # An archive for people and installers, and the bare binary gzipped for
+      # `clipsync update`, which needs no archive reader.
       - name: Archive
         run: |
           cd apps/agent/dist/bin/${{ matrix.target }}
           if [ "${{ matrix.target }}" = windows-x64 ]; then
             7z a -tzip "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.zip" clipsync.exe
+            gzip -9 -c clipsync.exe > "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.gz"
           else
             tar -czf "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.tar.gz" clipsync
+            gzip -9 -c clipsync > "$GITHUB_WORKSPACE/clipsync-${{ matrix.target }}.gz"
           fi
       # The one-command installer, then a real service, where the runner has
       # a desktop session to install into: Task Scheduler on Windows, launchd

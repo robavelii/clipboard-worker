@@ -303,6 +303,21 @@ binary it is run from, and the running agent restarts onto it.
 `clipsync uninstall` stops and removes the service; `clipsync status` shows
 its state.
 
+**Updates.** An installed release keeps itself current. The service checks
+for a newer release a minute after it starts and then daily, downloads it
+from this repo's GitHub releases, checks it against `SHA256SUMS`, and
+restarts onto it. `clipsync update` does the same now.
+`CLIPSYNC_AUTO_UPDATE=off` in the service's environment stops the automatic
+checks. The agent only ever looks at the releases it was built from, never
+at an address the server gives it, and never moves to an older release. A
+build from a checkout is not updated this way: `git pull` and
+`scripts/install-agent.sh` update it.
+
+When a change would be mishandled by older agents, raise `MIN_AGENT_VERSION`
+in `wrangler.jsonc`. The Worker then refuses writes from older releases
+(they can still connect, read and receive), and each of them updates itself
+as soon as it is refused.
+
 The macOS builds are signed ad hoc, not notarized. A copy downloaded with a
 browser needs `xattr -d com.apple.quarantine clipsync` before macOS will run
 it; one fetched with `curl` does not. The Windows build is unsigned, so
@@ -615,8 +630,8 @@ assertion that no plaintext appears in any API response.
 
 Putting a received file (other than an image) on another computer's
 clipboard (it waits in history for the web UI and the CLI), sharing files
-into the web app from a phone's share sheet, semantic search, automatic
-agent updates, and the tray panel on macOS and Windows.
+into the web app from a phone's share sheet, semantic search, signed
+releases, and the tray panel on macOS and Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or
