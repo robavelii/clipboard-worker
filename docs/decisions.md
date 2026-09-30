@@ -957,3 +957,53 @@ Traps:
 - A machine with systemd installed but no user session reachable (WSL
   without systemd, a container, an SSH login) would get a binary copied and
   a unit written before `systemctl` failed. `install` asks systemd first.
+
+## 33. One-command installers, served by the Worker
+
+Setting up a computer took five steps: download, check the checksum,
+unpack, link, install. Now it is one command, for each kind of shell:
+
+    curl -fsSL https://clip.rfh.et/install.sh | sh
+    irm https://clip.rfh.et/install.ps1 | iex
+
+**Served by the Worker, filled in.** The scripts live in `scripts/` as real
+files, which can be syntax-checked, and the Worker bundles them as text. It
+serves each with its own origin in place of `__CLIPSYNC_URL__`, so a device
+installed from a Worker links back to that Worker, whatever its domain. It
+also fills in `RELEASES_REPO`, the repo whose GitHub releases hold the
+binaries. Plain static assets could not do the first. Explicit paths, not a
+`/` that sniffs `User-Agent` for curl: `/` stays the web app, and a browser
+that opens `/install.sh` sees the script it is about to run.
+
+**Verify, enrol, then install.** Each script downloads the archive for this
+OS and CPU and the release's `SHA256SUMS`, and refuses a mismatch. A
+checksum served beside the binary guards against a corrupt or truncated
+download, not against a compromised release; signing is still open (§29).
+If the device is not enrolled, it runs `clipsync link` from the downloaded
+copy, so the QR is on screen in the same terminal. Only then
+`clipsync install`, which copies the binary into place and starts the
+service with credentials already there. Re-running upgrades: enrolled, so
+no link, and `install` replaces the binary under the running service.
+
+**A truncated script runs nothing.** `curl | sh` executes as it reads. The
+shell script is one `main()` called on its last line, and the PowerShell one
+is a single script block, so a connection cut mid-download leaves an
+incomplete definition that never runs. The commands inside read nothing
+from stdin (`link --url` asks no questions, and `</dev/null` makes sure),
+so they cannot swallow the rest of a piped script.
+
+**PATH.** The Windows installer adds its folder to the user PATH, since
+nothing else will. The shell one only says how when `~/.local/bin` is
+missing: most Linux desktops already include it, and editing someone's
+shell profile unasked is worse than a line of advice.
+
+**Settings from the environment.** `CLIPSYNC_VERSION` pins a release,
+`CLIPSYNC_LINK=0` installs without enrolling (the service waits, §32), and
+`CLIPSYNC_DOWNLOAD_BASE` fetches from a mirror. CI uses the last two to run
+both installers on real macOS and Windows runners against the job's own
+archive, served locally.
+
+Trap: `wrangler dev` rewrites the request URL to the route's custom domain,
+so a locally served installer names `http://clip.rfh.et`. Set `CLIPSYNC_URL`
+when testing against a local Worker. In production the origin is the real
+one.

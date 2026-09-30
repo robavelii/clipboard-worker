@@ -12,6 +12,7 @@ import { authRoutes } from "./routes/auth";
 import { blobRoutes } from "./routes/blobs";
 import { clipRoutes } from "./routes/clips";
 import { deviceRoutes } from "./routes/devices";
+import { installRoutes } from "./routes/install";
 import { inviteRoutes } from "./routes/invites";
 import { linkRoutes } from "./routes/link";
 import { syncRoutes } from "./routes/sync";
@@ -24,6 +25,7 @@ export { SyncRoom } from "./sync-room";
 const app = new Hono<{ Bindings: Env }>()
 
   .get("/api/health", (c) => c.json({ ok: true, service: "clipsync" }))
+  .route("/", installRoutes)
 
   .route("/api/auth", authRoutes)
   .route("/api/devices", deviceRoutes)

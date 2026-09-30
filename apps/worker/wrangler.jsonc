@@ -21,12 +21,16 @@
 
   // The web UI is served as static assets from the same origin as the API,
   // so there is no CORS surface at all. /api/* must reach the Worker before
-  // the SPA fallback swallows it.
+  // the SPA fallback swallows it, and so must the installers.
   "assets": {
     "directory": "../web/dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/install.sh", "/install.ps1"]
   },
+
+  // The installers in scripts/ are bundled as text and served, filled in,
+  // by src/routes/install.ts.
+  "rules": [{ "type": "Text", "globs": ["**/*.sh", "**/*.ps1"], "fallthrough": true }],
 
   "d1_databases": [
     {
@@ -49,6 +53,8 @@
   // are deleted to make room. Operations are counted per UTC month and
   // refused past their budget. See decisions §26.
   "vars": {
+    // Whose GitHub releases /install.sh and /install.ps1 download from.
+    "RELEASES_REPO": "robavelii/clipboard-worker",
     "R2_STORAGE_BUDGET_BYTES": 5368709120,
     "R2_CLASS_A_BUDGET": 500000,
     "R2_CLASS_B_BUDGET": 5000000
