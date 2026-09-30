@@ -15,7 +15,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { watchClipboardOwner } from "./x11";
 
 export interface ClipboardImage {
@@ -56,6 +56,11 @@ export interface ClipboardBackend {
    */
   readonly filesOfferText?: boolean;
   /**
+   * Put a local file on the clipboard as a file, not its path as text, so
+   * pasting in a file manager pastes the file (decisions §37).
+   */
+  writeFilePath?(path: string): Promise<void>;
+  /**
    * Call `onChange` whenever the clipboard may have changed: every copy,
    * this agent's own writes included, and perhaps more. Resolves once
    * watching; rejects when this machine cannot (the daemon then polls).
@@ -95,6 +100,11 @@ export function parseUriList(list: string): string[] {
     }
   }
   return paths;
+}
+
+/** A file on the clipboard, as file managers on Linux copy one. */
+export function uriListFor(path: string): string {
+  return `${pathToFileURL(path).href}\r\n`;
 }
 
 /**
@@ -297,6 +307,13 @@ const wayland: ClipboardBackend = {
     if (!firstOffered(await waylandTypes(), ["text/uri-list"])) return [];
     return parseUriList((await wlPaste("text/uri-list"))?.toString("utf8") ?? "");
   },
+  async writeFilePath(path) {
+    const { code, stderr } = await run("wl-copy", ["--type", "text/uri-list"], {
+      stdin: uriListFor(path),
+      settleOn: "exit",
+    });
+    if (code !== 0) throw new Error(`wl-copy failed: ${stderr.trim()}`);
+  },
   // wl-paste runs the command for every new selection, and once at start.
   // The command drains what it is handed, so the copying app's write
   // completes, and prints a line. Compositors without the data-control
@@ -379,6 +396,13 @@ const x11: ClipboardBackend = {
     if (!firstOffered((await x11Targets()) ?? "", ["text/uri-list"])) return [];
     return parseUriList((await xclipOut("text/uri-list"))?.toString("utf8") ?? "");
   },
+  async writeFilePath(path) {
+    const { code, stderr } = await run("xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-i"], {
+      stdin: uriListFor(path),
+      settleOn: "exit",
+    });
+    if (code !== 0) throw new Error(`xclip failed: ${stderr.trim()}`);
+  },
   async watch(onChange, onLost) {
     const watch = await watchClipboardOwner(onChange, { onLost });
     return { via: "XFixes", stop: watch.stop };
@@ -419,6 +443,11 @@ for (;;) {
   }
 }
 `;
+
+/** A string literal for AppleScript: backslashes and quotes escaped. */
+export function appleScriptString(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
 
 /** The pasteboard class each image type is written under. */
 const MAC_IMAGE_CLASSES: Record<string, string> = {
@@ -485,6 +514,15 @@ export const macos: ClipboardBackend = {
     const path = stdout.trim();
     return code === 0 && path.startsWith("/") ? [path] : [];
   },
+  // A file reference (furl), as Finder's Copy makes: Finder pastes the file.
+  async writeFilePath(path) {
+    const { code, stderr } = await run(
+      "osascript",
+      ["-e", `set the clipboard to (POSIX file ${appleScriptString(path)})`],
+      { settleOn: "exit", env: utf8Env() },
+    );
+    if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
+  },
   watch: (onChange, onLost) =>
     lineWatcher(
       "NSPasteboard changeCount",
@@ -511,6 +549,7 @@ export const macos: ClipboardBackend = {
  *   J <base64> ->  OK, having put that image (PNG, JPEG, GIF or BMP) on the clipboard
  *   F          ->  OK <base64 of the copied files' paths, one per line>, or OK and nothing
  *   L          ->  OK, then a line "C" whenever the clipboard changes, between replies
+ *   P <base64> ->  OK, having put those files (paths, one per line) on the clipboard
  *   anything that fails -> ERR <message>
  *
  * "OK =" spares re-encoding a picture that has sat on the clipboard since
@@ -633,6 +672,14 @@ while ($null -ne ($line = $in.ReadLine())) {
       Add-Type -AssemblyName System.Windows.Forms
       $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
       $out.WriteLine('OK ' + [Convert]::ToBase64String($utf8.GetBytes(($files -join "\`n"))))
+    } elseif ($line.StartsWith('P ')) {
+      Add-Type -AssemblyName System.Windows.Forms
+      $list = New-Object System.Collections.Specialized.StringCollection
+      foreach ($p in ($utf8.GetString([Convert]::FromBase64String($line.Substring(2))) -split "\`n")) {
+        if ($p) { [void]$list.Add($p) }
+      }
+      [System.Windows.Forms.Clipboard]::SetFileDropList($list)
+      $out.WriteLine('OK')
     } elseif ($line -eq 'L') {
       if (-not $watching) {
         if (-not ('ClipSync.Watcher' -as [type])) { Add-Type -TypeDefinition $watcherSource }
@@ -808,6 +855,10 @@ export function powershellBackend(
     async readFiles() {
       const payload = expectOk(await request("F", readMs));
       return Buffer.from(payload, "base64").toString("utf8").split("\n").map((p) => p.trim()).filter(Boolean);
+    },
+    // CF_HDROP, as Explorer's Copy makes: Explorer pastes the file.
+    async writeFilePath(path) {
+      expectOk(await request(`P ${Buffer.from(path, "utf8").toString("base64")}`, writeMs));
     },
     async watch(onChange, onLost) {
       // Compiling the listener is PowerShell's slow part: allow for it.

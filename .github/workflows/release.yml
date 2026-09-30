@@ -117,6 +117,13 @@ jobs:
           kill $pid 2>/dev/null || true
           cat watch.txt
           [ "$(grep -c 'clipboard changed' watch.txt)" -ge 3 ]
+      # The agent's clipboard backends against this platform's real clipboard:
+      # text, a received file put there as a file, a change event (decisions
+      # §37). Linux uses the Xvfb display the step above started.
+      - name: Native clipboard
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then export DISPLAY=:99 WAYLAND_DISPLAY=; fi
+          npm test -w @clipsync/agent -- test/native-clipboard.test.ts
       # An archive for people and installers, and the bare binary gzipped for
       # `clipsync update`, which needs no archive reader.
       - name: Archive

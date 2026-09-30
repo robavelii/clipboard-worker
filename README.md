@@ -238,6 +238,7 @@ letting you discover the mistake later.
 | `clipsync copy <clip-id>` | Put an old clip back on this clipboard |
 | `clipsync send <file>` | Send an image or file to your devices |
 | `clipsync get <clip-id> [-o path]` | Save an image or file clip (never overwrites) |
+| `clipsync receive [on\|off] [--to dir]` | Save files from your other devices here, ready to paste (off by default) |
 | `clipsync passphrase` | Change the passphrase |
 | `clipsync-desktop` | Tray panel (see below) |
 | `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
@@ -441,9 +442,20 @@ their paths. Images among them land on the other devices' clipboards as
 above; other files wait in history. Folders are skipped.
 `CLIPSYNC_FILES=off` turns this off.
 
+**Receiving files.** Off by default, because a download nobody asked for is
+not a paste. `clipsync receive on` makes this computer save files from your
+other devices in `~/Downloads/ClipSync` (your desktop's Downloads folder on
+Linux; `--to <dir>` picks another), and put each one on the clipboard as a
+file: paste in a file manager (Dolphin, a recent Nautilus, Finder, Explorer)
+and the file is there.
+A name is never trusted as a path, and an existing file is never replaced:
+the same file received again is reused, a different one becomes
+`name (1).ext`. The setting lives in the config file, so the background
+service sees it; `clipsync receive off` turns it off again.
+
 On macOS both use `osascript`, which reads only the first of several copied
-files, and on Windows the PowerShell helper. Neither has been tried on a
-real machine yet.
+files, and on Windows the PowerShell helper. The Release workflow checks
+each against the real clipboard of a macOS and a Windows runner.
 
 `CLIPSYNC_CLIPBOARD` (`wayland`, `x11`, `macos` or `windows`) overrides the
 backend the agent picks, if it guesses wrong.

@@ -1190,3 +1190,44 @@ event read between the write and that read-back would have pushed the
 re-encoded image as a new copy. Reads now wait while a remote clip is being
 written and read back (`writing`), and an event that came meanwhile is read
 afterwards.
+
+## 37. Receiving files, when asked
+
+Files sent from another device waited in history: `clipsync get` or the web
+UI fetched them. A desktop can now take them as they come.
+
+**Off unless asked for.** A copied image replaces a copied image, and that
+is what a clipboard is. A file is a download: disk space, a name in a
+folder, bytes someone else chose. So a device receives files only once its
+owner says so, with `clipsync receive on`. The setting is kept in the config
+file, not only an environment variable (`CLIPSYNC_RECEIVE_FILES` still
+overrides it), because the agent usually runs as a service, which does not
+see the shell's environment, and the command restarts that service to take
+it up.
+
+**Saved, then put on the clipboard as a file.** The file goes into
+`~/Downloads/ClipSync`: on Linux, the desktop's own Downloads folder from
+`user-dirs.dirs`, whose name is often translated. The clipboard then gets a
+file reference, not the path as text: `text/uri-list` on Linux, a furl on
+macOS, CF_HDROP on Windows. Pasting in a file manager pastes the file. On
+Linux it is the one type offered, so a file manager that only reads GNOME's
+older `x-special/gnome-copied-files` (Nautilus before GTK 4) gets nothing;
+offering both would mean the agent owning the selection itself.
+
+**The name is another device's say-so.** It comes from an authenticated
+envelope, but any device holding the vault key can write one, and a
+compromised device could name its file anything. So only the last path component is kept, with
+control characters, characters Windows refuses, leading dots and Windows's
+reserved names removed. A file is never overwritten: the same bytes received
+again reuse the file already there, and anything else becomes `name (1).ext`,
+created with O_EXCL, so a file that appears meanwhile is not replaced.
+
+**Not sent back.** The file on the clipboard reads back as a copy of files
+and would be pushed straight back. The agent records the file it put there
+(`receivedTag`, by real path, size and time: macOS reads `/var` back as
+`/private/var`) and skips it. On macOS the check covers the text path too,
+because Finder's text for a file is its name.
+
+`test/native-clipboard.test.ts` runs every backend against the real
+clipboard, including putting a file there and reading it back, on the
+Release workflow's Linux (Xvfb), macOS and Windows runners.

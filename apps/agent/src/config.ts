@@ -63,6 +63,10 @@ export interface AgentConfig {
    * across the upgrade without anyone re-enrolling.
    */
   passphrase?: string;
+  /** Save other devices' files and put them on the clipboard (`clipsync receive`). */
+  receiveFiles?: boolean;
+  /** Where; ~/Downloads/ClipSync when unset. */
+  receiveDir?: string;
 }
 
 export function configDir(): string {

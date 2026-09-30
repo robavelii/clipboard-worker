@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
+  appleScriptString,
   detectClipboard,
   macos,
   parseUriList,
   powershellBackend,
+  uriListFor,
   type ClipboardBackend,
 } from "../src/clipboard";
 import { extensionFor, mimeFor } from "../src/mime";
@@ -93,6 +95,9 @@ process.stdin.on("data", (d) => {
       imageSeq = seq;
     } else if (line.startsWith("J ")) {
       image = line.slice(2); seq++; changed(); process.stdout.write("OK\\n");
+    } else if (line.startsWith("P ")) {
+      files = Buffer.from(line.slice(2), "base64").toString().split("\\n").join("|");
+      seq++; changed(); process.stdout.write("OK\\n");
     } else if (line === "L") {
       watching = true;
       process.stdout.write("OK\\n");
@@ -179,6 +184,12 @@ describe("Windows backend", () => {
 
   it("lists no files when none were copied", async () => {
     expect(await make().readFiles!()).toEqual([]);
+  });
+
+  it("puts a received file on the clipboard for Explorer to paste", async () => {
+    const b = make();
+    await b.writeFilePath!("C:\\Users\\rob\\Downloads\\ClipSync\\réport.pdf");
+    expect(await b.readFiles!()).toEqual(["C:\\Users\\rob\\Downloads\\ClipSync\\réport.pdf"]);
   });
 
   it("announces changes between replies, without mistaking them for one", async () => {
@@ -310,6 +321,20 @@ cat "$d/$(printf '%s' "$t" | sed 's#/#_#')"
     delete process.env.DISPLAY;
     const clip = await offer({ "text/plain": "hi" });
     await expect(clip.watch!(() => undefined, () => undefined)).rejects.toThrow(/data-control/);
+  });
+});
+
+describe("a file on the clipboard", () => {
+  it("is a file URI on Linux, and reads back as its path", () => {
+    const list = uriListFor("/home/rob/Downloads/ClipSync/hadra photo #1.jpg");
+    expect(list).toBe("file:///home/rob/Downloads/ClipSync/hadra%20photo%20%231.jpg\r\n");
+    expect(parseUriList(list)).toEqual(["/home/rob/Downloads/ClipSync/hadra photo #1.jpg"]);
+  });
+
+  it("is a quoted AppleScript string on macOS", () => {
+    expect(appleScriptString('/Users/rob/a "quoted" \\ name.pdf')).toBe(
+      '"/Users/rob/a \\"quoted\\" \\\\ name.pdf"',
+    );
   });
 });
 
