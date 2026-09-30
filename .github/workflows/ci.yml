@@ -55,6 +55,22 @@ jobs:
           done
           echo "Worker did not come up"; cat wrangler.log; exit 1
       - run: npm run e2e
+      # The standalone binary, against the same Worker: enrol, send a file,
+      # read it back. Catches what bundling as a single executable breaks
+      # (a module it cannot load, WebCrypto, fetch) before a release does.
+      # The account and passphrase are the ones the e2e suite leaves behind.
+      - name: Standalone binary against the local Worker
+        run: |
+          npm run build:binary
+          bin=apps/agent/dist/bin/linux-x64/clipsync
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/binary-config"
+          printf '%s\n%s\n%s\n' local-dev-admin-secret "correct horse battery staple" "correct horse battery staple" \
+            | "$bin" login --url http://127.0.0.1:8787 --name ci-binary
+          echo "sent by the standalone binary" > "$RUNNER_TEMP/note.txt"
+          "$bin" send "$RUNNER_TEMP/note.txt"
+          "$bin" history -n 1 | tee history.txt
+          grep -q "note.txt" history.txt
+          "$bin" logout
       - name: Worker log
         if: failure()
         run: cat wrangler.log

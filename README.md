@@ -229,6 +229,40 @@ Running `clipsync-desktop` while it is already running toggles the panel
 instead of starting a second one. On Wayland, where apps cannot grab global
 shortcuts, bind that command to a key in your desktop's keyboard settings.
 
+### Standalone binary
+
+Every release publishes `clipsync` as a single executable that carries its
+own Node, so a machine needs no Node, npm or checkout to run it. There are
+builds for Linux (x64, arm64), macOS (Apple Silicon, Intel) and Windows
+(x64), each checked against a `SHA256SUMS` file. Linux still needs `xclip`
+or `wl-clipboard`.
+
+```bash
+base=https://github.com/robavelii/clipboard-worker/releases/latest/download
+curl -fsSLO "$base/clipsync-linux-x64.tar.gz" -fsSLO "$base/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf clipsync-linux-x64.tar.gz && mkdir -p ~/.local/bin && mv clipsync ~/.local/bin/
+clipsync link --url https://clip.rfh.et
+```
+
+The macOS builds are signed ad hoc, not notarized. A copy downloaded with a
+browser needs `xattr -d com.apple.quarantine clipsync` before macOS will run
+it; one fetched with `curl` does not. The Windows build is unsigned, so
+SmartScreen may ask before the first run. The binary does not install a
+service itself yet: `scripts/install-agent.sh` still sets that up from a
+checkout.
+
+To build one for this machine, run `npm run build:binary`. The result is at
+`apps/agent/dist/bin/<os>-<arch>/clipsync`. To publish a release, push a tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The Release workflow builds all five on their own platforms, runs each one,
+and attaches them to a GitHub Release. It also builds them, without
+publishing anything, on every pull request that touches the agent.
+
 ### Running it as a service
 
 ```bash
@@ -520,9 +554,9 @@ assertion that no plaintext appears in any API response.
 ## Not built yet
 
 Putting a received file (other than an image) on another computer's
-clipboard (it waits in history for the web UI and the CLI), sharing files into the web app from a phone's share sheet,
-semantic search, a Windows installer, and the tray panel on macOS and
-Windows.
+clipboard (it waits in history for the web UI and the CLI), sharing files
+into the web app from a phone's share sheet, semantic search, a one-command
+installer and a Windows service, and the tray panel on macOS and Windows.
 
 Search is deliberately client-side: the server holds ciphertext, so there is
 nothing for SQL `LIKE` to match. Server-side search needs a blind index or
