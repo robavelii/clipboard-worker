@@ -26,7 +26,7 @@
  * for two polls before it is pushed.
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   MAX_ENVELOPE_BYTES,
@@ -71,6 +71,7 @@ import {
   type AgentConfig,
 } from "./config";
 import { extensionFor, mimeFor } from "./mime";
+import { receiveSettings, saveReceived, type ReceiveSettings } from "./receive";
 
 const POLL_INTERVAL_MS = 600;
 /**
@@ -142,8 +143,11 @@ const imageTag = (sha256: string) => `img:${sha256}`;
 async function filesTag(paths: string[]): Promise<string> {
   const seen = await Promise.all(
     paths.map(async (path) => {
-      const info = await stat(path).catch(() => null);
-      return [path, info?.size ?? null, info?.mtimeMs ?? null];
+      // Real paths: macOS hands /var/... back as /private/var/..., and a
+      // file this agent put on the clipboard must read back as the same.
+      const real = await realpath(path).catch(() => path);
+      const info = await stat(real).catch(() => null);
+      return [real, info?.size ?? null, info?.mtimeMs ?? null];
     }),
   );
   return `files:${await sha256Hex(new TextEncoder().encode(JSON.stringify(seen)))}`;
@@ -218,6 +222,13 @@ export class Daemon {
   private readonly images: boolean;
   /** Whether files copied in a file manager are sent (CLIPSYNC_FILES=off stops it). */
   private readonly files: boolean;
+  /** Whether other devices' files are saved here and put on the clipboard. */
+  private readonly receive: ReceiveSettings;
+  /**
+   * The tag of the file this agent last saved and put on the clipboard. Read
+   * back, it is that file, not a copy to send.
+   */
+  private receivedTag: string | null = null;
   private imageTick = 0;
 
   /** One poll at a time: a slow read must not stack another behind it. */
@@ -254,6 +265,7 @@ export class Daemon {
     const off = (value: string | undefined) => /^(0|off|false|no)$/i.test(value ?? "");
     this.images = !off(process.env.CLIPSYNC_IMAGES);
     this.files = !off(process.env.CLIPSYNC_FILES);
+    this.receive = receiveSettings(config);
   }
 
   async start(): Promise<void> {
@@ -277,6 +289,13 @@ export class Daemon {
     log(
       `clipsync agent ${__CLIPSYNC_BUILD__} ready — device "${this.config.deviceName}" via ${this.clipboard.name}`,
     );
+    if (this.receive.on) {
+      log(
+        this.clipboard.writeFilePath
+          ? `receiving files into ${this.receive.dir}`
+          : `cannot put files on the ${this.clipboard.name} clipboard -- files stay in history`,
+      );
+    }
 
     // Prime the echo guard so a restart does not re-upload the clipboard the
     // user copied before the agent was running.
@@ -461,6 +480,12 @@ export class Daemon {
       const files = await this.readFiles();
       if (generation !== this.applied) return;
       if (files.length) {
+        // Finder's text for a file is its name: this may be the file just
+        // received, read back.
+        if (this.receivedTag && (await filesTag(files)) === this.receivedTag) {
+          this.lastHandled = hash;
+          return;
+        }
         await this.pushFiles(files, hash);
         return;
       }
@@ -527,6 +552,10 @@ export class Daemon {
     if (files.length) {
       const tag = await filesTag(files);
       this.seen(tag, afterChange);
+      if (tag === this.receivedTag) {
+        this.lastHandled = tag;
+        return;
+      }
       if (this.settled(tag, afterChange)) await this.pushFiles(files, tag);
       return;
     }
@@ -687,8 +716,13 @@ export class Daemon {
       await this.applyImage(clip, from);
       return;
     }
+    if (clip.type === "file" && this.receive.on && this.clipboard.writeFilePath) {
+      await this.applyFile(clip, from);
+      return;
+    }
     // Files, and images where they do not sync, stay in history (`clipsync
-    // get`, the web UI) rather than every device downloading them unasked.
+    // get`, the web UI) rather than every device downloading them unasked,
+    // unless this device asked to receive them.
     if (clip.type !== "text") {
       if (this.options.verbose) log(`${clip.type} from ${from} -- in history, not applied`);
       return;
@@ -750,6 +784,36 @@ export class Daemon {
       log(`applied an image (${kb(bytes.length)}) from ${from}`);
     } catch (err) {
       log("image apply failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  /**
+   * Save another device's file into the receive folder and put it on the
+   * clipboard as a file, so a paste in the file manager pastes it
+   * (decisions §37).
+   */
+  private async applyFile(clip: Clip, from: string): Promise<void> {
+    try {
+      const opened = await this.openFresh(clip, from);
+      const meta = opened?.file;
+      if (!meta) return;
+      const { bytes } = await downloadFile(this.api, this.keys, clip, this.config.userId);
+      const path = await saveReceived(this.receive.dir, meta.name, bytes);
+      const tag = await filesTag([path]);
+      this.lastHandled = tag;
+      this.receivedTag = tag;
+      this.applied++;
+      this.candidate = null;
+      this.writing = true;
+      try {
+        await this.clipboard.writeFilePath!(path);
+      } finally {
+        this.writing = false;
+        this.readAgainIfAsked();
+      }
+      log(`saved ${basename(path)} (${kb(bytes.length)}) from ${from} -- on the clipboard to paste`);
+    } catch (err) {
+      log("file receive failed:", err instanceof Error ? err.message : err);
     }
   }
 

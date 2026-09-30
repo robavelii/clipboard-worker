@@ -3,7 +3,7 @@
 import { watchFile } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { hostname, platform as osPlatform } from "node:os";
-import { basename, extname } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
 import { DecryptError } from "@clipsync/crypto";
@@ -45,6 +45,7 @@ import {
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
+import { receiveSettings } from "./receive";
 import { isSea, removeAsideBinaries, runningFile, selfCommand } from "./self";
 import { latestRelease, updateTo } from "./update";
 import {
@@ -73,6 +74,7 @@ Usage
   clipsync copy <clip-id>                               Copy a clip to this clipboard
   clipsync send <file>                                  Send an image or file to your devices
   clipsync get <clip-id> [-o <path>]                    Save an image or file clip
+  clipsync receive [on|off] [--to <dir>]                Save other devices' files here, ready to paste
   clipsync passphrase                                   Change the passphrase
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
@@ -463,6 +465,35 @@ async function cmdRun(opts: {
   if (process.env.INVOCATION_ID || process.env.CLIPSYNC_SUPERVISOR) {
     restartOnRebuild(daemon);
     autoUpdate = scheduleUpdates(daemon);
+  }
+}
+
+/**
+ * Turn receiving files on or off (decisions §37): kept in the config, so the
+ * service sees it too, and the service restarted to take it up.
+ */
+async function cmdReceive(setting: string | undefined, to: string | undefined): Promise<void> {
+  let config = await requireConfig();
+  if (setting !== undefined || to !== undefined) {
+    if (setting !== undefined && setting !== "on" && setting !== "off") {
+      throw new Error("usage: clipsync receive [on|off] [--to <dir>]");
+    }
+    config = {
+      ...config,
+      ...(setting !== undefined ? { receiveFiles: setting === "on" } : {}),
+      ...(to !== undefined ? { receiveDir: resolve(to) } : {}),
+    };
+    await saveConfig(config);
+  }
+  const receive = receiveSettings(config);
+  console.log(
+    receive.on
+      ? `Files from your other devices are saved in ${receive.dir}, and put on the clipboard: paste in a file manager.`
+      : "Files from your other devices stay in history (`clipsync get`, the web UI).",
+  );
+  if (setting !== undefined || to !== undefined) {
+    if (restartServiceIfInstalled()) console.log("Restarted the background service with this setting.");
+    else console.log("Restart `clipsync run` for an agent already running to take it up.");
   }
 }
 
@@ -947,6 +978,9 @@ async function cmdStatus(): Promise<void> {
     console.log(`clipboard  unavailable — ${(err as Error).message}`);
   }
 
+  const receive = receiveSettings(config);
+  console.log(`files      ${receive.on ? `received into ${receive.dir}` : "kept in history (`clipsync receive on` saves them here)"}`);
+
   try {
     console.log(`service    ${serviceStatus() ?? "not installed -- \`clipsync install\` runs the agent at login"}`);
   } catch {
@@ -1023,6 +1057,7 @@ async function main(): Promise<void> {
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "V" },
       "dry-run": { type: "boolean" },
+      to: { type: "string" },
     },
   });
 
@@ -1068,6 +1103,8 @@ async function main(): Promise<void> {
       return cmdSend(arg);
     case "get":
       return cmdGet(arg, values.output);
+    case "receive":
+      return cmdReceive(arg, values.to);
     case "passphrase":
       return cmdPassphrase();
     case "devices":
