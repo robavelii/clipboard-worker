@@ -1,0 +1,13 @@
+# Only sources reach the build: no dependencies, build output, local data
+# or secrets (.dev.vars holds a Worker's ADMIN_SECRET).
+**/node_modules
+**/dist
+**/.wrangler
+**/.dev.vars
+**/*.local
+**/*.tsbuildinfo
+apps/desktop/src-tauri/target
+.git
+.github
+data
+clipsync-data

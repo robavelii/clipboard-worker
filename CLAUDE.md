@@ -171,7 +171,10 @@ The same server ships inside the agent as `clipsync serve` (decisions §40). `sr
 npm run build:server && node apps/server/dist/clipsync-server.mjs --data ./data   # :8787, admin secret in ./data/admin-secret
 CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret node apps/server/dist/clipsync-server.mjs --data ./data && npm run e2e
 npm run build:binary && apps/agent/dist/bin/linux-x64/clipsync serve --data ./data   # the same, from the binary
+docker build -t clipsync-server . && docker run -p 8787:8787 -v clipsync:/data -e CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret clipsync-server   # and as the image
 ```
+
+The `Dockerfile` (decisions §41) builds the bundle once on the builder's platform and copies it into a `node:22-bookworm-slim` runtime stage that has **no `RUN`**, so the release workflow builds arm64 without an emulator. Keep it that way: give files their mode in the build stage and copy them as entries of a directory (`COPY --from=build /out/ /`), since `COPY --chmod` onto a directory is ignored by some BuildKit versions. CI runs the e2e suite against the image; a `v*` tag publishes it to `ghcr.io/<owner>/clipsync` after the binaries pass.
 
 ### Tray app (`apps/desktop`)
 
