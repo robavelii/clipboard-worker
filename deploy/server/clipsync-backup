@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# A consistent snapshot of the server's data while it runs: the database by
+# `VACUUM INTO` (SQLite's online copy, safe against concurrent writes) and
+# the encrypted files by archive. Keeps the newest 14 days. Run nightly by
+# clipsync-backup.timer; installed to /usr/local/sbin by setup.sh.
+#
+# Restore: stop clipsync-server, copy clipsync.db back to /var/lib/clipsync,
+# unpack blobs.tar.gz there, chown -R clipsync:clipsync, start it again.
+#
+# Everything is ciphertext, but the snapshot lives on the same disk as the
+# server. Set BACKUP_UPLOAD in /etc/clipsync/backup.env to a command that
+# copies the directory it is given off the machine (rclone, oci os object
+# bulk-upload, scp); it is run with that directory as its one argument.
+
+set -eu
+
+DATA=/var/lib/clipsync
+DEST=/var/backups/clipsync
+KEEP_DAYS=14
+
+[ -r /etc/clipsync/backup.env ] && . /etc/clipsync/backup.env
+
+[ -f "$DATA/clipsync.db" ] || { echo "no database yet; nothing to back up"; exit 0; }
+
+snapshot="$DEST/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$snapshot"
+sqlite3 "$DATA/clipsync.db" "VACUUM INTO '$snapshot/clipsync.db'"
+if [ -d "$DATA/blobs" ]; then
+  tar -czf "$snapshot/blobs.tar.gz" -C "$DATA" blobs
+fi
+chmod -R go-rwx "$snapshot"
+echo "snapshot $snapshot ($(du -sh "$snapshot" | cut -f1))"
+
+find "$DEST" -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -exec rm -rf {} +
+
+if [ -n "${BACKUP_UPLOAD:-}" ]; then
+  sh -c "$BACKUP_UPLOAD \"\$1\"" backup-upload "$snapshot"
+  echo "uploaded $snapshot"
+fi
