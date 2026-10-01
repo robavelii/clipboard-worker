@@ -1411,3 +1411,54 @@ Not yet:
 Trap: never import `node:sqlite` statically anywhere the agent's bundle
 can reach. The build succeeds, and the cost appears only when running
 some unrelated command.
+
+## 41. A container image, built from source, with no `RUN` where it runs
+
+Docker is how most NAS boxes and home servers run software, so the
+server ships as an image too, `ghcr.io/robavelii/clipsync`, for amd64 and
+arm64.
+
+**The bundle, not the release binary.** The image could wrap the
+standalone binary (§40) in a minimal base. But that ties the image to
+releases: a pull request couldn't build and test the image without first
+building a binary inside Docker. Instead the `Dockerfile` builds
+`apps/server/dist` from the checkout, the same bundle the e2e-node job
+tests, and runs it with the base image's Node. CI runs the whole e2e
+suite against a container of it on every push.
+
+**`node:22-bookworm-slim`, not distroless.** A distroless Node base would
+make the image smaller than this one's 327 MB, but it has no shell, so `docker exec clipsync cat /data/admin-secret`, how most
+people will enrol their first device, becomes a Node one-liner, and so
+does any debugging on a NAS. The slim image keeps a shell and coreutils,
+and runs the server as `node` (uid 1000), not root.
+
+**One build, then a runtime stage with no `RUN`.** The build stage runs
+on the builder's own platform (`--platform=$BUILDPLATFORM`), since a
+bundle of JavaScript is the same everywhere. The runtime stage only
+copies: the bundle, and an empty `/data` with its owner and mode set by
+`COPY --chown --chmod` (0700, which Docker copies onto a new named
+volume). With nothing to execute there, buildx assembles the arm64 image
+on an x64 runner without QEMU. A `RUN` in that stage would bring
+emulation back, and with it a much slower build.
+
+**Configured by the environment.** `CLIPSYNC_DATA=/data` and
+`CLIPSYNC_LISTEN=0.0.0.0:8787` are the image's defaults. The health
+check reads `CLIPSYNC_LISTEN` to find the port, so moving the port is
+done there rather than with `--listen`.
+
+**Published with releases only.** A `v*` tag publishes the image after
+all five binaries have passed, tagged with the version and its
+`major.minor`. Pushes to `main` don't publish, so the image and the
+binaries always come from the same tested release.
+
+Traps:
+- A host directory bind-mounted at `/data` keeps its owner and mode, so
+  it must be writable by uid 1000. Only a named volume takes the
+  image's.
+- The first push creates the GHCR package as private. Anyone pulling
+  without logging in needs it made public in the package's settings,
+  once.
+- Docker's port mapping keeps a remote client's address, but a
+  connection to the published port from the host itself arrives from
+  the bridge's gateway. Rate limits then key on that one address. Behind
+  a reverse proxy on the host, pass `--trust-proxy`, as on any host.

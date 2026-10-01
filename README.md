@@ -154,6 +154,23 @@ an admin secret and keeps it in `<data>/admin-secret`, unless
 | `--trust-proxy` | off | behind a reverse proxy: client address, scheme and host from `X-Forwarded-*` |
 | `--storage` | 5 GiB | most bytes of encrypted files to hold; the oldest unpinned are evicted |
 
+Or as a container, for amd64 and arm64, published with each release:
+
+```bash
+docker run -d --name clipsync --restart unless-stopped \
+  -p 8787:8787 -v clipsync:/data ghcr.io/robavelii/clipsync
+docker exec clipsync cat /data/admin-secret
+```
+
+It keeps everything in the `/data` volume and runs as an unprivileged
+user (uid 1000). With a host directory instead of a named volume
+(`-v /srv/clipsync:/data`), that directory must be writable by uid 1000. Pass options after the image name (`--trust-proxy`), or set them in
+the environment (`CLIPSYNC_ADMIN_SECRET`, `CLIPSYNC_TRUST_PROXY=1`,
+`CLIPSYNC_STORAGE_BYTES`). To move it off port 8787 inside the container,
+set `CLIPSYNC_LISTEN=0.0.0.0:<port>` rather than `--listen`, so the image's
+health check follows. `docker build -t clipsync .` builds the same image
+from a checkout.
+
 The web UI needs HTTPS anywhere but `localhost` (browsers keep the clipboard
 API and service workers to secure contexts), so put it behind a proxy that
 terminates TLS, and pass `--trust-proxy`. Agents work over plain HTTP.
