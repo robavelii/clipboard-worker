@@ -1232,6 +1232,19 @@ because Finder's text for a file is its name.
 clipboard, including putting a file there and reading it back, on the
 Release workflow's Linux (Xvfb), macOS and Windows runners.
 
+Trap: on macOS, a clipboard write can be lost when the process that made
+it exits straight away. The write reaches the pasteboard server
+asynchronously, and the pasteboard is left with no types at all, so
+re-reading never finds the file. AppleScript's `set the clipboard to
+(POSIX file …)` lost 18 of 80 writes on the Apple Silicon release runner
+and 2 of 80 on Intel, which showed up as an intermittent native-test
+failure. Neither NSPasteboard's `writeObjects` nor `setString:forType:`
+helped on its own: the agent's test still failed 8 of 20 and 4 of 20 runs
+on Apple Silicon. What fixed it is reading the value back before
+exiting: the agent's JXA writer sets `public.file-url`, reads it, checks
+it, and only then exits. 30 of 30 test runs passed on each Mac. Image
+writes copy their bytes through AppleScript, and none of 160 was lost.
+
 ## 38. The same server on Node: the bindings are the seam
 
 The Worker only ran on Cloudflare. To run it on a home server, a NAS or any
