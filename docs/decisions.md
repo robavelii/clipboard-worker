@@ -1355,3 +1355,59 @@ Traps:
   only at the next restart.
 - A restore must delete `clipsync.db-wal` and `clipsync.db-shm` before
   copying the snapshot in, or SQLite replays the old log over it.
+
+## 40. `clipsync serve`: the server inside the agent binary
+
+Running the Node server (§38) meant a checkout, npm and a build, or a
+tarball plus a Node install (§39). The standalone `clipsync` binary
+(§29) already puts Node on all five platforms, signed where it must be,
+released with checksums and updating itself. So the server travels in it
+as one more command, `clipsync serve`. One download runs either end, and
+a Raspberry Pi or a NAS needs nothing else.
+
+**One binary, not a second one.** A separate `clipsync-server` binary
+would double the release matrix, the checksums and the installers for
+the same Node and the same code. Carrying the server costs the agent
+about 600 KiB of its 990 KiB bundle: the server, the Worker's app, Hono,
+`ws` and the web UI. The binary is about 126 MB, nearly all of it Node.
+`src/serve.ts` in apps/server is the command line both entry points
+share, so `node clipsync-server.mjs` and `clipsync serve` take the same
+options and cannot drift.
+
+**The web UI is part of the bundle, not a SEA asset.** Node's SEA
+`assets` exist only inside the binary, so the plain bundle
+(`dist/clipsync.mjs`, run by `node` from a checkout) would have no UI.
+`apps/server/build-plugin.mjs` turns `apps/web/dist` into a module,
+`clipsync:web-files`, which both of the agent's builds include.
+`StaticAssets.fromFiles` serves it under the same rules as a directory:
+the `_headers` CSP on every page, `_headers` itself never served, the
+SPA fallback, and ETags, here from a content hash. `build-binary.mjs`
+refuses to build without `apps/web/dist`, so a release can't quietly
+ship a server with no UI.
+
+**Every other command stays as it was.** The CLI reaches `serve`
+through a dynamic import, which esbuild keeps lazy inside one bundle.
+`serve` is also routed before the CLI's own argument parser, which
+would refuse the server's options. Two things would still have leaked
+into every command:
+- `node:sqlite`. As an external import, esbuild's ESM output hoists it
+  to the top of the file. Then every `clipsync status` would load SQLite
+  and print Node's experimental warning, and on a Node without it, crash.
+  `SqliteD1` takes it from `process.getBuiltinModule` when a database
+  opens, and imports only its types.
+- The warning. A unit file can pass `--disable-warning`; a SEA takes no
+  Node flags. `serve` swaps Node's `warning` listener for one that drops
+  only SQLite's ExperimentalWarning and prints every other one.
+
+CI runs the whole e2e suite against the Linux binary's `clipsync serve`.
+Each of the five release runners starts it, checks the web UI and its
+CSP, and fails if SQLite's warning reaches the log.
+
+Not yet:
+- `clipsync install` sets up the agent's service only, not a server's.
+- A server started by `clipsync serve` doesn't update itself.
+- The binary is still on Node 22.
+
+Trap: never import `node:sqlite` statically anywhere the agent's bundle
+can reach. The build succeeds, and the cost appears only when running
+some unrelated command.

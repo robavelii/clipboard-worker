@@ -27,7 +27,7 @@ npm test -w @clipsync/crypto -- test/link.test.ts      # one file
 npm test -w @clipsync/crypto -- -t "wrong passphrase"  # one test by name
 npm test -w @clipsync/worker -- test/vault.test.ts     # Worker tests: run in workerd via @cloudflare/vitest-pool-workers
 npm run build                  # web UI + agent bundle (apps/agent/dist/clipsync.mjs)
-npm run build:binary           # standalone agent for this machine (apps/agent/dist/bin/<os>-<arch>/clipsync)
+npm run build:binary           # web UI, then the standalone agent for this machine (apps/agent/dist/bin/<os>-<arch>/clipsync)
 ```
 
 Local Worker (builds the web UI, then serves it and the API on :8787):
@@ -165,9 +165,12 @@ Same origin as the API, so there are **no CORS headers anywhere, by design**. `a
 
 The Worker's Hono app lives in `apps/worker/src/app.ts` and imports nothing from `cloudflare:*`; `index.ts` adds the Durable Object and the cron. `apps/server` serves that same app on Node by passing objects shaped like the bindings: `SqliteD1` (`node:sqlite`, D1's semantics: `batch` is a transaction, `meta.changes` counts RETURNING writes, booleans bind as 1/0, foreign keys on), `DiskBucket` for R2, `Rooms` for the SyncRoom namespace, `MemoryRateLimiter`. **A route that uses a new binding method, or a new Workers-only API, needs the Node side too**; the e2e suite runs against both in CI and will catch it. The build reads vars, rate limits and migrations from `wrangler.jsonc`, so nothing is duplicated. Node completes WebSocket upgrades on the server's `upgrade` event: the room's `fetch` returns a one-time handle in `x-clipsync-upgrade`, which the server strips from every other response. It sets `CF-Connecting-IP` itself (the last `X-Forwarded-For` entry with `--trust-proxy`) and drops any a client sent.
 
+The same server ships inside the agent as `clipsync serve` (decisions §40). `src/serve.ts` is the command line both entries share. `apps/server/build-plugin.mjs` is the one esbuild plugin for every bundle that carries the server: it supplies the `clipsync:` modules, and `clipsync:web-files`, the built web UI as bytes, which the binary serves through `StaticAssets.fromFiles`. The CLI loads `serve` with a dynamic import, and `SqliteD1` gets `node:sqlite` from `process.getBuiltinModule` when a database opens. **Never import `node:sqlite` statically**: the agent's ESM bundle would hoist it and load SQLite, with its warning, for every command. `build-binary.mjs` refuses to build without `apps/web/dist`.
+
 ```bash
 npm run build:server && node apps/server/dist/clipsync-server.mjs --data ./data   # :8787, admin secret in ./data/admin-secret
 CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret node apps/server/dist/clipsync-server.mjs --data ./data && npm run e2e
+npm run build:binary && apps/agent/dist/bin/linux-x64/clipsync serve --data ./data   # the same, from the binary
 ```
 
 ### Tray app (`apps/desktop`)
