@@ -79,9 +79,19 @@ jobs:
           "$bin" history -n 1 | tee history.txt
           grep -q "note.txt" history.txt
           "$bin" logout
-      - name: Worker log
+      # The same binary as the server (decisions §40): the whole suite against
+      # `clipsync serve`, with the web UI it carries.
+      - name: e2e against the binary's clipsync serve
+        run: |
+          bin=apps/agent/dist/bin/linux-x64/clipsync
+          CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret \
+            nohup "$bin" serve --data "$RUNNER_TEMP/serve-data" --listen 127.0.0.1:8788 > serve.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8788/api/health && break; sleep 1; done
+          curl -sfI http://127.0.0.1:8788/ | grep -i '^content-security-policy:'
+          CLIPSYNC_URL=http://127.0.0.1:8788 npm run e2e
+      - name: Worker and serve logs
         if: failure()
-        run: cat wrangler.log
+        run: cat wrangler.log serve.log 2>/dev/null || true
 
   # The same suite against the Node server (apps/server, decisions §38): the
   # Worker's app on node:sqlite and a directory of files, with no wrangler
