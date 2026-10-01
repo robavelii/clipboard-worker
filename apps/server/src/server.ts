@@ -1,3 +1,5 @@
+/// <reference path="./worker.d.ts" />
+
 /**
  * ClipSync on Node: the Worker's own Hono app (apps/worker/src/app.ts),
  * served with Node implementations of the bindings it expects (decisions §38).
@@ -25,7 +27,7 @@ import { getRequestListener, type HttpBindings, type Http2Bindings } from "@hono
 import { WebSocketServer, type WebSocket } from "ws";
 import { app, purgeExpired } from "clipsync:worker-app";
 import inputs from "clipsync:worker-inputs";
-import { StaticAssets } from "./assets";
+import { StaticAssets, type WebFiles } from "./assets";
 import { DiskBucket } from "./bucket";
 import { migrate, SqliteD1 } from "./d1";
 import { MemoryRateLimiter } from "./limiter";
@@ -42,6 +44,8 @@ export interface ServerOptions {
   dataDir: string;
   /** The built web UI (apps/web/dist). Without it only the API is served. */
   webDir?: string | null;
+  /** The web UI's files themselves, as the standalone binary carries them; wins over webDir. */
+  webFiles?: WebFiles | null;
   host?: string;
   port?: number;
   /** Behind a reverse proxy: take the client address, scheme and host from X-Forwarded-*. */
@@ -97,7 +101,11 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     props: {},
   };
 
-  const assets = options.webDir ? new StaticAssets(options.webDir) : null;
+  const assets = options.webFiles
+    ? StaticAssets.fromFiles(options.webFiles)
+    : options.webDir
+      ? StaticAssets.fromDirectory(options.webDir)
+      : null;
   const trustProxy = options.trustProxy ?? false;
 
   async function handle(request: Request, path: string): Promise<Response> {
