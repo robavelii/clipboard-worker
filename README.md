@@ -171,9 +171,14 @@ set `CLIPSYNC_LISTEN=0.0.0.0:<port>` rather than `--listen`, so the image's
 health check follows. `docker build -t clipsync .` builds the same image
 from a checkout.
 
-The web UI needs HTTPS anywhere but `localhost` (browsers keep the clipboard
-API and service workers to secure contexts), so put it behind a proxy that
-terminates TLS, and pass `--trust-proxy`. Agents work over plain HTTP.
+#### HTTPS, three ways
+
+Agents work over plain HTTP. The web UI doesn't: anywhere but `localhost`
+a browser keeps WebCrypto, the clipboard API and service workers to secure
+contexts, so the page can't unlock the vault over HTTP. Pick one:
+
+**1. A reverse proxy with a certificate** (a VPS, or a home server with a
+domain and ports 80 and 443 forwarded). Caddy gets the certificate itself:
 
 ```
 # Caddyfile
@@ -182,9 +187,41 @@ clip.example.org {
 }
 ```
 
-On a tailnet, `tailscale serve --bg 8787` gives it a certificate with no
-port open to the internet. Back up by copying the data directory, or online
-with `sqlite3 clipsync.db ".backup backup.db"` plus `blobs/`. Decisions §38
+Run the server with `--trust-proxy` (`CLIPSYNC_TRUST_PROXY=1`) behind any
+proxy on the same machine. Without it, every request seems to come from
+`127.0.0.1`, which the rate limits exempt (they exist for the public
+endpoints: bootstrap, pairing, invites, link requests), and links the
+server builds say `http`. With it, the server takes the client's address
+and the scheme from the proxy's `X-Forwarded-*` headers. Never pass it
+without a proxy in front: anyone could then claim any address.
+`deploy/server/` sets this up on Ubuntu (see Staging below).
+
+**2. `tailscale serve`**, with nothing open to the internet:
+
+```bash
+clipsync serve --data ~/clipsync-data --trust-proxy
+tailscale serve --bg 8787
+```
+
+The server is then at `https://<machine>.<tailnet>.ts.net`, with a
+certificate Tailscale provides (turn on HTTPS certificates in the
+tailnet's settings first). Only devices on your tailnet can reach it, so a
+phone needs the Tailscale app too.
+
+**3. HTTP on the LAN, agents only.** For a server no browser will use:
+
+```bash
+clipsync serve --data ~/clipsync-data --listen 0.0.0.0:8787
+clipsync login --url http://192.168.1.20:8787     # on each computer
+```
+
+Clips stay encrypted on the wire, as everywhere. But each device's bearer
+token travels in the clear, so anyone on the network who captures one can
+act as that device: list and delete clips, or revoke devices. They still
+can't read a clip. Use it on a network you trust, and prefer 1 or 2.
+
+Back up by copying the data directory, or online with
+`sqlite3 clipsync.db ".backup backup.db"` plus `blobs/`. Decisions §38
 covers how this server relates to the Worker.
 
 ### Staging
