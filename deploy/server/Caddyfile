@@ -1,15 +1,6 @@
-# ClipSync behind Caddy: a certificate for the domain, and every request
-# passed to the server on loopback. setup.sh fills in __DOMAIN__.
-# Caddy adds X-Forwarded-For/-Proto/-Host itself; the server trusts only
-# the last X-Forwarded-For entry (decisions §38).
+# The machine's one Caddy, shared by every app on it. It holds 80 and 443;
+# each app adds its own site file to /etc/caddy/sites/ and reloads Caddy.
+# setup.sh writes this file only when none is there or it is the package's
+# default, and owns nothing in sites/ but clipsync.caddy (decisions §39).
 
-__DOMAIN__ {
-	encode zstd gzip
-	reverse_proxy 127.0.0.1:8787
-	log {
-		output file /var/log/caddy/clipsync.log {
-			roll_size 10mb
-			roll_keep 5
-		}
-	}
-}
+import /etc/caddy/sites/*.caddy

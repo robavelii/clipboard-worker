@@ -1,0 +1,16 @@
+# ClipSync's site on the shared Caddy: a certificate for the domain, and
+# every request passed to the server on loopback. setup.sh fills in
+# __DOMAIN__ and installs it as /etc/caddy/sites/clipsync.caddy.
+# Caddy adds X-Forwarded-For/-Proto/-Host itself; the server trusts only
+# the last X-Forwarded-For entry (decisions §38).
+
+__DOMAIN__ {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787
+	log {
+		output file /var/log/caddy/clipsync.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

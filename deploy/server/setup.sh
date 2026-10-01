@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Prepares an Ubuntu server (22.04 or 24.04, x64 or arm64) to run the ClipSync
-# Node server (apps/server) behind Caddy. Idempotent: run it again after
+# Node server (apps/server) behind the machine's shared Caddy. Idempotent: run it again after
 # changing the domain, or to repair a half-finished setup.
 #
 #   sudo sh setup.sh <domain> [<deploy public key file>]
@@ -19,8 +19,14 @@
 #   /var/backups/clipsync        nightly snapshots, 14 kept
 #   clipsync-server.service      the server, as the `clipsync` user, on 127.0.0.1:8787
 #   clipsync-backup.timer        the nightly snapshot
-#   Caddy                        TLS for <domain>, proxying to the server
+#   Caddy                        the one proxy for every app on the machine:
+#                                /etc/caddy/Caddyfile imports /etc/caddy/sites/*.caddy,
+#                                and ClipSync's site is sites/clipsync.caddy
 #   iptables                     80 and 443 opened (Oracle's Ubuntu images reject them)
+#
+# If another proxy already holds 80 or 443, Caddy is installed and configured
+# but not started: move that app's site into /etc/caddy/sites/, stop its
+# proxy, and start Caddy (decisions §39).
 #
 # Nothing is deployed here: the first release arrives with clipsync-deploy.
 
@@ -58,7 +64,7 @@ main() {
   systemctl daemon-reload
   systemctl enable clipsync-server.service clipsync-backup.timer >/dev/null
   systemctl start clipsync-backup.timer
-  systemctl reload-or-restart caddy
+  start_caddy
   if [ -e /opt/clipsync/current/clipsync-server.mjs ]; then
     systemctl restart clipsync-server.service
   else
@@ -129,19 +135,56 @@ install_files() {
   install -m 0644 "$HERE/clipsync-backup.timer" /etc/systemd/system/clipsync-backup.timer
   install -d -m 0755 /etc/clipsync
   [ -e /etc/clipsync/server.env ] || install -m 0644 "$HERE/server.env" /etc/clipsync/server.env
-  sed "s/__DOMAIN__/$1/g" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
+  install_caddy_config "$1"
+}
+
+# The Caddyfile is the machine's, not ClipSync's: it is written only when
+# there is none or it is still the package's default page, and other apps'
+# files in sites/ are never touched.
+install_caddy_config() {
+  install -d -m 0755 /etc/caddy/sites
+  sed "s/__DOMAIN__/$1/g" "$HERE/clipsync.caddy" > /etc/caddy/sites/clipsync.caddy
+  if ! grep -qF 'import /etc/caddy/sites/*.caddy' /etc/caddy/Caddyfile 2>/dev/null; then
+    if [ ! -e /etc/caddy/Caddyfile ] || grep -q '/usr/share/caddy' /etc/caddy/Caddyfile; then
+      install -m 0644 "$HERE/Caddyfile" /etc/caddy/Caddyfile
+    else
+      die "/etc/caddy/Caddyfile is not the default: add 'import /etc/caddy/sites/*.caddy' to it, then run setup.sh again"
+    fi
+  fi
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+  # validate runs as root and may create the log file; Caddy runs as caddy.
+  chown -R caddy:caddy /var/log/caddy
+}
+
+# Starts or reloads Caddy, unless another process holds 80 or 443. Replacing
+# another app's proxy is a step for whoever runs the machine, so Caddy is
+# then left disabled: enabled, it would race that proxy for the ports at boot.
+start_caddy() {
+  step "caddy"
+  for port in 80 443; do
+    holder=$(ss -ltnpH "sport = :$port" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n 1)
+    if [ -n "$holder" ] && [ "$holder" != caddy ]; then
+      systemctl disable --now caddy >/dev/null 2>&1 || true
+      echo "port $port is held by $holder, so Caddy is installed but not started."
+      echo "Put that app's site in /etc/caddy/sites/, stop its proxy, then: systemctl enable --now caddy"
+      return
+    fi
+  done
+  systemctl enable caddy >/dev/null
+  systemctl reload-or-restart caddy
 }
 
 # Oracle's Ubuntu images ship iptables rules that reject everything but SSH,
 # in addition to the cloud security list. Both must allow 80 and 443.
 open_firewall() {
   step "firewall"
+  # Deleted and inserted again rather than checked with -C: the images end
+  # INPUT with a REJECT, and an ACCEPT appended after it exists but never
+  # matches. Ports Docker publishes skip INPUT, so they work either way.
   for port in 80 443; do
-    if ! iptables -C INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null; then
-      iptables -I INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT
-      echo "opened $port"
-    fi
+    while iptables -D INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null; do :; done
+    iptables -I INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT
+    echo "opened $port"
   done
   netfilter-persistent save >/dev/null 2>&1 || true
   echo "also allow TCP 80 and 443 in the instance's security list or network security group"
