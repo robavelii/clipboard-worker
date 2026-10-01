@@ -45,9 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Node 24: this job builds the standalone binary, which carries the
+      # Node it was built with, as the release builds do (decisions §42).
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       # Local-only secret; must match the suite's CLIPSYNC_ADMIN_SECRET default.

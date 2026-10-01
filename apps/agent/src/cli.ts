@@ -47,7 +47,7 @@ import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
 import { receiveSettings } from "./receive";
 import { isSea, removeAsideBinaries, runningFile, selfCommand } from "./self";
-import { latestRelease, updateTo } from "./update";
+import { latestRelease, ReleaseWontRunError, updateTo } from "./update";
 import {
   EXIT_FOR_GOOD,
   EXIT_RESTART,
@@ -551,17 +551,25 @@ function scheduleUpdates(daemon: Daemon): (() => Promise<void>) | null {
   if (!isSea() || /^(0|off|false|no)$/i.test(process.env.CLIPSYNC_AUTO_UPDATE ?? "")) return null;
   removeAsideBinaries(runningFile());
   let checking = false;
+  // Releases that downloaded but would not run here (a newer Node needing a
+  // newer OS): not fetched again by this process, only a newer release is.
+  const wontRun = new Set<string>();
   const check = async () => {
     if (checking) return;
     checking = true;
     try {
-      const result = await updateTo(__CLIPSYNC_BUILD__, runningFile());
+      const result = await updateTo(__CLIPSYNC_BUILD__, runningFile(), { skip: wontRun });
       if (result.status === "updated") {
         log(`updated ${result.from} -> ${result.to} -- restarting onto it`);
         daemon.stop();
         process.exit(EXIT_RESTART);
       }
     } catch (err) {
+      if (err instanceof ReleaseWontRunError) {
+        wontRun.add(err.tag);
+        log(`${err.message} -- staying on ${__CLIPSYNC_BUILD__}; ${err.tag} is not tried again until a newer release`);
+        return;
+      }
       log("update check failed:", err instanceof Error ? err.message : err);
     } finally {
       checking = false;

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { isOlderRelease, parseRelease } from "@clipsync/protocol";
-import { latestRelease, listedDigest, updateTo } from "../src/update";
+import { latestRelease, listedDigest, ReleaseWontRunError, updateTo } from "../src/update";
 
 /** A stand-in "binary": a script that reports a version when asked. */
 const fakeBinary = (says: string) => `#!/bin/sh\necho "${says}"\n[ "$1" = --version ] || sleep 30\n`;
@@ -125,5 +125,25 @@ describe("updateTo", () => {
     await expect(updateTo("v0.3.0", path, opts())).rejects.toThrow(/does not run as it should/);
     expect(readFileSync(path, "utf8")).toContain("clipsync v0.3.0");
     expect(existsSync(`${path}.new`)).toBe(false);
+  });
+
+  it("names a release that will not run here, so the daemon can stop fetching it", async () => {
+    // As on a Mac older than the release's Node supports: it downloads, then fails to start.
+    release.binary = "#!/bin/sh\necho 'dyld: Symbol not found' >&2\nexit 1\n";
+    const path = installed("v0.3.0");
+    const error = await updateTo("v0.3.0", path, opts()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReleaseWontRunError);
+    expect((error as ReleaseWontRunError).tag).toBe("v0.4.0");
+    expect((error as Error).message).toMatch(/dyld: Symbol not found/);
+
+    expect(await updateTo("v0.3.0", path, { ...opts(), skip: new Set(["v0.4.0"]) })).toEqual({
+      status: "skipped",
+      latest: "v0.4.0",
+    });
+    expect(version(path)).toBe("clipsync v0.3.0");
+
+    release.tag = "v0.5.0";
+    release.binary = fakeBinary("clipsync v0.5.0");
+    expect((await updateTo("v0.3.0", path, { ...opts(), skip: new Set(["v0.4.0"]) })).status).toBe("updated");
   });
 });

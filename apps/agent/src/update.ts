@@ -75,6 +75,21 @@ export interface InstallReleaseOptions {
 }
 
 /**
+ * A release that downloaded and matched its checksum but does not run on
+ * this machine: a binary on a newer Node that needs a newer OS, such as
+ * macOS 13.5 for Node 24 (decisions §42).
+ */
+export class ReleaseWontRunError extends Error {
+  constructor(
+    readonly tag: string,
+    said: string,
+  ) {
+    super(`the downloaded ${tag} does not run as it should (it said: ${said})`);
+    this.name = "ReleaseWontRunError";
+  }
+}
+
+/**
  * Download `tag`'s binary for this machine, check it, and put it in place
  * of the executable at `path`.
  */
@@ -108,7 +123,7 @@ export async function installRelease(
   const says = ran.stdout?.trim() ?? "";
   if (says !== `clipsync ${tag}`) {
     rmSync(fresh, { force: true });
-    throw new Error(`the downloaded ${tag} does not run as it should (it said: ${says || ran.error?.message || "nothing"})`);
+    throw new ReleaseWontRunError(tag, says || ran.error?.message || ran.stderr?.trim() || "nothing");
   }
   replaceExecutable(fresh, path);
 }
@@ -116,22 +131,25 @@ export async function installRelease(
 export type UpdateResult =
   | { status: "updated"; from: string; to: string }
   | { status: "current"; latest: string }
+  /** The newest release is one this machine already found it cannot run. */
+  | { status: "skipped"; latest: string }
   | { status: "not-a-release"; build: string }
   | { status: "unknown" };
 
 /**
  * Update the executable at `path`, which is release `current`, to the
- * newest release if that is newer.
+ * newest release if that is newer and not in `skip`.
  */
 export async function updateTo(
   current: string,
   path: string,
-  opts: InstallReleaseOptions = {},
+  opts: InstallReleaseOptions & { skip?: ReadonlySet<string> } = {},
 ): Promise<UpdateResult> {
   if (!parseRelease(current)) return { status: "not-a-release", build: current };
   const latest = await latestRelease(opts.releases ?? releasesUrl(), opts.fetchImpl ?? fetch);
   if (!latest) return { status: "unknown" };
   if (!isOlderRelease(current, latest)) return { status: "current", latest };
+  if (opts.skip?.has(latest)) return { status: "skipped", latest };
   await installRelease(latest, path, opts);
   return { status: "updated", from: current, to: latest };
 }

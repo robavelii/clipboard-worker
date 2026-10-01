@@ -1419,7 +1419,6 @@ CSP, and fails if SQLite's warning reaches the log.
 Not yet:
 - `clipsync install` sets up the agent's service only, not a server's.
 - A server started by `clipsync serve` doesn't update itself.
-- The binary is still on Node 22.
 
 Trap: never import `node:sqlite` statically anywhere the agent's bundle
 can reach. The build succeeds, and the cost appears only when running
@@ -1478,3 +1477,32 @@ Traps:
   connection to the published port from the host itself arrives from
   the bridge's gateway. Rate limits then key on that one address. Behind
   a reverse proxy on the host, pass `--trust-proxy`, as on any host.
+
+## 42. The binary carries Node 24; the bundle still runs on 22
+
+The standalone binary (§29) is a copy of the Node that built it, so its
+Node decides what it runs on. It moves to Node 24, the active LTS, ahead
+of Node 22's end of support in April 2027. Releases update themselves
+(§34), so the move had to happen while it could still be tested and
+documented, not under pressure.
+
+**Only the binary.** The bundle's minimum stays Node 22. CI's unit tests
+and e2e-node run there, staging's `setup.sh` installs it, and the
+container image is built on it. A checkout or a server can choose its own
+Node; the binary can't. The CI job that builds a binary and both release
+builds use 24, so what CI tests is what ships.
+
+**What it costs.** Node 24 requires macOS 13.5, where Node 22 required 11.
+Windows (10) and Linux (glibc 2.28) are unchanged. A Mac on macOS 11 to
+13.4 can't run the new binaries. The updater (§34) already runs a
+download with `--version` before it replaces anything, so such a Mac
+keeps working on the last Node 22 release. It would also download every
+new release daily and reject it. Now the failure is a
+`ReleaseWontRunError` naming the tag, and the daemon skips that tag for
+the rest of its run. Only a newer release, a restart or a manual
+`clipsync update` tries again.
+
+Trap: don't raise `MIN_AGENT_VERSION` (§34) past the last Node 22 release
+while such Macs matter. Those agents can't update past it, so the Worker
+would refuse their writes for good.
+
