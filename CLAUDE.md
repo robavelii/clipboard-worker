@@ -78,6 +78,7 @@ packages/react      useClips / useSync hooks, shared by web UI and tray
 apps/worker         Hono API, SyncRoom Durable Object, hourly purge cron, R2 blobs, serves apps/web/dist
 apps/web            React UI / PWA (share target, service worker)
 apps/agent          `clipsync` CLI + clipboard daemon (Linux: wl-clipboard or xclip)
+apps/server         the Worker's app on Node (node:sqlite, files on disk, `ws`), for running without Cloudflare
 apps/desktop        Tauri tray panel (Ctrl+Alt+V picker)
 ```
 
@@ -158,6 +159,15 @@ A re-key changes the key every dedupe hash is taken under, so `refresh()` re-pri
 ### Web UI (`apps/web`)
 
 Same origin as the API, so there are **no CORS headers anywhere, by design**. `apps/web/public/_headers` sets a strict CSP (`'self'` only, no `unsafe-inline`), `frame-ancestors 'none'` and `no-referrer`. The build has no inline script or style and no component sets a `style` attribute; keep it that way, or the CSP blocks it. API calls from the web UI pass `""` as the base URL: shared client code must resolve paths the way `ApiClient` does, since `new URL(path, "")` throws. Routing is by path in `App.tsx`: `/join#` (invite), `/link#` (approval), `/share` (share target), `/phone` (phone setup). The service worker exists for PWA installability and so that nothing shared reaches the network before it is encrypted (decisions §35). The share sheet POSTs a form (text, links, files); `public/sw.js` answers it *without forwarding it*, keeps it in IndexedDB (`clipsync-shares`, read and deleted through `src/shares.ts`, which must name the same database) and redirects to `/share?pending=<id>`, where the page seals and uploads it. Older installs GET `/share?text=`, answered without the query. The iOS Shortcut uses `/share#text=`; everything after `text=` is the text. Don't add `/share` to `run_worker_first`: Workers Logs would record a `?text=` URL. The service worker deliberately caches nothing. On touch-first devices (`pointer: coarse`) the workspace adds a paste dock and a "Copy latest" card (`src/clipboard.ts`, `src/Latest.tsx`). A clipboard read or write must be called straight from the tap, with nothing awaited before it, or iOS refuses it: an image copy hands `ClipboardItem` a promise of the bytes.
+
+### Node server (`apps/server`, decisions §38)
+
+The Worker's Hono app lives in `apps/worker/src/app.ts` and imports nothing from `cloudflare:*`; `index.ts` adds the Durable Object and the cron. `apps/server` serves that same app on Node by passing objects shaped like the bindings: `SqliteD1` (`node:sqlite`, D1's semantics: `batch` is a transaction, `meta.changes` counts RETURNING writes, booleans bind as 1/0, foreign keys on), `DiskBucket` for R2, `Rooms` for the SyncRoom namespace, `MemoryRateLimiter`. **A route that uses a new binding method, or a new Workers-only API, needs the Node side too**; the e2e suite runs against both in CI and will catch it. The build reads vars, rate limits and migrations from `wrangler.jsonc`, so nothing is duplicated. Node completes WebSocket upgrades on the server's `upgrade` event: the room's `fetch` returns a one-time handle in `x-clipsync-upgrade`, which the server strips from every other response. It sets `CF-Connecting-IP` itself (the last `X-Forwarded-For` entry with `--trust-proxy`) and drops any a client sent.
+
+```bash
+npm run build:server && node apps/server/dist/clipsync-server.mjs --data ./data   # :8787, admin secret in ./data/admin-secret
+CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret node apps/server/dist/clipsync-server.mjs --data ./data && npm run e2e
+```
 
 ### Tray app (`apps/desktop`)
 

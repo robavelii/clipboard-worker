@@ -120,6 +120,48 @@ npx wrangler secret put ADMIN_SECRET --config apps/worker/wrangler.jsonc
 npm run deploy
 ```
 
+### Running it yourself (no Cloudflare)
+
+The same server runs on Node 22 or later, on any machine: a home server, a
+NAS, a Raspberry Pi, a VPS. It keeps everything in one directory: a SQLite
+database and the encrypted files. Build it once from a checkout:
+
+```bash
+npm ci
+npm run build -w @clipsync/web
+npm run build -w @clipsync/server
+node apps/server/dist/clipsync-server.mjs --data /var/lib/clipsync
+```
+
+`apps/server/dist/` is self-contained (the server plus the web UI), so it can
+be copied to the machine that runs it. On first start the server generates
+an admin secret and keeps it in `<data>/admin-secret`, unless
+`CLIPSYNC_ADMIN_SECRET` is set; the first device enrols with it, as with
+`wrangler secret put ADMIN_SECRET` above.
+
+| Option | Default | |
+| --- | --- | --- |
+| `--data` | `./clipsync-data` | database and files |
+| `--listen` | `127.0.0.1:8787` | address to bind |
+| `--trust-proxy` | off | behind a reverse proxy: client address, scheme and host from `X-Forwarded-*` |
+| `--storage` | 5 GiB | most bytes of encrypted files to hold; the oldest unpinned are evicted |
+
+The web UI needs HTTPS anywhere but `localhost` (browsers keep the clipboard
+API and service workers to secure contexts), so put it behind a proxy that
+terminates TLS, and pass `--trust-proxy`. Agents work over plain HTTP.
+
+```
+# Caddyfile
+clip.example.org {
+	reverse_proxy 127.0.0.1:8787
+}
+```
+
+On a tailnet, `tailscale serve --bg 8787` gives it a certificate with no
+port open to the internet. Back up by copying the data directory, or online
+with `sqlite3 clipsync.db ".backup backup.db"` plus `blobs/`. Decisions §38
+covers how this server relates to the Worker.
+
 ### Deploying from CI
 
 Every push to `main` that passes CI (typecheck, unit tests, e2e) applies any
@@ -634,6 +676,7 @@ packages/react      Hooks shared by the web UI and the tray app
 apps/worker         Hono API, SyncRoom Durable Object, cron, static assets
 apps/web            React + Vite UI, served by the Worker
 apps/agent          Node CLI and clipboard daemon
+apps/server         The Worker's app on Node: SQLite, files on disk, no Cloudflare
 scripts/e2e.ts      End-to-end smoke test against a running Worker
 ```
 
@@ -655,7 +698,7 @@ passphrases, and that a substituted public key fails closed.
 npm run e2e
 ```
 
-About ninety-five checks against a running `npm run dev`: bootstrap, pairing,
+About a hundred and fifteen checks against a running `npm run dev`, or the Node server (`CLIPSYNC_URL` picks which): bootstrap, pairing,
 single-use codes and tickets, dedupe, size limits, live WebSocket delivery,
 revocation including cutting off an open socket, the full linking handshake
 including a refused key substitution,
