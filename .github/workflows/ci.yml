@@ -1,7 +1,7 @@
 # Typecheck and unit tests on every push and PR, plus the end-to-end suite
-# against a local Worker and against the Node server -- the same checks a
-# contributor runs by hand.
-# A push to main that passes both then migrates the production database and
+# against a local Worker, the Node server, the binary's `clipsync serve` and
+# the Docker image -- the same checks a contributor runs by hand.
+# A push to main that passes them all then migrates the production database and
 # deploys the Worker (docs/decisions.md §30), and deploys the Node server to
 # the staging host (§39).
 
@@ -129,9 +129,42 @@ jobs:
         if: failure()
         run: cat server.log
 
+  # The server's image (Dockerfile, decisions §41), built as a release
+  # would build it, and the whole suite against a container of it.
+  e2e-docker:
+    name: End-to-end against the Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: docker build -t clipsync-server:ci .
+      - name: Start a container
+        run: |
+          docker run -d --name clipsync -p 127.0.0.1:8787:8787 -v clipsync-data:/data \
+            -e CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret clipsync-server:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/health && exit 0; sleep 1; done
+          docker logs clipsync; exit 1
+      - name: The web UI is served with its CSP
+        run: curl -sfI http://127.0.0.1:8787/ | grep -i '^content-security-policy:'
+      - run: npm run e2e
+      - name: Healthy, unprivileged, private data
+        run: |
+          for i in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' clipsync)" = healthy ] && break; sleep 2; done
+          docker inspect -f '{{.State.Health.Status}} {{.Config.User}}' clipsync | tee state.txt
+          grep -qx 'healthy 1000:1000' state.txt
+          docker exec clipsync stat -c '%a %U' /data | tee perms.txt
+          grep -qx '700 node' perms.txt
+      - name: Container log
+        if: failure()
+        run: docker logs clipsync
+
   deploy:
     name: Deploy to Cloudflare
-    needs: [check, e2e, e2e-node]
+    needs: [check, e2e, e2e-node, e2e-docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
@@ -186,7 +219,7 @@ jobs:
   # given to the steps that use them, never to npm's install scripts.
   deploy-staging:
     name: Deploy to staging
-    needs: [check, e2e, e2e-node]
+    needs: [check, e2e, e2e-node, e2e-docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:

@@ -3,7 +3,7 @@
 #
 # A pull request that touches the agent builds and smoke-tests all five. A
 # tag such as v0.2.0 does the same, then publishes them to a GitHub Release
-# with a SHA256SUMS file.
+# with a SHA256SUMS file, and the server's image to ghcr.io.
 
 name: Release
 
@@ -226,3 +226,38 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+
+  # The server as a container image (decisions §41), for amd64 and arm64,
+  # beside the binaries and only once all five passed. The bundle is built
+  # once on the runner's platform and copied into each architecture's
+  # image, so neither needs an emulator.
+  image:
+    name: Publish the image
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/clipsync
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
