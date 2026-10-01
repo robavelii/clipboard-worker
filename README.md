@@ -162,6 +162,49 @@ port open to the internet. Back up by copying the data directory, or online
 with `sqlite3 clipsync.db ".backup backup.db"` plus `blobs/`. Decisions §38
 covers how this server relates to the Worker.
 
+### Staging
+
+`staging.clip.rfh.et` runs that server on an Oracle Cloud Ubuntu instance
+it shares with other apps. `deploy/server/` sets such a machine up, and
+works on any Ubuntu 22.04 or 24.04 host, x64 or arm64:
+
+```bash
+scp -r deploy/server host:clipsync-setup
+ssh host sudo sh clipsync-setup/setup.sh staging.example.org clipsync-setup/deploy-key.pub
+```
+
+It installs Node and Caddy (each checked against its release's checksums),
+the server as `clipsync-server.service` on `127.0.0.1:8787`, a nightly
+backup, and a `clipsync-deploy` user whose key can only run the deploy
+script. Caddy is the machine's one proxy: `/etc/caddy/Caddyfile` imports
+`/etc/caddy/sites/*.caddy`, and ClipSync owns only `clipsync.caddy`, so
+other apps add a file of their own. If another proxy already holds 80 or
+443, setup.sh leaves Caddy off and says so; move that app's site into
+`sites/`, stop its proxy, then `systemctl enable --now caddy` (decisions
+§39). Run setup.sh again at any time; it changes only what is missing.
+
+Every push to `main` that passes CI builds the server and installs it with
+`clipsync-deploy`, which switches back to the previous build if the new one
+does not answer `/api/health` within 30 seconds. That job needs three
+repository secrets:
+
+- `STAGING_SSH_KEY`: the private half of the deploy key given to setup.sh.
+- `STAGING_HOST`: the machine's address.
+- `STAGING_KNOWN_HOSTS`: its host key, from
+  `ssh-keyscan -t ed25519 <host>`.
+
+The first device enrols with the admin secret in
+`/var/lib/clipsync/admin-secret`. On a machine already enrolled elsewhere,
+give the staging agent its own config:
+`XDG_CONFIG_HOME=~/.config/clipsync-staging clipsync login --url https://staging.example.org`.
+
+Snapshots land in `/var/backups/clipsync/<time>/` at 03:17 UTC and are kept
+for 14 days; set `BACKUP_UPLOAD` in `/etc/clipsync/backup.env` to copy each
+one off the machine. To restore one: stop `clipsync-server`, delete
+`clipsync.db-wal` and `clipsync.db-shm` from `/var/lib/clipsync`, copy the
+snapshot's `clipsync.db` there and unpack its `blobs.tar.gz` in the same
+place, `chown -R clipsync:clipsync /var/lib/clipsync`, and start it again.
+
 ### Deploying from CI
 
 Every push to `main` that passes CI (typecheck, unit tests, e2e) applies any
@@ -178,7 +221,8 @@ and variables → Actions):
 
 Without them the deploy job fails and says so; the checks still run. Runs
 on `main` queue rather than cancel each other, so a deploy is never cut off
-between its migration and the deploy itself.
+between its migration and the deploy itself. The staging deploy (above)
+runs beside this one, on its own secrets.
 
 `wrangler.jsonc` binds the Worker to `clip.rfh.et` as a custom domain and sets
 `workers_dev: false` — one public door, not two. Change the `routes` entry for
