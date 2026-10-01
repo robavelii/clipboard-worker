@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - "apps/agent/**"
+      - "apps/server/**"
       - "packages/**"
       - "scripts/build-id.mjs"
       - "scripts/install.sh"
@@ -90,6 +91,16 @@ jobs:
           # every module the CLI imports.
           XDG_CONFIG_HOME="$RUNNER_TEMP/empty" "$bin" status | tee status.txt
           grep -q "Not configured" status.txt
+          # The server it carries (decisions §40): SQLite and the built-in web
+          # UI, on this platform's own Node.
+          "$bin" serve --data "$RUNNER_TEMP/serve-data" --listen 127.0.0.1:8799 > serve.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8799/api/health && break; sleep 1; done
+          curl -sfI http://127.0.0.1:8799/ | grep -i '^content-security-policy:'
+          kill "$pid" 2>/dev/null || true
+          cat serve.txt
+          grep -q '"web":"built in"' serve.txt
+          if grep -q ExperimentalWarning serve.txt; then echo "SQLite's warning reached the log"; exit 1; fi
       # Clipboard change events on each platform's own clipboard (decisions
       # §36): `clipsync watch` must report copies made by the platform's own
       # tools. Linux has no desktop here, so it gets an Xvfb display.

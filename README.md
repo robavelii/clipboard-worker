@@ -122,9 +122,16 @@ npm run deploy
 
 ### Running it yourself (no Cloudflare)
 
-The same server runs on Node 22 or later, on any machine: a home server, a
-NAS, a Raspberry Pi, a VPS. It keeps everything in one directory: a SQLite
-database and the encrypted files. Build it once from a checkout:
+The same server runs on any machine: a home server, a NAS, a Raspberry Pi,
+a VPS. It keeps everything in one directory: a SQLite database and the
+encrypted files. The standalone `clipsync` binary carries it, web UI
+included, so the download that runs the agent also runs the server:
+
+```bash
+clipsync serve --data /var/lib/clipsync
+```
+
+Or, on Node 22 or later, build it from a checkout:
 
 ```bash
 npm ci
@@ -134,7 +141,8 @@ node apps/server/dist/clipsync-server.mjs --data /var/lib/clipsync
 ```
 
 `apps/server/dist/` is self-contained (the server plus the web UI), so it can
-be copied to the machine that runs it. On first start the server generates
+be copied to the machine that runs it. Both take the options below
+(`clipsync serve --help`). On first start the server generates
 an admin secret and keeps it in `<data>/admin-secret`, unless
 `CLIPSYNC_ADMIN_SECRET` is set; the first device enrols with it, as with
 `wrangler secret put ADMIN_SECRET` above.
@@ -334,6 +342,7 @@ letting you discover the mistake later.
 | `clipsync logout` | Revoke this machine's devices, then forget local credentials |
 | `clipsync install [--dry-run]` | Run the agent in the background at every login (see below) |
 | `clipsync uninstall` | Stop and remove that background service |
+| `clipsync serve [--data dir] [--listen host:port]` | Run the ClipSync server itself, web UI included (see Running it yourself) |
 
 `clipsync run` does not push whatever happened to be on the clipboard when it
 started; pass `--push-current` if you want that.

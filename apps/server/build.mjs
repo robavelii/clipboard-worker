@@ -5,22 +5,11 @@
  * else: no checkout, no npm install.
  */
 
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, rmSync } from "node:fs";
 import { build } from "esbuild";
-import { workerAppPath, workerInputsModule } from "./worker-inputs.mjs";
+import { serverModules } from "./build-plugin.mjs";
 
 rmSync("dist", { recursive: true, force: true });
-
-/** The `clipsync:` modules (worker-inputs.mjs) and the installers as text, as wrangler bundles them. */
-const workerModules = {
-  name: "clipsync-worker",
-  setup(b) {
-    b.onResolve({ filter: /^clipsync:worker-app$/ }, () => ({ path: workerAppPath }));
-    b.onResolve({ filter: /^clipsync:worker-inputs$/ }, () => ({ path: "inputs", namespace: "clipsync" }));
-    b.onLoad({ filter: /.*/, namespace: "clipsync" }, () => ({ contents: workerInputsModule(), loader: "js" }));
-    b.onLoad({ filter: /\.(sh|ps1)$/ }, (args) => ({ contents: readFileSync(args.path, "utf8"), loader: "text" }));
-  },
-};
 
 await build({
   entryPoints: ["src/main.ts"],
@@ -33,7 +22,7 @@ await build({
   external: ["bufferutil", "utf-8-validate"],
   // Bundled CommonJS dependencies (ws) call require() for Node built-ins.
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
-  plugins: [workerModules],
+  plugins: [serverModules()],
   logLevel: "warning",
 });
 

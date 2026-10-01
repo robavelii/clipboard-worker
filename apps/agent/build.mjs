@@ -5,9 +5,13 @@
  * `fs` through a dynamic require that esbuild cannot resolve statically. With
  * a real `require` in scope, esbuild's interop shim delegates to it instead of
  * throwing. Without this the bundle dies on startup.
+ *
+ * The bundle carries the server for `clipsync serve`, with the web UI built
+ * in when apps/web/dist exists (decisions §40).
  */
 
 import { build } from "esbuild";
+import { serverModules } from "../server/build-plugin.mjs";
 import { buildId, releasesUrl } from "../../scripts/build-id.mjs";
 
 await build({
@@ -21,6 +25,9 @@ await build({
     __CLIPSYNC_BUILD__: JSON.stringify(buildId()),
     __CLIPSYNC_RELEASES__: JSON.stringify(releasesUrl()),
   },
+  // ws loads these optional native speedups inside try/catch.
+  external: ["bufferutil", "utf-8-validate"],
+  plugins: [serverModules()],
   banner: {
     js: [
       "#!/usr/bin/env node",

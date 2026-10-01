@@ -10,8 +10,12 @@
  *
  * ETag and If-None-Match are honoured; everything else is revalidated on
  * each load, as Cloudflare does by default.
+ *
+ * The files come from a directory (apps/web/dist next to the server) or, in
+ * the standalone `clipsync` binary, from the build itself (`WebFiles`).
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
@@ -61,60 +65,97 @@ export function parseHeaders(text: string): HeaderRule[] {
   return rules;
 }
 
-export class StaticAssets {
-  private readonly root: string;
-  private readonly rules: HeaderRule[];
+/** The built web UI as bytes, keyed by path from its root ("/index.html"). */
+export type WebFiles = Record<string, Uint8Array<ArrayBuffer>>;
 
-  constructor(root: string) {
-    this.root = resolve(root);
+interface Asset {
+  /** Its path, for the content type. */
+  name: string;
+  size: number;
+  etag: string;
+  read(): Promise<Uint8Array<ArrayBuffer>>;
+}
+
+/** The asset a decoded path names, or null; never `_headers`. */
+type Lookup = (path: string) => Asset | null;
+
+export class StaticAssets {
+  private constructor(
+    private readonly lookup: Lookup,
+    private readonly rules: HeaderRule[],
+  ) {
+    // Fail at startup, not on the first visit.
+    if (!lookup("/index.html")) throw new Error("the web UI has no index.html");
+  }
+
+  static fromDirectory(root: string): StaticAssets {
+    const base = resolve(root);
     let headers = "";
     try {
-      headers = readFileSync(join(this.root, "_headers"), "utf8");
+      headers = readFileSync(join(base, "_headers"), "utf8");
     } catch {
       // No rules file: plain files.
     }
-    this.rules = parseHeaders(headers);
-    statSync(join(this.root, "index.html")); // fail at startup, not on the first visit
+    const lookup: Lookup = (path) => {
+      const file = resolve(base, "." + path);
+      if (file !== base && !file.startsWith(base + sep)) return null;
+      if (file === join(base, "_headers")) return null;
+      try {
+        const stats = statSync(file);
+        if (!stats.isFile()) return null;
+        return {
+          name: file,
+          size: stats.size,
+          etag: `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`,
+          read: () => readFile(file),
+        };
+      } catch {
+        return null;
+      }
+    };
+    return new StaticAssets(lookup, parseHeaders(headers));
+  }
+
+  static fromFiles(files: WebFiles): StaticAssets {
+    const assets = new Map<string, Asset>();
+    for (const [name, bytes] of Object.entries(files)) {
+      if (name === "/_headers") continue;
+      const hash = createHash("sha256").update(bytes).digest("base64url").slice(0, 16);
+      assets.set(name, { name, size: bytes.byteLength, etag: `W/"${hash}"`, read: async () => bytes });
+    }
+    const headers = files["/_headers"] ? new TextDecoder().decode(files["/_headers"]) : "";
+    return new StaticAssets((path) => assets.get(path) ?? null, parseHeaders(headers));
   }
 
   async serve(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
-    const file = this.resolveFile(pathname) ?? join(this.root, "index.html");
-    const stats = statSync(file);
-    const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
+    const path = decodePath(pathname);
+    const asset = (path && this.lookup(path)) || this.lookup("/index.html")!;
     const headers = new Headers({
-      "content-type": TYPES[extname(file)] ?? "application/octet-stream",
+      "content-type": TYPES[extname(asset.name)] ?? "application/octet-stream",
       "cache-control": "public, max-age=0, must-revalidate",
-      etag,
+      etag: asset.etag,
     });
     for (const rule of this.rules) {
       if (!rule.pattern.test(pathname)) continue;
       for (const [name, value] of rule.headers) headers.set(name, value);
     }
-    if (request.headers.get("if-none-match") === etag) {
+    if (request.headers.get("if-none-match") === asset.etag) {
       return new Response(null, { status: 304, headers });
     }
-    const body = request.method === "HEAD" ? null : await readFile(file);
-    headers.set("content-length", String(stats.size));
+    const body = request.method === "HEAD" ? null : await asset.read();
+    headers.set("content-length", String(asset.size));
     return new Response(body, { status: 200, headers });
   }
+}
 
-  /** The file a path names, if it is one inside the root (and not `_headers`). */
-  private resolveFile(pathname: string): string | null {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(pathname);
-    } catch {
-      return null;
-    }
-    if (decoded.includes("\0")) return null;
-    const path = resolve(this.root, "." + decoded);
-    if (path !== this.root && !path.startsWith(this.root + sep)) return null;
-    if (path === join(this.root, "_headers")) return null;
-    try {
-      return statSync(path).isFile() ? path : null;
-    } catch {
-      return null;
-    }
+/** A URL path decoded, or null if it does not decode or holds a NUL. */
+function decodePath(pathname: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
   }
+  return decoded.includes("\0") ? null : decoded;
 }

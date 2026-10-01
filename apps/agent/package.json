@@ -16,6 +16,7 @@
     "@clipsync/client": "*",
     "@clipsync/crypto": "*",
     "@clipsync/protocol": "*",
+    "@clipsync/server": "*",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

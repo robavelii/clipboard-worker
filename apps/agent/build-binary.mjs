@@ -17,18 +17,23 @@
  * an arm64 binary whose signature does not match, so there the copy is
  * unsigned before the injection and signed ad hoc after it.
  *
+ * The binary carries the server for `clipsync serve` with the web UI built
+ * in, so apps/web/dist must be built first (`npm run build:binary` at the
+ * root does that; decisions §40).
+ *
  * The blob holds no snapshot or code cache, which keeps it independent of
  * the platform that built it. It must still be built by the same Node
  * version as the binary it goes into, so --node must be that version.
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { inject } from "postject";
 import { buildId, releasesUrl } from "../../scripts/build-id.mjs";
+import { serverModules, webDist } from "../server/build-plugin.mjs";
 
 /** The fuse Node looks for to know a blob was injected; fixed by Node. */
 const SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
@@ -41,6 +46,11 @@ const { values } = parseArgs({
     target: { type: "string" },
   },
 });
+
+// A release without the web UI would serve only the API, and say nothing.
+if (!existsSync(join(webDist, "index.html"))) {
+  throw new Error("apps/web/dist is not built: run `npm run build -w @clipsync/web` first");
+}
 
 const nativeTarget = `${OS_NAMES[process.platform] ?? process.platform}-${process.arch}`;
 if (values.node && !values.target) throw new Error("--node needs --target <os-arch> to say what it is");
@@ -73,6 +83,9 @@ await build({
     __CLIPSYNC_RELEASES__: JSON.stringify(releasesUrl()),
     "import.meta.url": "undefined",
   },
+  // ws loads these optional native speedups inside try/catch.
+  external: ["bufferutil", "utf-8-validate"],
+  plugins: [serverModules()],
   logLevel: "warning",
 });
 

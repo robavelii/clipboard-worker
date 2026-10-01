@@ -15,9 +15,13 @@
  * node:sqlite is synchronous, so a statement or a batch runs to completion
  * before any other request's code: there is no interleaving to guard against
  * within one process.
+ *
+ * SQLite is loaded when a database opens, not imported: the `clipsync`
+ * agent's bundle carries this server, and a bundled static import would load
+ * it, and print Node's experimental warning, for every command (decisions §40).
  */
 
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 
 type SqlValue = null | number | bigint | string | Uint8Array;
 
@@ -87,7 +91,8 @@ export class SqliteD1 {
   private readonly lastRowId: StatementSync;
 
   constructor(path: string) {
-    this.db = new DatabaseSync(path);
+    const sqlite = process.getBuiltinModule("node:sqlite") as typeof import("node:sqlite");
+    this.db = new sqlite.DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;

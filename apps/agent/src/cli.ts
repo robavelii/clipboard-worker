@@ -84,6 +84,7 @@ Usage
   clipsync uninstall                                    Stop and remove that background service
   clipsync update                                       Update to the newest release (the service does it daily)
   clipsync logout                                       Forget local credentials
+  clipsync serve [--data <dir>] [--listen <host:port>]  Run the ClipSync server here (serve --help)
   clipsync --version                                    Show which build this is
 `;
 
@@ -1041,6 +1042,13 @@ async function cmdLogout(): Promise<void> {
 /* -------------------------------- main --------------------------------- */
 
 async function main(): Promise<void> {
+  // The server takes its own options, which the parser below would refuse,
+  // and is loaded only when asked for: it brings SQLite and the web UI.
+  if (process.argv[2] === "serve") {
+    const { cmdServe } = await import("./serve");
+    return cmdServe(process.argv.slice(3));
+  }
+
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
