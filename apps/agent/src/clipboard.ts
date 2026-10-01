@@ -445,18 +445,23 @@ for (;;) {
 `;
 
 /**
- * Puts a file reference on the pasteboard through NSPasteboard, which stores
- * it at once. AppleScript's `set the clipboard to (POSIX file …)` reports
- * success yet, in about one write in five on Apple Silicon, leaves the
- * pasteboard empty (decisions §37). The path arrives as an argument, so it
- * needs no quoting.
+ * Puts a file reference (public.file-url, AppleScript's furl) on the
+ * pasteboard and reads it back before exiting. The write reaches the
+ * pasteboard server asynchronously: a writer that exits at once can lose
+ * it, leaving the pasteboard with no types at all. AppleScript's
+ * `set the clipboard to (POSIX file …)` did, in about one write in five on
+ * Apple Silicon (decisions §37). The read-back waits for the write and
+ * checks it. The path arrives as an argument, so it needs no quoting.
  */
 const MACOS_WRITE_FILE = `
 ObjC.import('AppKit');
 function run(argv) {
   var pb = $.NSPasteboard.generalPasteboard;
+  var url = $.NSURL.fileURLWithPath(argv[0]).absoluteString.js;
   pb.clearContents;
-  if (!pb.writeObjects($([$.NSURL.fileURLWithPath(argv[0])]))) throw new Error('the pasteboard refused the file');
+  pb.setStringForType(url, 'public.file-url');
+  var kept = pb.stringForType('public.file-url');
+  if (kept.isNil() || kept.js !== url) throw new Error('the pasteboard did not keep the file');
 }
 `;
 
