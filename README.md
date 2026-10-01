@@ -396,10 +396,12 @@ shortcuts, bind that command to a key in your desktop's keyboard settings.
 ### Standalone binary
 
 Every release publishes `clipsync` as a single executable that carries its
-own Node, so a machine needs no Node, npm or checkout to run it. There are
-builds for Linux (x64, arm64), macOS (Apple Silicon, Intel) and Windows
-(x64), each checked against a `SHA256SUMS` file. Linux still needs `xclip`
-or `wl-clipboard`.
+own Node (24), so a machine needs no Node, npm or checkout to run it. There
+are builds for Linux (x64, arm64, glibc 2.28 or later), macOS (Apple
+Silicon, Intel; macOS 13.5 or later) and Windows (x64, Windows 10 or
+later), each checked against a `SHA256SUMS` file. Linux still needs `xclip`
+or `wl-clipboard`. A Mac on an older macOS keeps the last release built on
+Node 22: its updater finds that the new binary won't start, and stays put.
 
 The installers above (`/install.sh`, `/install.ps1`, served by the Worker
 from `scripts/`) do these steps. By hand:
