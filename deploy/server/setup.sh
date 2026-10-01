@@ -13,6 +13,7 @@
 #
 # What it sets up:
 #   /opt/node                    Node 22, from nodejs.org, checksum-verified
+#   /usr/bin/caddy               Caddy, from its GitHub release, checksum-verified
 #   /opt/clipsync/releases/      one directory per deployed build
 #   /opt/clipsync/current        symlink to the live one
 #   /var/lib/clipsync            the database, files and admin secret (0700)
@@ -33,6 +34,7 @@
 set -eu
 
 NODE_VERSION=v22.22.0
+CADDY_VERSION=2.11.4
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 main() {
@@ -44,18 +46,10 @@ main() {
   step "packages"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
-  apt-get install -y -q curl ca-certificates gnupg sqlite3 iptables-persistent >/dev/null
-  # Caddy's own repository: Ubuntu 22.04 does not package it.
-  if [ ! -f /etc/apt/sources.list.d/caddy-stable.list ]; then
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-      | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
-      > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -q
-  fi
-  apt-get install -y -q caddy >/dev/null
+  apt-get install -y -q curl ca-certificates sqlite3 iptables-persistent >/dev/null
 
   install_node
+  install_caddy
   create_users "$deploy_key"
   install_files "$domain"
   open_firewall
@@ -102,6 +96,38 @@ install_node() {
   mv /opt/node.new /opt/node
   rm -rf "$tmp"
   /opt/node/bin/node --version
+}
+
+# Ubuntu 22.04 does not package Caddy, and Caddy's apt repository is only as
+# good as its signing key: when that expired, `apt-get update` failed for the
+# whole machine. The release binary, checked like Node, depends on neither.
+install_caddy() {
+  step "caddy $CADDY_VERSION"
+  if [ -x /usr/bin/caddy ] && /usr/bin/caddy version | grep -q "^v$CADDY_VERSION "; then
+    echo "already installed"
+  else
+    case "$(uname -m)" in
+      x86_64) arch=amd64 ;;
+      aarch64) arch=arm64 ;;
+      *) die "unsupported CPU $(uname -m)" ;;
+    esac
+    name="caddy_${CADDY_VERSION}_linux_$arch.tar.gz"
+    base="https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION"
+    tmp=$(mktemp -d)
+    curl -fsSL "$base/$name" -o "$tmp/$name"
+    curl -fsSL "$base/caddy_${CADDY_VERSION}_checksums.txt" -o "$tmp/checksums.txt"
+    (cd "$tmp" && grep " $name\$" checksums.txt | sha512sum -c -) || die "caddy download failed its checksum"
+    tar -xzf "$tmp/$name" -C "$tmp" caddy
+    install -m 0755 "$tmp/caddy" /usr/bin/caddy.new
+    mv /usr/bin/caddy.new /usr/bin/caddy
+    rm -rf "$tmp"
+    /usr/bin/caddy version
+  fi
+  # Caddy keeps its certificates under its home, /var/lib/caddy.
+  id caddy >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/caddy --create-home --shell /usr/sbin/nologin caddy
+  install -d -o caddy -g caddy -m 0755 /var/log/caddy
+  install -d -m 0755 /etc/caddy
+  install -m 0644 "$HERE/caddy.service" /etc/systemd/system/caddy.service
 }
 
 create_users() {
@@ -151,7 +177,7 @@ install_caddy_config() {
       die "/etc/caddy/Caddyfile is not the default: add 'import /etc/caddy/sites/*.caddy' to it, then run setup.sh again"
     fi
   fi
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+  out=$(caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1) || { echo "$out" >&2; die "Caddy rejected /etc/caddy/Caddyfile"; }
   # validate runs as root and may create the log file; Caddy runs as caddy.
   chown -R caddy:caddy /var/log/caddy
 }
