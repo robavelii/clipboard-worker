@@ -1435,9 +1435,8 @@ and runs the server as `node` (uid 1000), not root.
 **One build, then a runtime stage with no `RUN`.** The build stage runs
 on the builder's own platform (`--platform=$BUILDPLATFORM`), since a
 bundle of JavaScript is the same everywhere. The runtime stage only
-copies: the bundle, and an empty `/data` with its owner and mode set by
-`COPY --chown --chmod` (0700, which Docker copies onto a new named
-volume). With nothing to execute there, buildx assembles the arm64 image
+copies: the bundle, and an empty `/data`, owned by `node` and 0700. Docker
+copies that onto a new named volume. With nothing to execute there, buildx assembles the arm64 image
 on an x64 runner without QEMU. A `RUN` in that stage would bring
 emulation back, and with it a much slower build.
 
@@ -1452,6 +1451,10 @@ all five binaries have passed, tagged with the version and its
 binaries always come from the same tested release.
 
 Traps:
+- `COPY --chmod=0700 <dir> /data` set the mode with one BuildKit and
+  not with GitHub's runner's, leaving `/data` at 755. The directory is
+  made 0700 in the build stage and copied as an entry of its parent
+  (`COPY /out/ /`), whose mode every version keeps. CI checks the mode.
 - A host directory bind-mounted at `/data` keeps its owner and mode, so
   it must be writable by uid 1000. Only a named volume takes the
   image's.
