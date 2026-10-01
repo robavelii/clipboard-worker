@@ -50,9 +50,11 @@ jobs:
       CLIPSYNC_BUILD_ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v4
+      # The Node each binary carries (decisions §42): its minimum OS is the
+      # binary's, so moving it is a decision, not a routine bump.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       # Self-update, for real (decisions §34): a v0.0.1 build replaces itself,
