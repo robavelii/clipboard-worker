@@ -1231,3 +1231,61 @@ because Finder's text for a file is its name.
 `test/native-clipboard.test.ts` runs every backend against the real
 clipboard, including putting a file there and reading it back, on the
 Release workflow's Linux (Xvfb), macOS and Windows runners.
+
+## 38. The same server on Node: the bindings are the seam
+
+The Worker only ran on Cloudflare. To run it on a home server, a NAS or any
+VPS (and to stage on one), `apps/server` serves the Worker's own Hono app on
+Node.
+
+**No new abstraction layer.** The routes already reach the platform only
+through `c.env` and `c.executionCtx`: D1 (`prepare`/`bind`/`first`/`all`/
+`run`/`batch`), R2 (`put`/`get`/`delete`), the SyncRoom namespace
+(`getByName` and five methods), two rate limiters, the vars, and
+`waitUntil`. So those bindings are the interfaces, and the Node server
+supplies objects of the same shape: `node:sqlite` behind a D1-shaped API, a
+directory of files for R2, an in-process room on `ws`, an in-memory fixed
+window, `setInterval` for the cron. The only change to the Worker was moving
+the app out of `index.ts` into `app.ts`, so Node can import it without the
+Durable Object, which imports `cloudflare:workers`. The alternative,
+interfaces of our own with two implementations each, would have meant
+rewriting every route for no gain in what either runtime can do, and a
+third thing to keep in step. What the bindings choice costs: the Node side
+must reproduce D1's semantics exactly, not approximately. That is
+`batch` as one transaction, `meta.changes` counted for RETURNING statements
+too (conditional writes are the mutexes), booleans as 1/0, foreign keys on.
+`apps/server/test/d1.test.ts` pins each one. The e2e suite runs against
+both runtimes in CI, so a route that drifts on either fails there.
+
+**Built from the Worker, not copied from it.** The build reads
+`wrangler.jsonc` for the vars and rate limits, and bundles the migrations,
+so the two cannot drift. Migrations are recorded in wrangler's own
+`d1_migrations` table. Self-hosted storage is not billed per operation, so
+the R2 operation budgets are unlimited there; the byte ceiling stays
+(`--storage`).
+
+**The socket upgrade is the one real difference.** A Durable Object accepts
+a WebSocket inside `fetch` and returns 101. On Node the upgrade belongs to
+the HTTP server's `upgrade` event, outside any Request and Response. So the
+room's `fetch` checks the request the same way, parks the device's identity
+under a random handle, and returns the handle in a header. The server
+completes the upgrade only for a handle that came back on the sync route's
+response, and strips that header from every other response. Clients cannot
+mint one: the ticket check comes first, exactly as on Cloudflare.
+
+**What Cloudflare did that the server now does.**
+- It sets `CF-Connecting-IP` from the connection, and drops any copy a
+  client sent: the rate limits key on it. Behind a reverse proxy
+  (`--trust-proxy`), it takes the *last* `X-Forwarded-For` entry, the one the
+  proxy added, never the first, which is whatever the client claimed.
+- It applies `_headers` to the web UI (the CSP is the page's main defence).
+- It caps request bodies (32 MB).
+- It sends protocol-level pings to find dead sockets.
+- It shims `crypto.subtle.timingSafeEqual`, a Workers extension the
+  bootstrap route uses.
+
+Trap: Node's HTTP server sends any request with an `Upgrade` header to the
+`upgrade` event, even without `Connection: upgrade`. Only the upgrade path
+keeps the header; the plain path drops it, so a plain request to the socket
+route gets 426, never a handle.
+

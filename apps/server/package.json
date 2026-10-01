@@ -1,0 +1,27 @@
+{
+  "name": "@clipsync/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "clipsync-server": "./dist/clipsync-server.mjs"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/clipsync-server.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clipsync/protocol": "*",
+    "@hono/node-server": "^1.19.6",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

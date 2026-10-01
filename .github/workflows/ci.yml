@@ -1,5 +1,6 @@
 # Typecheck and unit tests on every push and PR, plus the end-to-end suite
-# against a local Worker -- the same checks a contributor runs by hand.
+# against a local Worker and against the Node server -- the same checks a
+# contributor runs by hand.
 # A push to main that passes both then migrates the production database and
 # deploys the Worker (docs/decisions.md §30).
 
@@ -81,9 +82,45 @@ jobs:
         if: failure()
         run: cat wrangler.log
 
+  # The same suite against the Node server (apps/server, decisions §38): the
+  # Worker's app on node:sqlite and a directory of files, with no wrangler
+  # in the loop. A route that relies on something only Cloudflare provides
+  # fails here.
+  e2e-node:
+    name: End-to-end against the Node server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:server
+      - name: Start the server
+        run: |
+          CLIPSYNC_ADMIN_SECRET=local-dev-admin-secret \
+            nohup node apps/server/dist/clipsync-server.mjs --data "$RUNNER_TEMP/clipsync-data" > server.log 2>&1 &
+      - name: Wait for it to answer
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8787/api/health && exit 0
+            sleep 1
+          done
+          echo "server did not come up"; cat server.log; exit 1
+      - name: The web UI is served with its CSP
+        run: curl -sfI http://127.0.0.1:8787/ | grep -i '^content-security-policy:'
+      - run: npm run e2e
+      # Twice: the suite must hold against a database it has already used,
+      # as it does against wrangler's.
+      - run: npm run e2e
+      - name: Server log
+        if: failure()
+        run: cat server.log
+
   deploy:
     name: Deploy to Cloudflare
-    needs: [check, e2e]
+    needs: [check, e2e, e2e-node]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
