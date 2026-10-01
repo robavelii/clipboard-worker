@@ -444,10 +444,21 @@ for (;;) {
 }
 `;
 
-/** A string literal for AppleScript: backslashes and quotes escaped. */
-export function appleScriptString(text: string): string {
-  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+/**
+ * Puts a file reference on the pasteboard through NSPasteboard, which stores
+ * it at once. AppleScript's `set the clipboard to (POSIX file …)` reports
+ * success yet, in about one write in five on Apple Silicon, leaves the
+ * pasteboard empty (decisions §37). The path arrives as an argument, so it
+ * needs no quoting.
+ */
+const MACOS_WRITE_FILE = `
+ObjC.import('AppKit');
+function run(argv) {
+  var pb = $.NSPasteboard.generalPasteboard;
+  pb.clearContents;
+  if (!pb.writeObjects($([$.NSURL.fileURLWithPath(argv[0])]))) throw new Error('the pasteboard refused the file');
 }
+`;
 
 /** The pasteboard class each image type is written under. */
 const MAC_IMAGE_CLASSES: Record<string, string> = {
@@ -516,11 +527,10 @@ export const macos: ClipboardBackend = {
   },
   // A file reference (furl), as Finder's Copy makes: Finder pastes the file.
   async writeFilePath(path) {
-    const { code, stderr } = await run(
-      "osascript",
-      ["-e", `set the clipboard to (POSIX file ${appleScriptString(path)})`],
-      { settleOn: "exit", env: utf8Env() },
-    );
+    const { code, stderr } = await run("osascript", ["-l", "JavaScript", "-e", MACOS_WRITE_FILE, path], {
+      settleOn: "exit",
+      env: utf8Env(),
+    });
     if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
   },
   watch: (onChange, onLost) =>

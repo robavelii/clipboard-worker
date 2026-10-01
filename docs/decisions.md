@@ -1232,6 +1232,16 @@ because Finder's text for a file is its name.
 clipboard, including putting a file there and reading it back, on the
 Release workflow's Linux (Xvfb), macOS and Windows runners.
 
+Trap: on macOS, AppleScript's `set the clipboard to (POSIX file …)`
+reports success but sometimes leaves the pasteboard empty, with no types
+at all, so re-reading never finds the file. Measured on the release
+runners, 18 of 80 writes were lost on Apple Silicon and 2 of 80 on
+Intel. It showed up as an intermittent failure of the native test. The
+agent writes the file reference through NSPasteboard instead
+(`writeObjects` with an `NSURL`, from JXA), which stored it in 160 of 160
+writes. Image writes go through AppleScript too, but they copy the bytes
+themselves, and none of 160 was lost.
+
 ## 38. The same server on Node: the bindings are the seam
 
 The Worker only ran on Cloudflare. To run it on a home server, a NAS or any

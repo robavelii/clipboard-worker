@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  appleScriptString,
   detectClipboard,
   macos,
   parseUriList,
@@ -329,12 +328,6 @@ describe("a file on the clipboard", () => {
     const list = uriListFor("/home/rob/Downloads/ClipSync/hadra photo #1.jpg");
     expect(list).toBe("file:///home/rob/Downloads/ClipSync/hadra%20photo%20%231.jpg\r\n");
     expect(parseUriList(list)).toEqual(["/home/rob/Downloads/ClipSync/hadra photo #1.jpg"]);
-  });
-
-  it("is a quoted AppleScript string on macOS", () => {
-    expect(appleScriptString('/Users/rob/a "quoted" \\ name.pdf')).toBe(
-      '"/Users/rob/a \\"quoted\\" \\\\ name.pdf"',
-    );
   });
 });
 

@@ -43,13 +43,7 @@ describe.skipIf(!native)("this machine's clipboard", () => {
 
   it("puts a file on the clipboard as a file", async () => {
     await clipboard.writeFilePath!(file);
-    // macOS on Intel can answer the first read before the pasteboard has
-    // the file; the daemon simply reads again on its next poll.
-    let files = await clipboard.readFiles!();
-    for (let i = 0; i < 20 && files.length === 0; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      files = await clipboard.readFiles!();
-    }
+    const files = await clipboard.readFiles!();
     expect(await Promise.all(files.map((f) => realpath(f)))).toEqual([file]);
   }, 60_000);
 
