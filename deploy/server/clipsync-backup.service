@@ -1,0 +1,6 @@
+[Unit]
+Description=ClipSync nightly snapshot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clipsync-backup

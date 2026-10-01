@@ -1,0 +1,34 @@
+[Unit]
+Description=ClipSync server
+Documentation=https://github.com/robavelii/clipboard-worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=clipsync
+Group=clipsync
+# CLIPSYNC_* settings (e.g. CLIPSYNC_STORAGE_BYTES); see server.env.
+EnvironmentFile=-/etc/clipsync/server.env
+# Behind Caddy on the same machine: only it can reach this port, and it sets
+# X-Forwarded-For, so --trust-proxy is right here and wrong anywhere else.
+ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/clipsync/current/clipsync-server.mjs \
+  --data /var/lib/clipsync --listen 127.0.0.1:8787 --trust-proxy
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/clipsync
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
