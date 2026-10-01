@@ -2,7 +2,8 @@
 # against a local Worker and against the Node server -- the same checks a
 # contributor runs by hand.
 # A push to main that passes both then migrates the production database and
-# deploys the Worker (docs/decisions.md §30).
+# deploys the Worker (docs/decisions.md §30), and deploys the Node server to
+# the staging host (§39).
 
 name: CI
 
@@ -166,3 +167,56 @@ jobs:
           echo "::error::clip.rfh.et did not answer after the deploy (last: HTTP $code)"
           head -c 600 body.txt 2>/dev/null
           exit 1
+
+  # The Node server to the staging host (deploy/server, decisions §39): the
+  # build e2e-node checked, installed by clipsync-deploy, which rolls back if
+  # it does not answer. Beside the Worker's deploy, not before it: staging
+  # runs a different target, so neither should hold the other up.
+  # The key may only upload a file and run clipsync-deploy. The secrets are
+  # given to the steps that use them, never to npm's install scripts.
+  deploy-staging:
+    name: Deploy to staging
+    needs: [check, e2e, e2e-node]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.clip.rfh.et
+    steps:
+      - name: Check for credentials
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$STAGING_SSH_KEY" ] || [ -z "$STAGING_HOST" ] || [ -z "$STAGING_KNOWN_HOSTS" ]; then
+            echo "::error::Set the STAGING_SSH_KEY, STAGING_HOST and STAGING_KNOWN_HOSTS repository secrets to deploy to staging (README, Staging)."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:server
+      - name: Pack the build
+        run: tar -czf "$RUNNER_TEMP/clipsync-server.tgz" -C apps/server/dist .
+      - name: Upload and switch to it
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          key="$RUNNER_TEMP/staging-key"
+          (umask 077 && printf '%s\n' "$STAGING_SSH_KEY" > "$key")
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          set -- -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts"
+          scp "$@" "$RUNNER_TEMP/clipsync-server.tgz" "clipsync-deploy@$STAGING_HOST:release.tgz"
+          ssh "$@" "clipsync-deploy@$STAGING_HOST" 'sudo /usr/local/sbin/clipsync-deploy "$HOME/release.tgz"'
+          rm -f "$key"
+      - name: Check it answers
+        run: |
+          curl -fsS --retry 5 --retry-all-errors https://staging.clip.rfh.et/api/health | tee body.txt
+          grep -q '"ok":true' body.txt

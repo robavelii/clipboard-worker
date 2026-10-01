@@ -1289,3 +1289,69 @@ Trap: Node's HTTP server sends any request with an `Upgrade` header to the
 keeps the header; the plain path drops it, so a plain request to the socket
 route gets 426, never a handle.
 
+
+## 39. Staging on a shared machine: one Caddy, a deploy key that can do one thing
+
+The Node server (§38) needed a real host before anyone relies on it. An
+Oracle Cloud Always Free instance serves as staging,
+`staging.clip.rfh.et`. It already runs other apps, which shaped most of
+what follows. `deploy/server/` holds the setup, deploy and backup scripts.
+
+**A tarball and a symlink, not a container or a build on the server.** CI
+builds `apps/server/dist` (the server and the web UI, nothing to install),
+packs it, and `clipsync-deploy` unpacks it into
+`/opt/clipsync/releases/<time>`, points `current` at it, restarts the unit
+and waits for `/api/health`. If that doesn't answer within 30 s, it points
+back at the previous release. Five are kept. Building on the server would
+put npm, a checkout and every install script on the machine. A container
+would add an image registry and a second way to run the server, unlike
+the one every self-hoster gets. Node itself comes from nodejs.org, checked
+against its `SHASUMS256.txt`, not from Ubuntu's archive, which trails it.
+
+**The CI key can do one thing.** It logs in as `clipsync-deploy`, whose
+only sudo rule is `/usr/local/sbin/clipsync-deploy`. A key with an admin
+login would hand every other app on the machine to whoever reads the
+repository's secrets. The deploy job gives the secrets only to the steps
+that use them, not to the job, so `npm ci`'s install scripts never see the
+key. Staging deploys beside the Worker's production deploy, not before it:
+they are different targets, and neither should hold the other up.
+
+**One Caddy per machine, a site file per app.** `/etc/caddy/Caddyfile`
+only imports `/etc/caddy/sites/*.caddy`, and setup.sh owns
+`sites/clipsync.caddy`, nothing else. The machine's existing app ran its
+own Caddy in Docker, holding 80 and 443, with its config in that app's
+repository. The alternatives:
+- Adding ClipSync's site to that Caddy. That ties ClipSync's ingress to
+  another repository's deploys, which reset the file.
+- A Cloudflare tunnel. It needs no ports, but it keeps Cloudflare in the
+  request path that staging exists to take it out of.
+- A second proxy on other ports. Browsers and ACME need 80 and 443.
+
+What one shared Caddy costs: the other app's site moves into a
+server-owned `sites/` file, its own Caddy is disabled by a
+`docker-compose.override.yml` (which that repository already ignores), and
+its API is published on loopback. If that app ever changes how it is
+proxied, its site file must follow by hand. setup.sh never takes 80 or 443
+from another process: it installs Caddy, leaves it disabled so it can't
+race that proxy at boot, and says what to move.
+
+**Backups** are `VACUUM INTO` (SQLite's consistent copy of a live database)
+plus an archive of the blobs, nightly, 14 days, with a hook to copy each
+snapshot off the machine. Everything in them is ciphertext.
+
+Traps:
+- Caddy's apt repository went unusable when its signing key expired
+  (EXPKEYSIG). With its source list installed, `apt-get update` failed for
+  the whole machine. setup.sh installs Caddy's release binary, checked
+  against the release's SHA-512 sums, and writes the unit and user the
+  package used to provide.
+- Oracle's Ubuntu images end the INPUT chain with a REJECT. An ACCEPT
+  appended after it exists, so `iptables -C` passes, but it never matches.
+  Ports Docker publishes skip INPUT, so a Docker proxy on the same machine
+  works and hides the fault until a host process binds 80. setup.sh
+  deletes and re-inserts its rules at the top.
+- Caddy keeps certificates in memory across `reload`. Replacing its
+  storage underneath leaves it serving what it holds, and the loss shows
+  only at the next restart.
+- A restore must delete `clipsync.db-wal` and `clipsync.db-shm` before
+  copying the snapshot in, or SQLite replays the old log over it.
