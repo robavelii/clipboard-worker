@@ -1545,3 +1545,54 @@ are still shared. One account can fill them, and the others are then
 refused rather than robbed. Per-account quotas are the next step (the
 multi-account design doc, PR 2). The e2e suite can't create a second
 account until signup exists (PR 3).
+
+## 44. Plans: per-account limits, read with the device
+
+With more than one account, the Worker's R2 budgets (§26) are shared. §43
+stopped one account taking another's files; this stops one account filling
+everything. Each account has a plan, and the plan sets limits of its own
+inside the Worker's budgets, which stay the outer guard.
+
+**Plans are rows, not code.** A `plans` table holds each plan's numbers:
+devices, text and file retention, whether files other than images sync,
+bytes held, and R2 operations a month. A NULL means no limit of the plan's
+own. `users.plan` names the account's plan. Existing accounts default to
+`unlimited`, which sets nothing, so the owner's deployment behaves as
+before. `free` carries #24's proposal (3 devices, 7 days, text and images)
+plus starting quotas of its own: 50 MB held, and 2,000 uploads and 20,000
+downloads a month. Changing a number,
+or an account's plan, is an UPDATE, not a deploy, which is also what
+billing will do later. Limits in code would have been typed and reviewed,
+but changing a price or a quota would have taken a release.
+
+**Read with the device, checked where it applies.** `resolveToken` already
+reads the device on every authenticated request, so it joins the
+account's plan in the same query. A route reads `c.var.device.plan` and
+never makes another trip (§31). Each limit is enforced where its resource
+is spent, in the statement that spends it:
+- **Devices:** `createDevice` inserts only while the account's count is
+  under the plan's, in one conditional INSERT, so two enrolments at once
+  can't both take the last place. It runs for pairing, invites, links and
+  bootstrap alike.
+- **Retention and files:** the clip routes set `expires_at` from the
+  plan's days, and refuse a `file` clip when the plan doesn't sync files.
+- **Bytes held:** `reserveBlob`'s conditional insert checks the Worker's
+  ceiling and the account's quota together. Eviction already takes only the
+  uploader's files (§43).
+- **R2 operations:** `spend()` keeps `account_usage` beside `r2_usage`.
+
+**Two counts that move together.** `spend()` checks both budgets with
+the conditional UPDATE of the Worker's count, as before, and in the same
+statement stamps that row with a marker unique to the call. The next
+statement in the batch increments the account's count only where the
+stamp is that marker. The batch is one transaction, so either both counts
+move or neither does, in one round trip. Checking the account first would
+have meant a second statement that could take the Worker's budget while
+the first was refused, and a compensating decrement to undo it.
+
+Traps:
+- SQLite refuses `REFERENCES` on an added column with a non-NULL default,
+  so `users.plan` has no foreign key. An account naming a missing plan is
+  logged and gets no limits of its own.
+- The test setup puts `free` back to its seeded numbers before each test,
+  since tests change them; plans aren't cleared with the other tables.

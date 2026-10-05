@@ -767,14 +767,26 @@ only thing that touches the bucket. The budget is set in `vars` in
 
 | | Free tier | Budget | Past it |
 |---|---|---|---|
-| Storage | 10 GB-month | 5 GB held at any moment | the oldest unpinned files are deleted to make room |
+| Storage | 10 GB-month | 5 GB held at any moment | the uploader's oldest unpinned files are deleted to make room |
 | Uploads (Class A) | 1M a month | 500k a month | refused until the 1st |
 | Downloads (Class B) | 10M a month | 5M a month | refused until the 1st |
 
-A new file is refused only when pinned files alone fill the storage budget.
-Uploads that never became a clip are swept after an hour, and files are
-limited to 25 MB. `clipsync status` shows how much of each budget this month
-has used.
+A new file is refused only when the uploader has no unpinned file left to
+delete: one account's upload never removes another's files. Uploads that
+never became a clip are swept after an hour, and files are limited to 25 MB.
+`clipsync status` shows how much of each budget this month has used.
+
+**Plans.** Each account has a plan, a row in the `plans` table, that can set
+lower limits of its own inside those budgets: devices, how long clips live,
+whether files other than images sync, bytes held, and R2 operations a month.
+Existing accounts are on `unlimited`, which sets none. `free` is what signup
+will give new accounts on a hosted server: 3 devices, 7 days, text and
+images, 50 MB, 2,000 uploads and 20,000 downloads a month. Change a plan's
+numbers, or an account's plan, with one `UPDATE`:
+
+```bash
+npx wrangler d1 execute clipsync --remote --command "UPDATE users SET plan = 'unlimited' WHERE id = '<account id>'"
+```
 
 ## Repository layout
 
