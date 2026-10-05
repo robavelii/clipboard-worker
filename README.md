@@ -315,6 +315,10 @@ To make an account, run `clipsync signup --url https://clip.example.org`
 (add `--invite SIGNUP-…` if you have one), or use "Make an account" on the
 web UI. It asks for the code from the email, then a new passphrase.
 
+An account bootstrap made has no address until you give it one:
+`clipsync email you@example.org` mails a code to it, then asks for the code
+and the passphrase. The same command changes it, and the old address is told.
+
 A device with no other device at hand signs into its account with the email
 and the passphrase: `clipsync signin --url …`, or "Sign in" on the web UI.
 The server checks the passphrase's proof, never the passphrase, and stops
@@ -454,6 +458,7 @@ letting you discover the mistake later.
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync watch` | Print each clipboard change as it happens: shows whether the agent hears of copies or polls |
 | `clipsync logout` | Revoke this machine's devices, then forget local credentials |
+| `clipsync email <address>` | Give the account an email address, or a new one: a code mailed to it, plus the passphrase |
 | `clipsync export <dir> [--ciphertext]` | Save every clip and file, decrypted on this device (or the server's ciphertext as it comes) |
 | `clipsync delete-account [--by-email]` | Delete the account and everything in it, confirmed by the passphrase or a code mailed to the account |
 | `clipsync install [--dry-run]` | Run the agent in the background at every login (see below) |

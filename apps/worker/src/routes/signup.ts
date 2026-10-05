@@ -47,7 +47,7 @@ export function normaliseEmail(value: unknown): string | null {
   return /^[^@]{1,64}@[^@]+\.[^@]{2,}$/.test(email) ? email : null;
 }
 
-function requireEmail(value: unknown): string {
+export function requireEmail(value: unknown): string {
   const email = normaliseEmail(value);
   if (!email) throw new HTTPException(400, { message: "a valid email address is required" });
   return email;

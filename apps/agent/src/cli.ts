@@ -15,7 +15,7 @@ import {
   inspectLink,
   parseLinkUrl,
 } from "@clipsync/client/link";
-import { deleteAccountWithPassphrase, requestSignupCode, signIn, signUp } from "@clipsync/client/account";
+import { deleteAccountWithPassphrase, requestSignupCode, setAccountEmail, signIn, signUp } from "@clipsync/client/account";
 import { createInvite } from "@clipsync/client/invite";
 import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
@@ -87,6 +87,7 @@ Usage
   clipsync uninstall                                    Stop and remove that background service
   clipsync update                                       Update to the newest release (the service does it daily)
   clipsync logout                                       Forget local credentials
+  clipsync email <address>                              Give the account an email address (or change it)
   clipsync export <dir> [--ciphertext]                  Save every clip and file, decrypted here
   clipsync delete-account [--by-email]                  Delete the account and everything in it, for good
   clipsync serve [--data <dir>] [--listen <host:port>]  Run the ClipSync server here (serve --help)
@@ -1058,8 +1059,9 @@ async function cmdStatus(): Promise<void> {
 
   const api = new ApiClient(config.baseUrl, config.token);
   try {
-    await api.me();
+    const me = await api.me();
     console.log("worker     reachable, token valid");
+    console.log(`account    ${me.email ?? "no email address (`clipsync email <address>` adds one)"}`);
     console.log(`latency    ${await measureLatency(config.baseUrl, api)}`);
   } catch (err) {
     console.log(`worker     ${err instanceof Error ? err.message : err}`);
@@ -1138,6 +1140,23 @@ async function cmdExport(dir: string | undefined, ciphertext: boolean): Promise<
   console.log(`Saved ${plural(clips.length, "clip")} (${plural(files, "file")}) to ${dir}, decrypted.`);
   if (unreadable) console.log(`${clipCount(unreadable)} unreadable here, and listed without content.`);
   console.log("That folder holds your clips in the clear: keep it somewhere safe.");
+}
+
+/**
+ * Give the account an address, or a new one: the handle for signing in with
+ * no device at hand, and for confirming a deletion by mail. Takes a code
+ * mailed to it and the passphrase.
+ */
+async function cmdEmail(email: string | undefined): Promise<void> {
+  if (!email) throw new Error("usage: clipsync email <address>");
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  await api.requestEmailCode(email);
+  console.log(`A code is on its way to ${email}.`);
+  const code = await ask("Code from the email: ");
+  const passphrase = await askSecret("Passphrase: ");
+  const set = await setAccountEmail(api, { email, code, passphrase, kdfSalt: config.kdfSalt });
+  console.log(`The account's address is now ${set}.`);
 }
 
 /** Delete the account and everything in it, confirmed by the passphrase or a mailed code. */
@@ -1276,6 +1295,8 @@ async function main(): Promise<void> {
       return cmdWatch();
     case "logout":
       return cmdLogout();
+    case "email":
+      return cmdEmail(arg);
     case "export":
       return cmdExport(arg, values.ciphertext ?? false);
     case "delete-account":

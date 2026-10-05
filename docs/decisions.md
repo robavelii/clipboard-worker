@@ -1709,3 +1709,23 @@ Traps:
   so a refused file cost its upload operations (the client deleted the
   blob after). Clients now send `type` when reserving, and the server
   refuses a file there; older clients still meet the later check.
+
+## 47. Setting an account's address takes the passphrase too
+
+Accounts that bootstrap made have no address, so they can't sign in
+without a device or confirm a deletion by mail. `clipsync email <address>`
+gives an account an address, or changes it.
+
+**A code to the new address, and the passphrase's proof.** The code shows
+the address is the holder's. The proof is there because of §46: a mailed
+code can confirm a deletion by itself. If a device token alone could move
+the address, a stolen device could point it at an inbox the thief reads,
+then delete the account with a code mailed there. Requiring the proof
+means a device that joined by link or invite can't change the address;
+the passphrase holder can. When an address is replaced, the old one is
+told what it changed to and from which device, so a change nobody meant
+doesn't go unseen. A new address another account uses is refused when the
+code is requested, and again in the UPDATE that sets it, in case two
+accounts race for it.
+
+`/api/auth/me` now reports the address, and `clipsync status` shows it.

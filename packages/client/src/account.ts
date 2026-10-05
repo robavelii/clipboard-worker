@@ -39,6 +39,19 @@ export async function deleteAccountWithPassphrase(api: ApiClient, passphrase: st
   await api.deleteAccount({ authProof });
 }
 
+/**
+ * Give the account `api`'s device belongs to the address `email`, with the
+ * code mailed to it and the passphrase (decisions §47): the proof goes to
+ * the server, never the passphrase.
+ */
+export async function setAccountEmail(
+  api: ApiClient,
+  opts: { email: string; code: string; passphrase: string; kdfSalt: string },
+): Promise<string> {
+  const { authProof } = await openVault(opts.passphrase, opts.kdfSalt);
+  return (await api.setEmail({ email: opts.email, code: opts.code, authProof })).email;
+}
+
 /** Ask the server to mail a signup code to `email`. */
 export function requestSignupCode(baseUrl: string, email: string, fetchImpl?: typeof fetch): Promise<unknown> {
   return new ApiClient(baseUrl, undefined, fetchImpl).signupEmail(email);

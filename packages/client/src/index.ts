@@ -36,6 +36,7 @@ import type {
   RotateVaultResponse,
   SealedVaultKeyResponse,
   SetDeviceKeyRequest,
+  SetEmailRequest,
   SigninRequest,
   SigninSaltResponse,
   SignupRequest,
@@ -122,6 +123,16 @@ export class ApiClient {
   /** This account as the server holds it: ciphertext and metadata (decisions §46). */
   exportAccount(): Promise<AccountExport> {
     return this.request("/api/account/export");
+  }
+
+  /** Mail a code to the address this account is to have. */
+  requestEmailCode(email: string): Promise<{ ok: boolean }> {
+    return this.request("/api/account/email/code", { method: "POST", body: JSON.stringify({ email }) });
+  }
+
+  /** Set this account's address, with the mailed code and the passphrase's proof. */
+  setEmail(body: SetEmailRequest): Promise<{ ok: boolean; email: string }> {
+    return this.request("/api/account/email", { method: "PUT", body: JSON.stringify(body) });
   }
 
   /** Mail a code that confirms deleting this account, to its address. */
