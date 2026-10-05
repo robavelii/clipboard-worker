@@ -214,3 +214,42 @@ describe("behind a proxy (trustProxy)", () => {
     expect((await bootstrap(server.url, { "x-forwarded-for": "198.51.100.8" }, "wrong")).status).toBe(403);
   });
 });
+
+describe("a proxy nobody said to trust", () => {
+  const PROXY = /a proxy on this machine is forwarding requests, but --trust-proxy is off/;
+
+  async function startLogging(trustProxy: boolean) {
+    const logged: string[] = [];
+    const server = await startServer({
+      dataDir: mkdtempSync(join(tmpdir(), "clipsync-data-")),
+      port: 0,
+      trustProxy,
+      adminSecret: ADMIN,
+      log: (entry) => logged.push(String(entry.msg)),
+    });
+    return { server, logged };
+  }
+
+  it("is pointed out once, for a forwarded request over loopback", async () => {
+    const { server, logged } = await startLogging(false);
+    try {
+      await raw(server.url, "/api/health", {});
+      expect(logged.filter((m) => PROXY.test(m))).toHaveLength(0);
+      await raw(server.url, "/api/health", { "x-forwarded-for": "203.0.113.7" });
+      await raw(server.url, "/api/health", { "x-forwarded-for": "203.0.113.8" });
+      expect(logged.filter((m) => PROXY.test(m))).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("is not mentioned when the proxy is trusted", async () => {
+    const { server, logged } = await startLogging(true);
+    try {
+      await raw(server.url, "/api/health", { "x-forwarded-for": "203.0.113.7" });
+      expect(logged.filter((m) => PROXY.test(m))).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+});

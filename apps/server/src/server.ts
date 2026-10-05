@@ -108,6 +108,21 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       : null;
   const trustProxy = options.trustProxy ?? false;
 
+  // A proxy on this machine that nobody said to trust: every request then
+  // seems to come from loopback, which the rate limits exempt, and links
+  // carry the proxy's scheme. Said once, at the first forwarded request
+  // over loopback. Never for one from elsewhere: any client can send the
+  // header, and trusting it there would let clients claim any address.
+  let warnedProxy = false;
+  function noticeProxy(incoming: IncomingMessage): void {
+    if (trustProxy || warnedProxy || !incoming.headers["x-forwarded-for"]) return;
+    if (!isLoopback(incoming.socket.remoteAddress)) return;
+    warnedProxy = true;
+    log({
+      msg: "a proxy on this machine is forwarding requests, but --trust-proxy is off: every client looks like 127.0.0.1, which the rate limits exempt. Pass --trust-proxy (CLIPSYNC_TRUST_PROXY=1).",
+    });
+  }
+
   async function handle(request: Request, path: string): Promise<Response> {
     if (isWorkerPath(path) || !assets || (request.method !== "GET" && request.method !== "HEAD")) {
       return app.fetch(request, env, ctx);
@@ -119,6 +134,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     async (raw, bindings: HttpBindings | Http2Bindings) => {
       // An HTTP/1.1 server: always an IncomingMessage.
       const incoming = bindings.incoming as IncomingMessage;
+      noticeProxy(incoming);
       const declared = Number(incoming.headers["content-length"] ?? 0);
       if (declared > MAX_BODY_BYTES) return new Response("request body too large", { status: 413 });
       const request = toWorkerRequest(raw, incoming, trustProxy, { upgrade: false });
@@ -140,6 +156,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   server.on("upgrade", (incoming: IncomingMessage, socket: Duplex, head: Buffer) => {
     void (async () => {
       try {
+        noticeProxy(incoming);
         const url = requestUrl(incoming, trustProxy);
         const request = new Request(url, {
           method: incoming.method ?? "GET",
@@ -227,6 +244,13 @@ function requestUrl(incoming: IncomingMessage, trustProxy: boolean): URL {
   const proto = (trustProxy && first(incoming.headers["x-forwarded-proto"])) || (encrypted ? "https" : "http");
   const host = (trustProxy && first(incoming.headers["x-forwarded-host"])) || incoming.headers.host || "localhost";
   return new URL(incoming.url ?? "/", `${proto}://${host}`);
+}
+
+/** 127.0.0.0/8 and ::1, also as IPv4-mapped IPv6 (a dual-stack listener's form). */
+function isLoopback(address: string | undefined): boolean {
+  if (!address) return false;
+  const v4 = address.startsWith("::ffff:") ? address.slice(7) : address;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4) || address === "::1";
 }
 
 /**
