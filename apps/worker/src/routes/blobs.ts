@@ -92,6 +92,10 @@ export const blobRoutes = new Hono<AppEnv>()
         message: `chunks must be 1 to ${MAX_CHUNKS}, and bytes what they hold (files up to ${MAX_FILE_BYTES} bytes)`,
       });
     }
+    // Refused here, before the upload, when the client says what it is for.
+    if (body.type === "file" && !c.var.device.plan.files) {
+      throw new HTTPException(403, { message: "this account's plan syncs text and images, not other files" });
+    }
     const id = newId("blob");
     if (!(await reserveBlob(c.env, c.var.device, id, chunks!, bytes!))) {
       return overBudget(c, "no room for this file: storage is full, and none of your files can make room (pinned files stay; a plan may cap the total)");

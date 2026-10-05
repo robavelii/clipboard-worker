@@ -344,6 +344,12 @@ export interface CreateBlobRequest {
   chunks: number;
   /** Total ciphertext bytes across all chunks. */
   bytes: number;
+  /**
+   * The clip it is for, so a plan that syncs no files can refuse one before
+   * a byte is uploaded. Older clients send none, and are refused when the
+   * clip is created instead.
+   */
+  type?: "image" | "file";
 }
 
 export interface CreateBlobResponse {

@@ -1704,7 +1704,8 @@ Traps:
 - A new table holding an account's data needs `ON DELETE CASCADE` from
   `users` or a line in `deleteAccount`. Otherwise deletion leaves it
   behind, which is what `link_requests` would have done.
-- The free plan refuses `file` clips only when the clip is created, after
-  the upload. The reservation doesn't say what it's for, so a refused
-  file costs an upload, swept within the hour. To fix next: say the type
-  when reserving.
+- The free plan first refused `file` clips only when the clip was
+  created, after the upload. The reservation didn't say what it was for,
+  so a refused file cost its upload operations (the client deleted the
+  blob after). Clients now send `type` when reserving, and the server
+  refuses a file there; older clients still meet the later check.
