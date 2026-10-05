@@ -87,11 +87,13 @@ export async function getUserOfDevice(db: D1Database, deviceId: string): Promise
 }
 
 /**
- * The first account: the one `bootstrap` creates, and enrols the admin
- * secret's devices into. Only bootstrap asks for it.
+ * The admin's account: the one `bootstrap` creates, and enrols the admin
+ * secret's devices into. Marked, not the oldest, so that once it is deleted
+ * the admin secret makes a new one rather than joining someone else's
+ * (decisions §46). Only bootstrap asks for it.
  */
-export async function firstUser(db: D1Database): Promise<UserRow | null> {
-  return db.prepare("SELECT * FROM users ORDER BY created_at ASC LIMIT 1").first<UserRow>();
+export async function adminUser(db: D1Database): Promise<UserRow | null> {
+  return db.prepare("SELECT * FROM users WHERE admin = 1").first<UserRow>();
 }
 
 /** Raw P-256 point, base64url: 65 bytes -> 87 characters. */

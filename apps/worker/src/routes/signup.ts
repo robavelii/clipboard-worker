@@ -54,7 +54,7 @@ function requireEmail(value: unknown): string {
 }
 
 /** Six digits, uniform: rejection sampling, so no digit is likelier than another. */
-function sixDigits(): string {
+export function sixDigits(): string {
   const buf = new Uint32Array(1);
   for (;;) {
     crypto.getRandomValues(buf);

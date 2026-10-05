@@ -12,6 +12,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ApiError } from "@clipsync/protocol";
 import { agentGate } from "./agent-gate";
+import { accountRoutes } from "./routes/account";
 import { authRoutes } from "./routes/auth";
 import { blobRoutes } from "./routes/blobs";
 import { clipRoutes } from "./routes/clips";
@@ -33,6 +34,7 @@ export const app = new Hono<{ Bindings: Env }>()
   .use("/api/*", agentGate)
 
   .route("/api/auth", authRoutes)
+  .route("/api/account", accountRoutes)
   .route("/api/signup", signupRoutes)
   .route("/api/signin", signinRoutes)
   .route("/api/devices", deviceRoutes)
