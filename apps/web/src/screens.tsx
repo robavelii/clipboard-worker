@@ -1,10 +1,224 @@
-/** Pre-session screens: pairing this browser, and unlocking the vault. */
+/** Pre-session screens: enrolling this browser (pair, sign in, sign up), and unlocking the vault. */
 
 import { useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
+import { requestSignupCode, signIn, signUp, type Enrolled } from "@clipsync/client/account";
 import type { Credentials } from "@clipsync/protocol";
 import type { VaultRing } from "@clipsync/client/ring";
-import { saveCredentials, unlockWithPassphrase } from "./session";
+import { cacheEnrolmentKey, saveCredentials, unlockWithPassphrase } from "./session";
+
+type Way = "pair" | "signin" | "signup";
+
+/** How this browser joins: a pairing code, the account's email and passphrase, or a new account. */
+export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
+  const [way, setWay] = useState<Way>("pair");
+  const others: [Way, string][] = (
+    [
+      ["pair", "Pair with a code"],
+      ["signin", "Sign in"],
+      ["signup", "Make an account"],
+    ] as [Way, string][]
+  ).filter(([w]) => w !== way);
+  return (
+    <div className="enrol">
+      {way === "pair" && <PairScreen onPaired={onEnrolled} />}
+      {way === "signin" && <SignInScreen onEnrolled={onEnrolled} />}
+      {way === "signup" && <SignUpScreen onEnrolled={onEnrolled} />}
+      <p className="muted small">
+        {others.map(([w, label], i) => (
+          <span key={w}>
+            {i > 0 && " · "}
+            <button type="button" className="link" onClick={() => setWay(w)}>
+              {label}
+            </button>
+          </span>
+        ))}
+      </p>
+    </div>
+  );
+}
+
+/** Keep what an enrolment returned: the credentials, and the vault key for this tab. */
+function keep({ credentials, vaultKey }: Enrolled): void {
+  saveCredentials(credentials);
+  cacheEnrolmentKey(vaultKey, credentials.keyEpoch);
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function SignInScreen({ onEnrolled }: { onEnrolled: () => void }) {
+  const [email, setEmail] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [name, setName] = useState("Browser");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      keep(await signIn({ baseUrl: "", email, passphrase, deviceName: name, platform: "web" }));
+      onEnrolled();
+    } catch (err) {
+      setError(message(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="card" onSubmit={submit}>
+      <h1>Sign in</h1>
+      <p className="muted">
+        With no other device at hand: your account's email and passphrase. The passphrase never leaves this
+        browser; only a proof of it does.
+      </p>
+      <label>
+        Email
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+      </label>
+      <label>
+        Passphrase
+        <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} required />
+      </label>
+      <label>
+        Device name
+        <input value={name} onChange={(e) => setName(e.target.value)} required />
+      </label>
+      {error && <p className="error">{error}</p>}
+      <button type="submit" disabled={busy}>
+        {busy ? "Signing in…" : "Sign in"}
+      </button>
+    </form>
+  );
+}
+
+function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
+  const [email, setEmail] = useState("");
+  const [withInvite, setWithInvite] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [invite, setInvite] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [name, setName] = useState("Browser");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function sendCode(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await requestSignupCode("", email);
+      setCodeSent(true);
+    } catch (err) {
+      setError(message(err));
+    }
+    setBusy(false);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (passphrase !== confirm) {
+      setError("The passphrases don't match.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      keep(
+        await signUp({
+          baseUrl: "",
+          email,
+          passphrase,
+          deviceName: name,
+          platform: "web",
+          ...(withInvite ? { invite } : { code }),
+        }),
+      );
+      onEnrolled();
+    } catch (err) {
+      setError(message(err));
+      setBusy(false);
+    }
+  }
+
+  if (!withInvite && !codeSent) {
+    return (
+      <form className="card" onSubmit={sendCode}>
+        <h1>Make an account</h1>
+        <p className="muted">We'll email you a six-digit code to confirm the address.</p>
+        <label>
+          Email
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <button type="submit" disabled={busy}>
+          {busy ? "Sending…" : "Email me a code"}
+        </button>
+        <button type="button" className="link" onClick={() => setWithInvite(true)}>
+          I have an invite instead
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <form className="card" onSubmit={submit}>
+      <h1>Make an account</h1>
+      {withInvite ? (
+        <>
+          <label>
+            Email
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+          </label>
+          <label>
+            Invite
+            <input value={invite} onChange={(e) => setInvite(e.target.value)} placeholder="SIGNUP-…" required />
+          </label>
+        </>
+      ) : (
+        <>
+          <p className="muted">If {email} can sign up here, a code is on its way to it.</p>
+          <label>
+            Code from the email
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              required
+            />
+          </label>
+        </>
+      )}
+      <label>
+        Encryption passphrase
+        <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} required />
+      </label>
+      <label>
+        Passphrase again
+        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+      </label>
+      <label>
+        Device name
+        <input value={name} onChange={(e) => setName(e.target.value)} required />
+      </label>
+      <p className="muted small">
+        The passphrase encrypts everything you copy and never leaves your devices. Nobody, not the server
+        either, can recover your clips without it.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <button type="submit" disabled={busy}>
+        {busy ? "Creating…" : "Create the account"}
+      </button>
+    </form>
+  );
+}
 
 export function PairScreen({ onPaired }: { onPaired: () => void }) {
   const [code, setCode] = useState("");
