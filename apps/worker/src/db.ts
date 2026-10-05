@@ -69,11 +69,29 @@ export function toClip(row: ClipRow): Clip {
   };
 }
 
-/** The single account this deployment serves, if it has been bootstrapped. */
-export async function getUser(db: D1Database): Promise<UserRow | null> {
+/**
+ * The account `id`. Every request that acts for an account names it -- by
+ * the calling device, or the code, invite or link it presents -- and reads
+ * it here, never "the" account: a server can hold several.
+ */
+export async function getUserById(db: D1Database, id: string): Promise<UserRow | null> {
+  return db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+}
+
+/** The account `deviceId` belongs to. */
+export async function getUserOfDevice(db: D1Database, deviceId: string): Promise<UserRow | null> {
   return db
-    .prepare("SELECT * FROM users ORDER BY created_at ASC LIMIT 1")
+    .prepare("SELECT u.* FROM users u JOIN devices d ON d.user_id = u.id WHERE d.id = ?")
+    .bind(deviceId)
     .first<UserRow>();
+}
+
+/**
+ * The first account: the one `bootstrap` creates, and enrols the admin
+ * secret's devices into. Only bootstrap asks for it.
+ */
+export async function firstUser(db: D1Database): Promise<UserRow | null> {
+  return db.prepare("SELECT * FROM users ORDER BY created_at ASC LIMIT 1").first<UserRow>();
 }
 
 /** Raw P-256 point, base64url: 65 bytes -> 87 characters. */
