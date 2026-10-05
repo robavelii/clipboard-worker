@@ -15,7 +15,7 @@ import {
   loadCredentials,
   syncRing,
 } from "./session";
-import { PairScreen, UnlockScreen } from "./screens";
+import { EnrolScreen, UnlockScreen } from "./screens";
 import { LinkApproval, readLinkFromLocation } from "./LinkApproval";
 import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
 import { ShareScreen } from "./ShareScreen";
@@ -174,7 +174,7 @@ export function App() {
     );
   }
 
-  if (!creds) return <Centered><PairScreen onPaired={() => setCreds(loadCredentials())} /></Centered>;
+  if (!creds) return <Centered><EnrolScreen onEnrolled={() => setCreds(loadCredentials())} /></Centered>;
 
   // An approval seals the vault key, so it waits behind the unlock screen
   // like everything else.

@@ -15,6 +15,7 @@ import {
   inspectLink,
   parseLinkUrl,
 } from "@clipsync/client/link";
+import { requestSignupCode, signIn, signUp } from "@clipsync/client/account";
 import { createInvite } from "@clipsync/client/invite";
 import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
@@ -63,7 +64,9 @@ import { ask, askNewPassphrase, askSecret, closePrompts } from "./prompt";
 const USAGE = `clipsync — encrypted clipboard sync
 
 Usage
-  clipsync login --url <worker-url> [--name <device>]   Create the account, enrol this device
+  clipsync login --url <worker-url> [--name <device>]   Enrol with the admin secret (the first account)
+  clipsync signup --url <url> [--invite <code>]         Make a new account: a code by email, or an invite
+  clipsync signin --url <url> [--email <address>]       Join your account by email and passphrase
   clipsync link --url <url> [--name <device>]           Join by QR -- no passphrase typing
   clipsync invite                                       Show a QR for a phone to scan
   clipsync approve <link-url>                           Approve a device that ran 'clipsync link'
@@ -196,6 +199,61 @@ async function undoEnrolment(api: ApiClient): Promise<void> {
 }
 
 /* ------------------------------ commands ------------------------------- */
+
+/**
+ * A new account on a server that has more than one (decisions §45): with an
+ * admin's invite, or with a code the server mails to the address.
+ */
+async function cmdSignup(opts: { url?: string; name?: string; email?: string; invite?: string }): Promise<void> {
+  const baseUrl = opts.url ?? (await ask("Server URL: "));
+  if (!baseUrl) throw new Error("--url is required");
+  const email = opts.email ?? (await ask("Email: "));
+  const deviceName = opts.name ?? hostname();
+
+  let code: string | undefined;
+  if (!opts.invite) {
+    await requestSignupCode(baseUrl, email);
+    console.log(`If ${email} can sign up here, a code is on its way to it.`);
+    code = await ask("Code from the email: ");
+  }
+  const passphrase = await askNewPassphrase();
+
+  const { credentials, vaultKey, proofConflict } = await signUp({
+    baseUrl,
+    email,
+    code,
+    invite: opts.invite,
+    passphrase,
+    deviceName,
+    platform: currentPlatform(),
+  });
+  await enrol(baseUrl, deviceName, credentials, vaultKey);
+  if (proofConflict) warnProofConflict();
+  console.log(`Created the account for ${email}, and enrolled "${deviceName}" (${credentials.deviceId}).`);
+  console.log("Keep the passphrase safe: nobody, not the server either, can recover your clips without it.");
+  console.log(`\nNext: clipsync run`);
+}
+
+/** This device into an existing account, by its email and passphrase, with no other device at hand. */
+async function cmdSignin(opts: { url?: string; name?: string; email?: string }): Promise<void> {
+  const baseUrl = opts.url ?? (await ask("Server URL: "));
+  if (!baseUrl) throw new Error("--url is required");
+  const email = opts.email ?? (await ask("Email: "));
+  const deviceName = opts.name ?? hostname();
+  const passphrase = await askSecret("Passphrase: ");
+
+  const { credentials, vaultKey, proofConflict } = await signIn({
+    baseUrl,
+    email,
+    passphrase,
+    deviceName,
+    platform: currentPlatform(),
+  });
+  await enrol(baseUrl, deviceName, credentials, vaultKey);
+  if (proofConflict) warnProofConflict();
+  console.log(`Signed in as ${email}: enrolled "${deviceName}" (${credentials.deviceId}).`);
+  console.log(`\nNext: clipsync run`);
+}
 
 async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
   const baseUrl = opts.url ?? (await ask("Worker URL: "));
@@ -1074,6 +1132,8 @@ async function main(): Promise<void> {
       version: { type: "boolean", short: "V" },
       "dry-run": { type: "boolean" },
       to: { type: "string" },
+      email: { type: "string" },
+      invite: { type: "string" },
     },
   });
 
@@ -1096,6 +1156,10 @@ async function main(): Promise<void> {
   switch (command) {
     case "login":
       return cmdLogin({ url: values.url, name: values.name });
+    case "signup":
+      return cmdSignup({ url: values.url, name: values.name, email: values.email, invite: values.invite });
+    case "signin":
+      return cmdSignin({ url: values.url, name: values.name, email: values.email });
     case "link":
       return cmdLink({ url: values.url, name: values.name });
     case "invite":

@@ -311,10 +311,14 @@ first account still comes from the admin secret (`bootstrap`). After that:
   email address: the server mails a six-digit code, valid once for 15
   minutes. New accounts get the `SIGNUP_PLAN` plan, `free` by default.
 
+To make an account, run `clipsync signup --url https://clip.example.org`
+(add `--invite SIGNUP-…` if you have one), or use "Make an account" on the
+web UI. It asks for the code from the email, then a new passphrase.
+
 A device with no other device at hand signs into its account with the email
-and the passphrase. The server checks the passphrase's proof, never the
-passphrase, and stops accepting tries for an hour after ten wrong ones.
-(The CLI and web UI flows for signup and sign-in are the next step.)
+and the passphrase: `clipsync signin --url …`, or "Sign in" on the web UI.
+The server checks the passphrase's proof, never the passphrase, and stops
+accepting tries for an hour after ten wrong ones.
 
 **Mail, through OCI Email Delivery.** The Always Free tier sends 3,000 a
 month, over SMTP on port 465 with TLS. In the OCI console:
@@ -422,7 +426,9 @@ letting you discover the mistake later.
 
 | Command | Purpose |
 |---|---|
-| `clipsync login --url <url>` | Create the account and enrol this device |
+| `clipsync login --url <url>` | Enrol with the admin secret: the server's first account |
+| `clipsync signup --url <url> [--invite <code>]` | Make a new account, with a code mailed to you or an invite |
+| `clipsync signin --url <url> [--email <address>]` | Join your account by email and passphrase, with no other device at hand |
 | `clipsync invite` | Show a QR for a phone or browser to scan |
 | `clipsync link --url <url>` | Join another computer by QR |
 | `clipsync approve <link-url>` | Approve a device that ran `clipsync link` |
