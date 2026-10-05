@@ -80,6 +80,16 @@ describe("plans", () => {
     expect(file.status).toBe(403);
   });
 
+  it("refuses a file at reservation, before the upload, when the client says what it is for", async () => {
+    const owner = await bootstrap("owner");
+    await onPlan(owner, "free");
+    const asFile = await api("/api/blobs", { method: "POST", token: owner.token, body: { chunks: 1, bytes: 100, type: "file" } });
+    expect(asFile.status).toBe(403);
+    const asImage = await api("/api/blobs", { method: "POST", token: owner.token, body: { chunks: 1, bytes: 100, type: "image" } });
+    expect(asImage.status).toBe(200);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM blobs").first<{ n: number }>()).toEqual({ n: 1 });
+  });
+
   it("holds an account to its storage quota, evicting only its own files", async () => {
     const owner = await bootstrap("owner");
     await onPlan(owner, "free");

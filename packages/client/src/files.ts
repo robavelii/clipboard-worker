@@ -64,6 +64,7 @@ export async function uploadFile(
   const { id: blobId } = await api.createBlob({
     chunks,
     bytes: size + chunks * BLOB_CHUNK_OVERHEAD,
+    type: clipTypeFor(file.mime || "application/octet-stream"),
   });
 
   try {
