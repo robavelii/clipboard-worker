@@ -23,6 +23,7 @@ beforeEach(async () => {
       "link_requests",
       "invites",
       "email_codes",
+      "deletion_codes",
       "signup_invites",
       "users",
     ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),

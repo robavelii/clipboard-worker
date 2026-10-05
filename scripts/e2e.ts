@@ -13,6 +13,7 @@
 
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
+import { deleteAccountWithPassphrase } from "@clipsync/client/account";
 import { claimInvite, createInvite, parseInviteUrl } from "@clipsync/client/invite";
 import { inviteProof } from "@clipsync/crypto";
 import {
@@ -737,7 +738,31 @@ const signedInVault = await unlockVault(
 check("the passphrase signs a new device into the second account, with its key",
   signedIn.userId === second.userId && signedInVault.vaultKey === secondVault.vaultKey);
 await new ApiClient(BASE, signedIn.token).revokeSelf();
-await secondApi.revokeSelf();
+
+// Export, then deletion (decisions §46): the account goes, with everything
+// in it, and the first account is untouched.
+const SECOND_TEXT = `the second account's clip # ${RUN}`;
+const secondKeys = await vaultKeysFrom(secondVault.vaultKey, second.kdfSalt);
+const secondClip = await secondApi.createClip({
+  keyEpoch: 0, type: "text",
+  envelope: await encryptText(secondKeys, SECOND_TEXT),
+  contentHash: await dedupeHash(secondKeys, SECOND_TEXT),
+  size: Buffer.byteLength(SECOND_TEXT),
+});
+const exported = await secondApi.exportAccount();
+check("the export holds the account's clips, and only as ciphertext",
+  exported.clips.some((c) => c.id === secondClip.id) &&
+  !JSON.stringify(exported).includes(SECOND_TEXT) &&
+  (await decryptText(secondKeys, exported.clips.find((c) => c.id === secondClip.id)!.envelope)) === SECOND_TEXT);
+await expectStatus("deleting needs the passphrase, not just the token", () => secondApi.deleteAccount({}), 400);
+await deleteAccountWithPassphrase(secondApi, OTHER_PASS, second.kdfSalt);
+await expectStatus("the deleted account's device is gone", () => secondApi.me(), 401);
+await expectStatus("the deleted account's passphrase signs nothing in", async () =>
+  new ApiClient(BASE).signin({
+    email: OTHER_EMAIL, deviceName: `after-${RUN}`, platform: "linux",
+    authProof: (await openVault(OTHER_PASS, second.kdfSalt)).authProof,
+  }), 403);
+check("the first account is untouched by the deletion", (await pcApi.getClip(afterRekey.id)).id === afterRekey.id);
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

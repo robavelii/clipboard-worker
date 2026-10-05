@@ -7,6 +7,7 @@
 
 import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
+  AccountExport,
   ApiError,
   BlobUsageResponse,
   Clip,
@@ -27,6 +28,7 @@ import type {
   ClaimInviteResponse,
   CreateInviteRequest,
   CreateInviteResponse,
+  DeleteAccountRequest,
   ReencryptClipsRequest,
   ReencryptClipsResponse,
   ReencryptItem,
@@ -115,6 +117,21 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ adminSecret, deviceName, platform }),
     });
+  }
+
+  /** This account as the server holds it: ciphertext and metadata (decisions §46). */
+  exportAccount(): Promise<AccountExport> {
+    return this.request("/api/account/export");
+  }
+
+  /** Mail a code that confirms deleting this account, to its address. */
+  requestDeletionCode(): Promise<{ ok: boolean }> {
+    return this.request("/api/account/deletion-code", { method: "POST" });
+  }
+
+  /** Delete this account and everything in it, for good. */
+  deleteAccount(body: DeleteAccountRequest): Promise<{ ok: boolean }> {
+    return this.request("/api/account", { method: "DELETE", body: JSON.stringify(body) });
   }
 
   /** Ask for a signup code by mail; the server answers the same whether or not one went out. */

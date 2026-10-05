@@ -1,9 +1,9 @@
 /** clipsync — command line entry point. */
 
 import { watchFile } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { hostname, platform as osPlatform } from "node:os";
-import { basename, extname, resolve } from "node:path";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
 import { DecryptError } from "@clipsync/crypto";
@@ -15,7 +15,7 @@ import {
   inspectLink,
   parseLinkUrl,
 } from "@clipsync/client/link";
-import { requestSignupCode, signIn, signUp } from "@clipsync/client/account";
+import { deleteAccountWithPassphrase, requestSignupCode, signIn, signUp } from "@clipsync/client/account";
 import { createInvite } from "@clipsync/client/invite";
 import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
@@ -46,7 +46,7 @@ import {
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
-import { receiveSettings } from "./receive";
+import { receiveSettings, saveReceived } from "./receive";
 import { isSea, removeAsideBinaries, runningFile, selfCommand } from "./self";
 import { latestRelease, ReleaseWontRunError, updateTo } from "./update";
 import {
@@ -87,6 +87,8 @@ Usage
   clipsync uninstall                                    Stop and remove that background service
   clipsync update                                       Update to the newest release (the service does it daily)
   clipsync logout                                       Forget local credentials
+  clipsync export <dir> [--ciphertext]                  Save every clip and file, decrypted here
+  clipsync delete-account [--by-email]                  Delete the account and everything in it, for good
   clipsync serve [--data <dir>] [--listen <host:port>]  Run the ClipSync server here (serve --help)
   clipsync --version                                    Show which build this is
 `;
@@ -1085,6 +1087,81 @@ async function cmdStatus(): Promise<void> {
  * re-keys; a machine that is offline still logs out, with a note on how to
  * finish the job from elsewhere.
  */
+/**
+ * Everything in the account, saved to `dir` (decisions §46): text clips in
+ * clips.json, files under files/, all decrypted on this device. With
+ * --ciphertext, the server's export as it comes, readable by nobody without
+ * the vault key.
+ */
+async function cmdExport(dir: string | undefined, ciphertext: boolean): Promise<void> {
+  if (!dir) throw new Error("usage: clipsync export <dir> [--ciphertext]");
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  const data = await api.exportAccount();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+
+  if (ciphertext) {
+    await writeFile(join(dir, "account.json"), JSON.stringify(data, null, 2), { mode: 0o600 });
+    console.log(`Saved the account's ${plural(data.clips.length, "clip")}, as ciphertext, to ${join(dir, "account.json")}.`);
+    return;
+  }
+
+  const keys = await ringKeysFrom((await freshRing(config, api)).ring, config.kdfSalt);
+  const deviceNames = new Map(data.devices.map((d) => [d.id, d.name]));
+  const clips: Record<string, unknown>[] = [];
+  let files = 0;
+  let unreadable = 0;
+  for (const clip of data.clips) {
+    const entry = {
+      id: clip.id,
+      type: clip.type,
+      createdAt: new Date(clip.createdAt).toISOString(),
+      device: deviceNames.get(clip.deviceId) ?? null,
+      pinned: clip.pinned,
+    };
+    try {
+      if (clip.type === "text") {
+        clips.push({ ...entry, text: await decryptClip(keys, clip, config.userId) });
+      } else {
+        const { meta, bytes } = await downloadFile(api, keys, clip, config.userId);
+        const path = await saveReceived(join(dir, "files"), meta.name, bytes);
+        clips.push({ ...entry, name: meta.name, file: relative(dir, path) });
+        files += 1;
+      }
+    } catch {
+      // A clip under a key this device never held, or a file already expired.
+      unreadable += 1;
+      clips.push({ ...entry, unreadable: true });
+    }
+  }
+  await writeFile(join(dir, "clips.json"), JSON.stringify(clips, null, 2), { mode: 0o600 });
+  console.log(`Saved ${plural(clips.length, "clip")} (${plural(files, "file")}) to ${dir}, decrypted.`);
+  if (unreadable) console.log(`${clipCount(unreadable)} unreadable here, and listed without content.`);
+  console.log("That folder holds your clips in the clear: keep it somewhere safe.");
+}
+
+/** Delete the account and everything in it, confirmed by the passphrase or a mailed code. */
+async function cmdDeleteAccount(byEmail: boolean): Promise<void> {
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  console.log(`This deletes your account on ${config.baseUrl}: every clip, file and device in it, for good.`);
+  console.log("Run `clipsync export <dir>` first to keep a copy.");
+  if ((await ask("Type DELETE to go ahead: ")).trim() !== "DELETE") {
+    console.log("Nothing was deleted.");
+    return;
+  }
+  if (byEmail) {
+    await api.requestDeletionCode();
+    console.log("A code is on its way to the account's email address.");
+    await api.deleteAccount({ emailCode: await ask("Code from the email: ") });
+  } else {
+    await deleteAccountWithPassphrase(api, await askSecret("Passphrase: "), config.kdfSalt);
+  }
+  await clearConfig();
+  await clearTrayCredentials();
+  console.log("The account is deleted, and this device's credentials removed.");
+}
+
 async function cmdLogout(): Promise<void> {
   const config = await loadConfig();
   const tray = await loadTrayCredentials();
@@ -1134,6 +1211,8 @@ async function main(): Promise<void> {
       to: { type: "string" },
       email: { type: "string" },
       invite: { type: "string" },
+      ciphertext: { type: "boolean" },
+      "by-email": { type: "boolean" },
     },
   });
 
@@ -1197,6 +1276,10 @@ async function main(): Promise<void> {
       return cmdWatch();
     case "logout":
       return cmdLogout();
+    case "export":
+      return cmdExport(arg, values.ciphertext ?? false);
+    case "delete-account":
+      return cmdDeleteAccount(values["by-email"] ?? false);
     case "install":
       return cmdInstall(values["dry-run"]);
     case "uninstall":

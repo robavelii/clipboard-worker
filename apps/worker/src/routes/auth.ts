@@ -18,7 +18,7 @@ import type {
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { rateLimit } from "../limits";
-import { firstUser, getUserById } from "../db";
+import { adminUser, getUserById } from "../db";
 import { newId, newToken, sha256, timingSafeEqual } from "../ids";
 
 const PLATFORMS: Platform[] = ["linux", "macos", "windows", "web", "other"];
@@ -92,24 +92,20 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     const name = assertDeviceName(body.deviceName);
     const platform = assertPlatform(body.platform);
 
-    let user = await firstUser(c.env.DB);
+    let user = await adminUser(c.env.DB);
     const createdAccount = !user;
     if (!user) {
-      user = {
-        id: newId("usr"),
-        wrapped_vault_key: null,
-        auth_hash: null,
-        key_epoch: 0,
-        // Generated once, never rotated: rotating it would orphan every clip
-        // already encrypted under the old derivation.
-        kdf_salt: randomSalt(),
-        created_at: Date.now(),
-      };
+      // Generated once, never rotated: rotating it would orphan every clip
+      // already encrypted under the old derivation. OR IGNORE: the unique
+      // index on admin lets one of two racing bootstraps make the account,
+      // and both then enrol into it.
       await c.env.DB.prepare(
-        "INSERT INTO users (id, kdf_salt, created_at) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO users (id, kdf_salt, created_at, admin) VALUES (?, ?, ?, 1)",
       )
-        .bind(user.id, user.kdf_salt, user.created_at)
+        .bind(newId("usr"), randomSalt(), Date.now())
         .run();
+      user = await adminUser(c.env.DB);
+      if (!user) throw new HTTPException(500, { message: "could not create the account" });
     }
 
     const { deviceId, token } = await createDevice(

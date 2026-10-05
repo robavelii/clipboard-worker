@@ -151,6 +151,33 @@ export interface SigninSaltResponse {
   kdfSalt: string;
 }
 
+/** DELETE /api/account (decisions §46): one of the two confirmations. */
+export interface DeleteAccountRequest {
+  /** The passphrase's proof, as for sign-in. */
+  authProof?: string;
+  /** Or the code POST /api/account/deletion-code mailed to the account. */
+  emailCode?: string;
+}
+
+/** GET /api/account/export: the account as the server holds it, all ciphertext. */
+export interface AccountExport {
+  version: 1;
+  exportedAt: number;
+  account: {
+    id: string;
+    email: string | null;
+    plan: string;
+    createdAt: number;
+    kdfSalt: string;
+    wrappedVaultKey: string | null;
+    keyEpoch: number;
+  };
+  devices: Device[];
+  clips: Clip[];
+  /** Files' blobs: fetch each chunk from GET /api/blobs/:id/:idx. */
+  blobs: { id: string; chunks: number; size: number }[];
+}
+
 /** POST /api/signin: this device into an existing account, with no other device at hand. */
 export interface SigninRequest {
   email: string;

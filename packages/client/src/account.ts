@@ -30,6 +30,15 @@ interface Common {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Delete the account `api`'s device belongs to, confirmed by its passphrase:
+ * the proof goes to the server, never the passphrase.
+ */
+export async function deleteAccountWithPassphrase(api: ApiClient, passphrase: string, kdfSalt: string): Promise<void> {
+  const { authProof } = await openVault(passphrase, kdfSalt);
+  await api.deleteAccount({ authProof });
+}
+
 /** Ask the server to mail a signup code to `email`. */
 export function requestSignupCode(baseUrl: string, email: string, fetchImpl?: typeof fetch): Promise<unknown> {
   return new ApiClient(baseUrl, undefined, fetchImpl).signupEmail(email);
