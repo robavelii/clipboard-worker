@@ -101,9 +101,9 @@ function deletedEvent(clipId: string, now: number): SyncEvent {
 }
 
 /**
- * Reserve `bytes` of storage for a new blob, deleting the oldest unpinned
- * image and file clips while it does not fit. Returns the new blob's id, or
- * null when pinned files alone leave no room.
+ * Reserve `bytes` of storage for a new blob, deleting the uploader's own
+ * oldest unpinned image and file clips while it does not fit -- never another
+ * account's. Returns false when nothing of the uploader's is left to evict.
  *
  * The insert is conditional on the total, so concurrent uploads cannot
  * together overshoot the ceiling; a loser evicts again and retries.
@@ -129,26 +129,25 @@ export async function reserveBlob(
       .run();
     if (inserted.meta.changes) return true;
 
-    // Oldest first: the files least likely to still be wanted.
+    // Oldest first: the files least likely to still be wanted. Only the
+    // uploader's: one account's upload must never cost another its files.
     const { results: victims } = await env.DB.prepare(
-      `SELECT c.id, c.user_id, c.blob_id FROM clips c
-        WHERE c.blob_id IS NOT NULL AND c.pinned = 0
+      `SELECT c.id, c.blob_id FROM clips c
+        WHERE c.user_id = ? AND c.blob_id IS NOT NULL AND c.pinned = 0
         ORDER BY c.created_at ASC LIMIT 10`,
-    ).all<{ id: string; user_id: string; blob_id: string }>();
+    )
+      .bind(userId)
+      .all<{ id: string; blob_id: string }>();
     if (!victims.length) return false;
 
     await env.DB.batch(
-      victims.map((v) => env.DB.prepare("DELETE FROM clips WHERE id = ?").bind(v.id)),
+      victims.map((v) => env.DB.prepare("DELETE FROM clips WHERE id = ? AND user_id = ?").bind(v.id, userId)),
     );
     await deleteBlobs(env, victims.map((v) => v.blob_id));
-    const byUser = new Map<string, string[]>();
-    for (const v of victims) byUser.set(v.user_id, [...(byUser.get(v.user_id) ?? []), v.id]);
-    for (const [owner, clipIds] of byUser) {
-      try {
-        await env.SYNC.getByName(owner).broadcastAll(clipIds.map((c) => deletedEvent(c, now)));
-      } catch (error) {
-        console.error({ msg: "eviction fanout failed", error });
-      }
+    try {
+      await env.SYNC.getByName(userId).broadcastAll(victims.map((v) => deletedEvent(v.id, now)));
+    } catch (error) {
+      console.error({ msg: "eviction fanout failed", error });
     }
     console.log({ msg: "evicted files to make room", clips: victims.length });
   }

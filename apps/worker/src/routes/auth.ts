@@ -18,7 +18,7 @@ import type {
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { rateLimit } from "../limits";
-import { getUser } from "../db";
+import { firstUser, getUserById } from "../db";
 import { newId, newToken, sha256, timingSafeEqual } from "../ids";
 
 const PLATFORMS: Platform[] = ["linux", "macos", "windows", "web", "other"];
@@ -82,7 +82,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     const name = assertDeviceName(body.deviceName);
     const platform = assertPlatform(body.platform);
 
-    let user = await getUser(c.env.DB);
+    let user = await firstUser(c.env.DB);
     const createdAccount = !user;
     if (!user) {
       user = {
@@ -122,7 +122,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
   .get("/me", requireDevice, async (c) => {
     const device = c.var.device;
-    const user = await getUser(c.env.DB);
+    const user = await getUserById(c.env.DB, device.userId);
     if (!user) throw new HTTPException(500, { message: "account missing" });
 
     return c.json<WhoAmI>({

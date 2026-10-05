@@ -1506,3 +1506,42 @@ Trap: don't raise `MIN_AGENT_VERSION` (§34) past the last Node 22 release
 while such Macs matter. Those agents can't update past it, so the Worker
 would refuse their writes for good.
 
+
+## 43. Every request names its account
+
+The schema was keyed by account from the start: every table carries
+`user_id`, and each account has its own SyncRoom. Only the lookups weren't.
+`getUser()` returned the oldest account, and seven routes used it: `/me`,
+the vault key routes, pairing, and the link and invite claims. With one
+account that was the right answer. With two, a device would be told
+another account's salt and wrapped key, a re-key would aim at the wrong
+account, and a new device paired into its own account would get the
+other's salt and could not unlock. Storage eviction was global too: to
+make room, it deleted the oldest unpinned files on the server, whoever
+owned them.
+
+So nothing asks for "the" account any more. A route reads the account its
+request names: the calling device's (`getUserById(device.userId)`), the
+one a pair code or invite was minted for, or for a link claim, the
+account the approving device enrolled the new device into
+(`getUserOfDevice`). `firstUser` remains, used by `bootstrap` alone: the
+admin secret still creates the first account and enrols into it, until
+signup replaces it. Eviction only takes the uploader's own oldest unpinned
+files. An upload that would need another account's files to fit is
+refused with 429, rather than taking them.
+
+This was done before a second account can exist, so the tests prove it.
+`test/accounts.test.ts` makes a second account directly in the database
+and checks four things:
+- each account's devices see only its salt, key, clips and devices;
+- a pairing code enrols into the account that minted it;
+- neither account can delete, pin or revoke the other's clips or devices;
+- an upload evicts only its own files.
+
+Run against the code before this change, the first two and the last fail.
+
+What it doesn't cover yet: the storage ceiling and the monthly R2 budget
+are still shared. One account can fill them, and the others are then
+refused rather than robbed. Per-account quotas are the next step (the
+multi-account design doc, PR 2). The e2e suite can't create a second
+account until signup exists (PR 3).

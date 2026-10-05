@@ -23,7 +23,7 @@ import type {
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { clientAddress, rateLimit } from "../limits";
-import { getUser } from "../db";
+import { getUserOfDevice } from "../db";
 import { newId, newToken, sha256 } from "../ids";
 import { expireLinkRequests } from "../purge";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
@@ -250,7 +250,8 @@ export const linkRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       });
     }
 
-    const user = await getUser(c.env.DB);
+    // The approving device enrolled this one into its own account.
+    const user = await getUserOfDevice(c.env.DB, row.device_id!);
     if (!user) throw new HTTPException(500, { message: "account missing" });
 
     return c.json<LinkClaimResponse>({

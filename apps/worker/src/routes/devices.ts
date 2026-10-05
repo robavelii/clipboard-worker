@@ -11,7 +11,7 @@ import type {
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { rateLimit } from "../limits";
-import { getUser, PUBLIC_KEY_PATTERN, toDevice, type DeviceRow } from "../db";
+import { getUserById, PUBLIC_KEY_PATTERN, toDevice, type DeviceRow } from "../db";
 import { newPairCode, normalisePairCode, sha256 } from "../ids";
 import { assertDeviceName, assertPlatform, createDevice } from "./auth";
 
@@ -68,7 +68,7 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       });
     }
 
-    const user = await getUser(c.env.DB);
+    const user = await getUserById(c.env.DB, claimed.user_id);
     if (!user) throw new HTTPException(500, { message: "account missing" });
 
     const { deviceId, token } = await createDevice(

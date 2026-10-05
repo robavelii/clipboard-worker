@@ -29,7 +29,7 @@ import {
   type VaultKeyResponse,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
-import { getUser } from "../db";
+import { getUserById } from "../db";
 import { sha256 } from "../ids";
 
 /**
@@ -58,7 +58,7 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
   .use("*", requireDevice)
 
   .get("/key", async (c) => {
-    const user = await getUser(c.env.DB);
+    const user = await getUserById(c.env.DB, c.var.device.userId);
     if (!user) throw new HTTPException(500, { message: "account missing" });
     return c.json<VaultKeyResponse>({
       kdfSalt: user.kdf_salt,
@@ -175,7 +175,7 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     }
 
     if (!results[0]?.meta.changes) {
-      const user = await getUser(c.env.DB);
+      const user = await getUserById(c.env.DB, c.var.device.userId);
       if (user && user.key_epoch !== fromEpoch) {
         return c.json<ApiError>(
           {
@@ -263,7 +263,7 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       .bind(wrapped, authHash, userId, await sha256(body.authProof), epoch ?? null)
       .run();
     if (!rotated.meta.changes) {
-      const user = await getUser(c.env.DB);
+      const user = await getUserById(c.env.DB, c.var.device.userId);
       if (epoch !== undefined && user && user.key_epoch !== epoch) {
         return c.json<ApiError>(
           {

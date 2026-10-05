@@ -94,7 +94,7 @@ export const blobRoutes = new Hono<AppEnv>()
     }
     const id = newId("blob");
     if (!(await reserveBlob(c.env, c.var.device.userId, id, chunks!, bytes!))) {
-      return overBudget(c, "no room for this file: pinned files fill the storage budget");
+      return overBudget(c, "no room for this file: storage is full, and none of your files can make room (pinned files stay)");
     }
     return c.json<CreateBlobResponse>({ id });
   })
