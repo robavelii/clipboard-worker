@@ -1596,3 +1596,61 @@ Traps:
   logged and gets no limits of its own.
 - The test setup puts `free` back to its seeded numbers before each test,
   since tests change them; plans aren't cleared with the other tables.
+
+## 45. Signup by mailed code or admin invite; sign-in by passphrase proof
+
+Accounts beyond the first need a way in. The server never sees the
+passphrase, and losing it loses the clips whatever the account login, so
+the account's handle is just an email address, not a password of its own.
+The email also serves billing and contact later.
+
+**Signup: six digits by mail, or an invite.** With `SIGNUP=open`, the
+server mails a code; the device sends it back with the address, and gets
+an account on `SIGNUP_PLAN` and its first device. The device then creates
+the vault exactly as bootstrap's first device does. A code rather than a
+link: the CLI and the tray can't open a link, and six digits are typed in
+seconds. A code is good for 15 minutes and five guesses (each guess is
+counted before it's judged), and an address gets at most one mail a
+minute. The answer is 202 whether or not a mail went out. An admin invite,
+minted with `ADMIN_SECRET` and good once for a week, makes an account on
+any server, mail or not. That is how a self-hosted server adds accounts
+without a mail provider, and how the e2e suite makes its second account.
+
+**Sign-in: the email, then the passphrase's proof.** A device with
+another device at hand joins by pair code, link or invite, as before. One
+with none fetches the account's salt by email, derives `authProof` as
+unlocking does, and the server checks it against `auth_hash`, the same
+check that guards a key change. No mailed code too: the passphrase is the
+secret that matters, and PBKDF2's 600,000 iterations make each online
+guess slow for the guesser. Ten failures lock the account's sign-in for
+the hour, so a guesser gets ten tries an hour at one address. An emailed
+step on top would mostly add a mail dependency to recovering a device.
+
+**Nothing says whether an address has an account.** The signup mail
+endpoint answers the same either way. The salt endpoint gives an unknown
+address a stand-in salt, an HMAC of the address under `ADMIN_SECRET`, as
+stable as a real one, and a sign-in to it fails like a wrong passphrase.
+A signup for a taken address says so, but only once the code shows the
+caller reads that address's mail.
+
+**Mail as SMTP over a socket, injected by the entry.** OCI Email Delivery
+(3,000 free a month on the tenancy staging runs on) takes SMTP with TLS on
+465. A mail server on the instance itself was ruled out: outbound port 25
+is blocked there. Its HTTPS API needs OCI request signing; SMTP needs
+three commands and a login. `mail.ts` speaks SMTP over any pair of byte
+streams. The Worker entry builds the mailer on `cloudflare:sockets`, the
+Node server on `node:tls`, and each puts it on the env as `MAILER`, so
+`app.ts` still imports no runtime (§38). The body goes as base64, so no
+line can begin with a dot or overrun SMTP's limit. The only header taken
+from a request is the address, which must pass `normaliseEmail` first.
+
+Traps:
+- Ten failures lock an account's device-less sign-in for an hour, and
+  anyone who knows the address can cause that. It doesn't touch the
+  account's devices, or joining by pair code, link or invite.
+- `wrangler types` types `SIGNUP` as the literal in `wrangler.jsonc`
+  ("off"), so the code compares it with `String(...)`. A plain `===
+  "open"` doesn't typecheck.
+- A test SMTP server whose close waits for unread output hangs a client
+  that never reads the `QUIT` reply. The client now reads it, and ignores
+  a server that hangs up first.

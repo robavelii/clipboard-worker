@@ -115,6 +115,10 @@ device key (P-256) <--ECDH-- re-key seals each new vault key to it ("d1.", crypt
 
 Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which browsers never send to the server.
 
+### Accounts (decisions §43–§45)
+
+A server holds many accounts; every request names its account (see Invariants). Beyond bootstrap's first account, `routes/signup.ts` makes accounts from a mailed six-digit code (`SIGNUP=open`) or an admin invite (`POST /api/signup/invites` with `ADMIN_SECRET`, any setting), and signs a device in with email + the passphrase's `authProof`. Unknown emails get a stand-in salt (HMAC of the address under `ADMIN_SECRET`), so neither route says whether an address has an account. Mail is SMTP over TLS (OCI Email Delivery, port 465) in `mail.ts`, which speaks the protocol over any byte-stream socket: the runtime's entry builds the mailer (`index.ts` with `cloudflare:sockets`, `apps/server` with `node:tls`) and puts it on the env as `MAILER`, so `app.ts` still imports no runtime. Worker tests run with `SIGNUP=open` and `MAIL_MODE=outbox`, which keeps mail in `outbox` for them to read. The e2e suite's last section makes a second account by invite.
+
 ### Sync
 
 - `POST /api/clips` **persists to D1 first**, then fans out via the `SyncRoom` DO (`ctx.waitUntil`). There is one SyncRoom per user. Every D1 query is a trip to one region, so the write path reads and inserts in a single `DB.batch` (decisions §31): add a query to it rather than a separate `await`.
