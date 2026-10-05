@@ -17,6 +17,7 @@ import type {
   Credentials,
   Device,
   ListClipsResponse,
+  MintSignupInviteResponse,
   PairCodeResponse,
   Platform,
   ClaimInviteRequest,
@@ -33,6 +34,9 @@ import type {
   RotateVaultResponse,
   SealedVaultKeyResponse,
   SetDeviceKeyRequest,
+  SigninRequest,
+  SigninSaltResponse,
+  SignupRequest,
   TicketResponse,
   VaultKeyResponse,
   WhoAmI,
@@ -111,6 +115,31 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ adminSecret, deviceName, platform }),
     });
+  }
+
+  /** Ask for a signup code by mail; the server answers the same whether or not one went out. */
+  signupEmail(email: string): Promise<{ ok: boolean }> {
+    return this.request("/api/signup/email", { method: "POST", body: JSON.stringify({ email }) });
+  }
+
+  /** Make an account and this device, with a mailed code or an admin's invite (decisions §45). */
+  signup(body: SignupRequest): Promise<Credentials> {
+    return this.request("/api/signup", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /** An invite for one signup, for the holder of the admin secret. */
+  mintSignupInvite(adminSecret: string): Promise<MintSignupInviteResponse> {
+    return this.request("/api/signup/invites", { method: "POST", body: JSON.stringify({ adminSecret }) });
+  }
+
+  /** The salt to derive a sign-in proof with. */
+  signinSalt(email: string): Promise<SigninSaltResponse> {
+    return this.request("/api/signin/salt", { method: "POST", body: JSON.stringify({ email }) });
+  }
+
+  /** Enrol this device with the email and the passphrase's proof. */
+  signin(body: SigninRequest): Promise<Credentials> {
+    return this.request("/api/signin", { method: "POST", body: JSON.stringify(body) });
   }
 
   pair(

@@ -9,4 +9,11 @@
 interface Env {
   /** Authorises the first device. `wrangler secret put ADMIN_SECRET`. */
   ADMIN_SECRET: string;
+  /** OCI Email Delivery's SMTP credentials (decisions §45); mail is off without them. */
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  /** `outbox` in the Worker tests: mail is kept in memory, not sent (mail.ts). */
+  MAIL_MODE?: string;
+  /** How the app sends mail, put on the env by the runtime's entry (index.ts, apps/server); null when not set up. */
+  MAILER?: import("./mail").Mailer | null;
 }

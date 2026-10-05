@@ -12,6 +12,18 @@ declare module "clipsync:worker-app" {
     fetch(request: Request, env: object, ctx: ExecutionContextLike): Response | Promise<Response>;
   };
   export function purgeExpired(env: object, now: number): Promise<Record<string, number>>;
+  export interface Mailer {
+    send(message: { to: string; subject: string; text: string }): Promise<void>;
+  }
+  export interface MailSocket {
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
+    close(): unknown;
+  }
+  export function mailerFor(
+    env: Record<string, string | undefined>,
+    connect: ((host: string, port: number) => MailSocket | Promise<MailSocket>) | null,
+  ): Mailer | null;
 }
 
 declare module "clipsync:worker-inputs" {

@@ -61,7 +61,17 @@
     "MIN_AGENT_VERSION": "v0.0.0",
     "R2_STORAGE_BUDGET_BYTES": 5368709120,
     "R2_CLASS_A_BUDGET": 500000,
-    "R2_CLASS_B_BUDGET": 5000000
+    "R2_CLASS_B_BUDGET": 5000000,
+    // Who may make an account (decisions §45): "off" (bootstrap's first
+    // account, and accounts from admin invites), or "open" (anyone with an
+    // email address; needs mail set up). New accounts get SIGNUP_PLAN.
+    "SIGNUP": "off",
+    "SIGNUP_PLAN": "free",
+    // Outgoing mail, for signup codes: OCI Email Delivery takes SMTP over
+    // TLS on 465. The credentials are secrets: SMTP_USER and SMTP_PASSWORD.
+    "MAIL_FROM": "",
+    "SMTP_HOST": "",
+    "SMTP_PORT": "465"
   },
 
   // One SyncRoom per user: the fan-out point for every connected device.

@@ -19,10 +19,12 @@ import { deviceRoutes } from "./routes/devices";
 import { installRoutes } from "./routes/install";
 import { inviteRoutes } from "./routes/invites";
 import { linkRoutes } from "./routes/link";
+import { signinRoutes, signupRoutes } from "./routes/signup";
 import { syncRoutes } from "./routes/sync";
 import { vaultRoutes } from "./routes/vault";
 
 export { purgeExpired } from "./purge";
+export { mailerFor } from "./mail";
 
 export const app = new Hono<{ Bindings: Env }>()
 
@@ -31,6 +33,8 @@ export const app = new Hono<{ Bindings: Env }>()
   .use("/api/*", agentGate)
 
   .route("/api/auth", authRoutes)
+  .route("/api/signup", signupRoutes)
+  .route("/api/signin", signinRoutes)
   .route("/api/devices", deviceRoutes)
   .route("/api/vault", vaultRoutes)
   .route("/api/link", linkRoutes)

@@ -5,13 +5,18 @@
  * ciphertext envelopes and HMAC dedupe tags, never plaintext and never a key.
  */
 
+import { connect } from "cloudflare:sockets";
 import { app } from "./app";
+import { mailerFor, type Connect } from "./mail";
 import { purgeExpired } from "./purge";
 
 export { SyncRoom } from "./sync-room";
 
+/** SMTP over TLS from the first byte, on Cloudflare's TCP sockets. */
+const tlsConnect: Connect = (hostname, port) => connect({ hostname, port }, { secureTransport: "on", allowHalfOpen: false });
+
 export default {
-  fetch: app.fetch,
+  fetch: (request, env, ctx) => app.fetch(request, { ...env, MAILER: mailerFor(env, tlsConnect) }, ctx),
 
   /** Hourly purge; see purge.ts. */
   async scheduled(_controller, env, _ctx): Promise<void> {

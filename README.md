@@ -292,6 +292,52 @@ runs beside this one, on its own secrets.
 your own hostname, or set `workers_dev: true` to use the generated
 `*.workers.dev` URL instead.
 
+## More accounts
+
+A server holds any number of accounts, each with its own vault, devices,
+clips and plan; none can see or reach another's (decisions §43–§45). The
+first account still comes from the admin secret (`bootstrap`). After that:
+
+- **An admin invite** works on any server, with no mail needed. Mint one with
+  the admin secret, and give it to the person signing up; it works once,
+  for a week:
+
+  ```bash
+  curl -s https://clip.example.org/api/signup/invites -H 'content-type: application/json' -d '{"adminSecret":"<admin secret>"}'
+  ```
+
+- **Open signup** (`SIGNUP` set to `open` in `wrangler.jsonc`, or
+  `CLIPSYNC_SIGNUP=open` for `clipsync serve`) lets anyone sign up with an
+  email address: the server mails a six-digit code, valid once for 15
+  minutes. New accounts get the `SIGNUP_PLAN` plan, `free` by default.
+
+A device with no other device at hand signs into its account with the email
+and the passphrase. The server checks the passphrase's proof, never the
+passphrase, and stops accepting tries for an hour after ten wrong ones.
+(The CLI and web UI flows for signup and sign-in are the next step.)
+
+**Mail, through OCI Email Delivery.** The Always Free tier sends 3,000 a
+month, over SMTP on port 465 with TLS. In the OCI console:
+
+1. Email Delivery → Approved senders: add the sending address, e.g.
+   `noreply@clip.example.org`.
+2. Email Delivery → Email domains: add the domain, then publish the SPF and
+   DKIM records it shows, so mail isn't marked as spam.
+3. Your user → SMTP credentials: generate a username and password.
+4. Configure the server. On Cloudflare, set `MAIL_FROM` and `SMTP_HOST`
+   (`smtp.email.<region>.oci.oraclecloud.com`) in `vars`, then:
+
+   ```bash
+   npx wrangler secret put SMTP_USER
+   npx wrangler secret put SMTP_PASSWORD
+   ```
+
+   For `clipsync serve`: `CLIPSYNC_SMTP_HOST`, `CLIPSYNC_SMTP_USER`,
+   `CLIPSYNC_SMTP_PASSWORD`, `CLIPSYNC_MAIL_FROM` (and `CLIPSYNC_SMTP_PORT`
+   if not 465).
+
+Without mail, open signup answers 503 and invites still work.
+
 ## Adding a device
 
 The first device authenticates with `ADMIN_SECRET`. After that, there are two
