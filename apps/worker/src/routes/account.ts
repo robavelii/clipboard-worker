@@ -13,12 +13,12 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type { AccountExport, DeleteAccountRequest } from "@clipsync/protocol";
+import type { AccountExport, DeleteAccountRequest, SetEmailRequest } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, toDevice, type ClipRow, type DeviceRow, type UserRow } from "../db";
 import { sha256, timingSafeEqual } from "../ids";
 import { deleteBlobs } from "../r2";
-import { sixDigits } from "./signup";
+import { requireEmail, sixDigits } from "./signup";
 
 const CODE_TTL_MS = 15 * 60 * 1000;
 const CODE_ATTEMPTS = 5;
@@ -117,6 +117,97 @@ export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
     await deleteAccount(c.env, userId);
     return c.json({ ok: true });
+  })
+
+  /**
+   * Mail a code to the address this account is to have (decisions §47).
+   * The address is not set until PUT /email brings the code back with the
+   * passphrase's proof.
+   */
+  .post("/email/code", async (c) => {
+    if (!c.env.MAILER) throw new HTTPException(503, { message: "this server has no mail set up" });
+    const body = await c.req.json<{ email?: unknown }>().catch(() => ({}) as { email?: unknown });
+    const email = requireEmail(body.email);
+    const userId = c.var.device.userId;
+    const taken = await c.env.DB.prepare("SELECT 1 FROM users WHERE email = ? AND id != ?").bind(email, userId).first();
+    if (taken) throw new HTTPException(409, { message: "another account already uses this address" });
+
+    const code = sixDigits();
+    const now = Date.now();
+    const stored = await c.env.DB.prepare(
+      `INSERT INTO email_changes (user_id, email, code_hash, sent_at, expires_at, attempts) VALUES (?1, ?2, ?3, ?4, ?5, 0)
+       ON CONFLICT(user_id) DO UPDATE SET email = ?2, code_hash = ?3, sent_at = ?4, expires_at = ?5, attempts = 0
+        WHERE email_changes.sent_at < ?6`,
+    )
+      .bind(userId, email, await sha256(code), now, now + CODE_TTL_MS, now - RESEND_AFTER_MS)
+      .run();
+    if (stored.meta.changes) {
+      await c.env.MAILER.send({
+        to: email,
+        subject: `Your ClipSync code: ${code}`,
+        text: [
+          `Your code to make ${email} your ClipSync account's address is ${code}.`,
+          "",
+          "It works once, for 15 minutes, together with your passphrase.",
+          "If you didn't ask for it, ignore this email: nothing changes without both.",
+        ].join("\n"),
+      });
+    }
+    return c.json({ ok: true }, 202);
+  })
+
+  /**
+   * Set this account's address: the code mailed to it, and the passphrase's
+   * proof. Both, because the address can confirm a deletion on its own, so
+   * a stolen device token must not be able to point it elsewhere.
+   */
+  .put("/email", async (c) => {
+    const body = await c.req.json<SetEmailRequest>().catch(() => null);
+    if (!body || typeof body.authProof !== "string" || typeof body.code !== "string") {
+      throw new HTTPException(400, { message: "the address, the code from the email and the passphrase's proof are required" });
+    }
+    const email = requireEmail(body.email);
+    const userId = c.var.device.userId;
+    const user = await c.env.DB.prepare("SELECT auth_hash, email FROM users WHERE id = ?")
+      .bind(userId)
+      .first<{ auth_hash: string | null; email: string | null }>();
+    if (!user?.auth_hash || !timingSafeEqual(await sha256(body.authProof), user.auth_hash)) {
+      throw new HTTPException(403, { message: "that is not this account's passphrase" });
+    }
+    // Each guess is counted before it is judged, so five wrong ones end the code.
+    const pending = await c.env.DB.prepare(
+      `UPDATE email_changes SET attempts = attempts + 1
+        WHERE user_id = ?1 AND email = ?2 AND expires_at > ?3 AND attempts < ?4 RETURNING code_hash`,
+    )
+      .bind(userId, email, Date.now(), CODE_ATTEMPTS)
+      .first<{ code_hash: string }>();
+    if (!pending || !timingSafeEqual(pending.code_hash, await sha256(body.code.trim()))) {
+      throw new HTTPException(403, { message: "the code is wrong or expired -- ask for a new one" });
+    }
+
+    const [set] = await c.env.DB.batch([
+      c.env.DB.prepare("UPDATE users SET email = ?1 WHERE id = ?2 AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1 AND id != ?2)").bind(
+        email,
+        userId,
+      ),
+      c.env.DB.prepare("DELETE FROM email_changes WHERE user_id = ?").bind(userId),
+    ]);
+    if (!set?.meta.changes) throw new HTTPException(409, { message: "another account already uses this address" });
+
+    // The old address hears of it, so a change nobody meant does not go unseen.
+    if (user.email && user.email !== email && c.env.MAILER) {
+      await c.env.MAILER.send({
+        to: user.email,
+        subject: "Your ClipSync account's address changed",
+        text: [
+          `Your ClipSync account's address is now ${email}, changed from the device "${c.var.device.deviceName}".`,
+          "",
+          "If that wasn't you, someone has your passphrase: from a device you trust, change it",
+          "(clipsync passphrase), then revoke the devices you don't recognise.",
+        ].join("\n"),
+      });
+    }
+    return c.json({ ok: true, email });
   })
 
   /** The account as the server holds it: ciphertext and metadata, no keys in the clear. */

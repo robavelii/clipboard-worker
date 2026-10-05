@@ -12,6 +12,8 @@ export interface UserRow {
   /** Which vault key is current; each re-key bumps it. */
   key_epoch: number;
   created_at: number;
+  /** The account's address, lowercased; null for one bootstrap made, until one is set (§45, §47). */
+  email?: string | null;
 }
 
 export interface DeviceRow {

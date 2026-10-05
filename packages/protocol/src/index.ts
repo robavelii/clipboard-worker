@@ -159,6 +159,15 @@ export interface DeleteAccountRequest {
   emailCode?: string;
 }
 
+/** PUT /api/account/email (decisions §47): set the account's address. */
+export interface SetEmailRequest {
+  email: string;
+  /** The code POST /api/account/email/code mailed to `email`. */
+  code: string;
+  /** The passphrase's proof: a device token alone can't move the address. */
+  authProof: string;
+}
+
 /** GET /api/account/export: the account as the server holds it, all ciphertext. */
 export interface AccountExport {
   version: 1;
@@ -315,6 +324,8 @@ export interface ReencryptClipsResponse {
 
 export interface WhoAmI {
   userId: string;
+  /** The account's address; null when it has none. Absent from servers before accounts had one. */
+  email?: string | null;
   deviceId: string;
   deviceName: string;
   platform: Platform;

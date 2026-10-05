@@ -133,6 +133,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
     return c.json<WhoAmI>({
       userId: device.userId,
+      email: user.email ?? null,
       deviceId: device.deviceId,
       deviceName: device.deviceName,
       platform: assertPlatform(device.platform),

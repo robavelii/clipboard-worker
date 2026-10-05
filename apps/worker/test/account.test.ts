@@ -143,3 +143,51 @@ describe("the admin account", () => {
     expect(await count("SELECT COUNT(*) AS n FROM users WHERE admin = 1")).toBe(1);
   });
 });
+
+describe("the account's address", () => {
+  const codeFor = (email: string) => /\b(\d{6})\b/.exec(outbox.filter((m) => m.to === email).at(-1)!.text)![1]!;
+
+  it("is set with a code mailed to it and the passphrase, never one alone", async () => {
+    const owner = await bootstrap("owner");
+    const { authProof } = await openVault(PASSPHRASE, owner.kdfSalt);
+    await api("/api/vault/key", {
+      method: "PUT",
+      token: owner.token,
+      body: { wrappedVaultKey: "k1.owner", authHash: await authHashOf(authProof) },
+    });
+    const email = `own-${crypto.randomUUID()}@example.org`;
+    expect((await api("/api/account/email/code", { method: "POST", token: owner.token, body: { email } })).status).toBe(202);
+    const code = codeFor(email);
+
+    const { authProof: wrong } = await openVault("not the passphrase", owner.kdfSalt);
+    expect((await api("/api/account/email", { method: "PUT", token: owner.token, body: { email, code, authProof: wrong } })).status).toBe(403);
+    expect(
+      (await api("/api/account/email", { method: "PUT", token: owner.token, body: { email, code: "000000", authProof } })).status,
+    ).toBe(403);
+    expect((await api("/api/account/email", { method: "PUT", token: owner.token, body: { email, code, authProof } })).status).toBe(200);
+
+    const me = (await (await api("/api/auth/me", { token: owner.token })).json()) as { email: string };
+    expect(me.email).toBe(email);
+    // The address now signs a device in.
+    const signin = await api("/api/signin", { method: "POST", body: { email, authProof, deviceName: "new", platform: "linux" } });
+    expect(signin.status).toBe(200);
+  });
+
+  it("tells the old address when it changes, and refuses one another account has", async () => {
+    const first = `old-${crypto.randomUUID()}@example.org`;
+    const ada = await account(first);
+    const other = await account(`taken-${crypto.randomUUID()}@example.org`);
+    const { authProof } = await openVault(PASSPHRASE, ada.kdfSalt);
+
+    const taken = await api("/api/auth/me", { token: other.token }).then((r) => r.json() as Promise<{ email: string }>);
+    expect((await api("/api/account/email/code", { method: "POST", token: ada.token, body: { email: taken.email } })).status).toBe(409);
+
+    const next = `new-${crypto.randomUUID()}@example.org`;
+    await api("/api/account/email/code", { method: "POST", token: ada.token, body: { email: next } });
+    expect(
+      (await api("/api/account/email", { method: "PUT", token: ada.token, body: { email: next, code: codeFor(next), authProof } })).status,
+    ).toBe(200);
+    expect(outbox.filter((m) => m.to === first).at(-1)!.subject).toMatch(/address changed/);
+  });
+});
+
