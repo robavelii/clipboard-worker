@@ -8,14 +8,16 @@
 
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
-import type { DeviceRow } from "./db";
 import { sha256 } from "./ids";
+import { PLAN_COLUMNS, planFromRow, type Plan, type PlanRow } from "./plans";
 
 export interface AuthedDevice {
   userId: string;
   deviceId: string;
   deviceName: string;
   platform: string;
+  /** The account's plan, read in the same query as the device. */
+  plan: Plan;
 }
 
 export type AuthVars = { device: AuthedDevice };
@@ -25,9 +27,15 @@ export async function resolveToken(
   token: string,
 ): Promise<AuthedDevice | null> {
   const row = await db
-    .prepare("SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL")
+    .prepare(
+      `SELECT d.id, d.user_id, d.name, d.platform, ${PLAN_COLUMNS}
+         FROM devices d
+         JOIN users u ON u.id = d.user_id
+         LEFT JOIN plans p ON p.name = u.plan
+        WHERE d.token_hash = ? AND d.revoked_at IS NULL`,
+    )
     .bind(await sha256(token))
-    .first<DeviceRow>();
+    .first<{ id: string; user_id: string; name: string; platform: string } & PlanRow>();
 
   if (!row) return null;
   return {
@@ -35,6 +43,7 @@ export async function resolveToken(
     deviceId: row.id,
     deviceName: row.name,
     platform: row.platform,
+    plan: planFromRow(row),
   };
 }
 

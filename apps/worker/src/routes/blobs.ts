@@ -42,7 +42,7 @@ function overBudget(c: Context<AppEnv>, what: string) {
   return c.json<ApiError>(
     {
       error: R2_BUDGET_ERROR,
-      message: `${what} -- this Worker keeps R2 inside the free tier; it resets next month`,
+      message: what,
     },
     429,
   );
@@ -69,7 +69,7 @@ export const blobRoutes = new Hono<AppEnv>()
   .use("*", requireDevice)
 
   /** This month's R2 use against the budget. */
-  .get("/usage", async (c) => c.json<BlobUsageResponse>(await usage(c.env)))
+  .get("/usage", async (c) => c.json<BlobUsageResponse>(await usage(c.env, c.var.device)))
 
   /**
    * Reserve room for a blob. Storage is checked here, against the declared
@@ -93,8 +93,8 @@ export const blobRoutes = new Hono<AppEnv>()
       });
     }
     const id = newId("blob");
-    if (!(await reserveBlob(c.env, c.var.device.userId, id, chunks!, bytes!))) {
-      return overBudget(c, "no room for this file: storage is full, and none of your files can make room (pinned files stay)");
+    if (!(await reserveBlob(c.env, c.var.device, id, chunks!, bytes!))) {
+      return overBudget(c, "no room for this file: storage is full, and none of your files can make room (pinned files stay; a plan may cap the total)");
     }
     return c.json<CreateBlobResponse>({ id });
   })
@@ -122,7 +122,7 @@ export const blobRoutes = new Hono<AppEnv>()
       throw new HTTPException(400, { message: "chunks exceed the blob's declared size" });
     }
 
-    if (!(await spend(c.env, "a"))) return overBudget(c, "the monthly upload budget is spent");
+    if (!(await spend(c.env, c.var.device, "a"))) return overBudget(c, "the monthly upload budget is spent (the server's, or this account's plan); it resets next month");
     await c.env.BLOBS.put(chunkKey(blob.id, idx), data);
     await c.env.DB.prepare(
       "INSERT OR REPLACE INTO blob_chunks (blob_id, idx, size) VALUES (?, ?, ?)",
@@ -136,7 +136,7 @@ export const blobRoutes = new Hono<AppEnv>()
   .get("/:id/:idx", async (c) => {
     const blob = await ownBlob(c, c.req.param("id"));
     const idx = chunkIndex(c.req.param("idx"), blob);
-    if (!(await spend(c.env, "b"))) return overBudget(c, "the monthly download budget is spent");
+    if (!(await spend(c.env, c.var.device, "b"))) return overBudget(c, "the monthly download budget is spent (the server's, or this account's plan); it resets next month");
     const object = await c.env.BLOBS.get(chunkKey(blob.id, idx));
     if (!object) throw new HTTPException(404, { message: "chunk not uploaded" });
     return new Response(object.body, {

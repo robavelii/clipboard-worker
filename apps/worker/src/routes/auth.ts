@@ -46,13 +46,23 @@ export async function createDevice(
 ): Promise<{ deviceId: string; token: string }> {
   const deviceId = newId("dev");
   const token = newToken();
-  await db
+  // Conditional on the plan's device limit, counted in the same statement,
+  // so two devices enrolling at once cannot both take the last place.
+  const inserted = await db
     .prepare(
       `INSERT INTO devices (id, user_id, name, platform, token_hash, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+        WHERE (SELECT p.max_devices FROM users u JOIN plans p ON p.name = u.plan WHERE u.id = ?2) IS NULL
+           OR (SELECT COUNT(*) FROM devices WHERE user_id = ?2 AND revoked_at IS NULL)
+              < (SELECT p.max_devices FROM users u JOIN plans p ON p.name = u.plan WHERE u.id = ?2)`,
     )
     .bind(deviceId, userId, name, platform, await sha256(token), Date.now())
     .run();
+  if (!inserted.meta.changes) {
+    throw new HTTPException(403, {
+      message: "this account's plan has no room for another device -- revoke one first (clipsync devices --revoke)",
+    });
+  }
   return { deviceId, token };
 }
 

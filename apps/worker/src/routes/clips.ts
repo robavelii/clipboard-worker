@@ -9,8 +9,6 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
-  DEFAULT_TTL_DAYS,
-  FILE_TTL_DAYS,
   MAX_ENVELOPE_BYTES,
   MAX_REENCRYPT_BATCH,
   STALE_EPOCH_ERROR,
@@ -30,6 +28,7 @@ import type { BlobRow } from "./blobs";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, type ClipRow } from "../db";
 import { newId } from "../ids";
+import type { Plan } from "../plans";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -74,9 +73,12 @@ function assertEnvelope(envelope: string, deviceId: string, type: ClipType): voi
 
 const CLIP_TYPES: readonly ClipType[] = ["text", "image", "file"];
 
-/** When a clip written now expires unpinned. Files go sooner: they are big. */
-function expiryFor(type: string, now: number): number {
-  return now + (type === "text" ? DEFAULT_TTL_DAYS : FILE_TTL_DAYS) * 86_400_000;
+/**
+ * When a clip written now expires unpinned, under the account's plan. Files
+ * go sooner: they are big.
+ */
+function expiryFor(plan: Plan, type: string, now: number): number {
+  return now + (type === "text" ? plan.textTtlDays : plan.fileTtlDays) * 86_400_000;
 }
 
 /**
@@ -181,6 +183,9 @@ export const clipRoutes = new Hono<AppEnv>()
       throw new HTTPException(400, { message: `type must be one of ${CLIP_TYPES.join(", ")}` });
     }
     assertEnvelope(body.envelope, deviceId, type);
+    if (type === "file" && !c.var.device.plan.files) {
+      throw new HTTPException(403, { message: "this account's plan syncs text and images, not other files" });
+    }
     if (type === "text" && body.blobId !== undefined) {
       throw new HTTPException(400, { message: "text clips carry no blob" });
     }
@@ -201,7 +206,7 @@ export const clipRoutes = new Hono<AppEnv>()
       size: Number.isFinite(body.size) ? Math.max(0, body.size | 0) : 0,
       pinned: false,
       createdAt: now,
-      expiresAt: expiryFor(type, now),
+      expiresAt: expiryFor(c.var.device.plan, type, now),
       keyEpoch,
       blobId: blob?.id ?? null,
     };
@@ -301,7 +306,7 @@ export const clipRoutes = new Hono<AppEnv>()
     const bumpedAt = now;
     const expiresAt = existing.pinned
       ? existing.expires_at
-      : expiryFor(existing.type, bumpedAt);
+      : expiryFor(c.var.device.plan, existing.type, bumpedAt);
 
     // The new envelope replaces the stored one. Same plaintext, but a v2
     // envelope vouches for who copied it and when, and a device checks
@@ -524,8 +529,8 @@ export const clipRoutes = new Hono<AppEnv>()
       .bind(
         pinned ? 1 : 0,
         pinned ? 1 : 0,
-        expiryFor("text", Date.now()),
-        expiryFor("file", Date.now()),
+        expiryFor(c.var.device.plan, "text", Date.now()),
+        expiryFor(c.var.device.plan, "file", Date.now()),
         id,
         c.var.device.userId,
       )

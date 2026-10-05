@@ -8,14 +8,23 @@
  *
  *   - Class A (writes: PutObject)  counted per UTC month, refused past budget
  *   - Class B (reads: GetObject)   counted per UTC month, refused past budget
- *   - storage                      a ceiling on bytes held; the oldest
- *                                  unpinned files are deleted to make room
+ *   - storage                      a ceiling on bytes held; the uploader's
+ *                                  oldest unpinned files are deleted to make room
  *   - deletes                      free, never refused
  *
  * The budgets are Worker vars (wrangler.jsonc), half the free tier by default.
+ * Each account's plan (plans.ts) may set its own, lower limits on all three;
+ * the Worker's budgets stay the outer guard (decisions §44).
  */
 
 import type { SyncEvent } from "@clipsync/protocol";
+import type { Plan } from "./plans";
+
+/** Whose R2 use a call counts against: an authenticated device carries both. */
+export interface Account {
+  userId: string;
+  plan: Plan;
+}
 
 /** Where chunk `idx` of blob `id` lives in the bucket. */
 export function chunkKey(id: string, idx: number): string {
@@ -27,32 +36,60 @@ function monthOf(now: number): string {
 }
 
 /**
- * Count `n` operations of a class against this month's budget, before making
- * them. False when that would exceed the budget: the caller refuses the
- * request and nothing is spent. The conditional UPDATE is the check, so two
- * racing requests cannot both take the last unit.
+ * Count `n` operations of a class against this month's budgets, the
+ * Worker's and the account's, before making them. False when either would
+ * be exceeded: the caller refuses the request and nothing is spent.
+ *
+ * One batch, so one transaction and one round trip (decisions §31). The
+ * conditional UPDATE of the Worker's count is the check, for both budgets,
+ * so two racing requests cannot both take the last unit. It also stamps the
+ * row with this call's marker, and the account's count moves only when the
+ * stamp is this call's: the two counts move together or not at all.
  */
-export async function spend(env: Env, cls: "a" | "b", n = 1, now = Date.now()): Promise<boolean> {
+export async function spend(
+  env: Env,
+  account: Account,
+  cls: "a" | "b",
+  n = 1,
+  now = Date.now(),
+): Promise<boolean> {
   const month = monthOf(now);
   const column = cls === "a" ? "class_a" : "class_b";
   const budget = Number(cls === "a" ? env.R2_CLASS_A_BUDGET : env.R2_CLASS_B_BUDGET);
-  const [, spent] = await env.DB.batch([
+  const limit = cls === "a" ? account.plan.classA : account.plan.classB;
+  const marker = crypto.randomUUID();
+  const [, , spent] = await env.DB.batch([
     env.DB.prepare("INSERT OR IGNORE INTO r2_usage (month) VALUES (?)").bind(month),
+    env.DB.prepare("INSERT OR IGNORE INTO account_usage (user_id, month) VALUES (?, ?)").bind(account.userId, month),
     env.DB.prepare(
-      `UPDATE r2_usage SET ${column} = ${column} + ?1
-        WHERE month = ?2 AND ${column} + ?1 <= ?3`,
-    ).bind(n, month, budget),
+      `UPDATE r2_usage SET ${column} = ${column} + ?1, last_spend = ?2
+        WHERE month = ?3 AND ${column} + ?1 <= ?4
+          AND (?5 IS NULL
+               OR (SELECT a.${column} FROM account_usage a WHERE a.user_id = ?6 AND a.month = ?3) + ?1 <= ?5)`,
+    ).bind(n, marker, month, budget, limit, account.userId),
+    env.DB.prepare(
+      `UPDATE account_usage SET ${column} = ${column} + ?1
+        WHERE user_id = ?2 AND month = ?3
+          AND (SELECT last_spend FROM r2_usage WHERE month = ?3) = ?4`,
+    ).bind(n, account.userId, month, marker),
   ]);
   return (spent?.meta.changes ?? 0) > 0;
 }
 
-export async function usage(env: Env, now = Date.now()) {
+/** This month's use and budgets: the Worker's, and the account's under its plan. */
+export async function usage(env: Env, account: Account, now = Date.now()) {
   const month = monthOf(now);
-  const [ops, stored] = await env.DB.batch([
+  const [ops, stored, mine, myStored] = await env.DB.batch([
     env.DB.prepare("SELECT class_a, class_b FROM r2_usage WHERE month = ?").bind(month),
     env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS bytes FROM blobs"),
+    env.DB.prepare("SELECT class_a, class_b FROM account_usage WHERE user_id = ? AND month = ?").bind(
+      account.userId,
+      month,
+    ),
+    env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS bytes FROM blobs WHERE user_id = ?").bind(account.userId),
   ]);
   const row = (ops?.results[0] ?? {}) as { class_a?: number; class_b?: number };
+  const own = (mine?.results[0] ?? {}) as { class_a?: number; class_b?: number };
   return {
     month,
     storedBytes: ((stored?.results[0] ?? {}) as { bytes?: number }).bytes ?? 0,
@@ -61,6 +98,15 @@ export async function usage(env: Env, now = Date.now()) {
     classABudget: Number(env.R2_CLASS_A_BUDGET),
     classB: row.class_b ?? 0,
     classBBudget: Number(env.R2_CLASS_B_BUDGET),
+    account: {
+      plan: account.plan.name,
+      storedBytes: ((myStored?.results[0] ?? {}) as { bytes?: number }).bytes ?? 0,
+      storageBytes: account.plan.storageBytes,
+      classA: own.class_a ?? 0,
+      classABudget: account.plan.classA,
+      classB: own.class_b ?? 0,
+      classBBudget: account.plan.classB,
+    },
   };
 }
 
@@ -110,22 +156,26 @@ function deletedEvent(clipId: string, now: number): SyncEvent {
  */
 export async function reserveBlob(
   env: Env,
-  userId: string,
+  account: Account,
   id: string,
   chunks: number,
   bytes: number,
   now = Date.now(),
 ): Promise<boolean> {
+  const { userId } = account;
   const budget = Number(env.R2_STORAGE_BUDGET_BYTES);
-  if (bytes > budget) return false;
+  const quota = account.plan.storageBytes;
+  if (bytes > budget || (quota !== null && bytes > quota)) return false;
 
   for (let attempt = 0; attempt < 20; attempt++) {
+    // Under the Worker's ceiling and the account's quota at once.
     const inserted = await env.DB.prepare(
       `INSERT INTO blobs (id, user_id, chunks, size, created_at)
-       SELECT ?, ?, ?, ?, ?
-        WHERE (SELECT COALESCE(SUM(size), 0) FROM blobs) + ? <= ?`,
+       SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE (SELECT COALESCE(SUM(size), 0) FROM blobs) + ?4 <= ?6
+          AND (?7 IS NULL OR (SELECT COALESCE(SUM(size), 0) FROM blobs WHERE user_id = ?2) + ?4 <= ?7)`,
     )
-      .bind(id, userId, chunks, bytes, now, bytes, budget)
+      .bind(id, userId, chunks, bytes, now, budget, quota)
       .run();
     if (inserted.meta.changes) return true;
 
