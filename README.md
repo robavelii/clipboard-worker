@@ -192,7 +192,8 @@ proxy on the same machine. Without it, every request seems to come from
 `127.0.0.1`, which the rate limits exempt (they exist for the public
 endpoints: bootstrap, pairing, invites, link requests), and links the
 server builds say `http`. With it, the server takes the client's address
-and the scheme from the proxy's `X-Forwarded-*` headers. Never pass it
+and the scheme from the proxy's `X-Forwarded-*` headers. Forgotten, it says
+so in its log at the first forwarded request it gets over loopback. Never pass it
 without a proxy in front: anyone could then claim any address.
 `deploy/server/` sets this up on Ubuntu (see Staging below).
 
