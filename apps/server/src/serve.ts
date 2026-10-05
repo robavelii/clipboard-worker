@@ -12,6 +12,8 @@ import { randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { WebFiles } from "./assets";
+import { mailerFor } from "clipsync:worker-app";
+import { tlsConnect } from "./mail";
 import { startServer } from "./server";
 
 /** Self-hosted storage is not billed per operation, so only the byte ceiling applies. */
@@ -39,7 +41,12 @@ clip kept as ciphertext in one directory.
 
 The first device enrols with the admin secret: CLIPSYNC_ADMIN_SECRET if
 set, otherwise one generated into <data>/admin-secret on first start.
-The web UI needs HTTPS anywhere but localhost; agents work over HTTP.`;
+The web UI needs HTTPS anywhere but localhost; agents work over HTTP.
+
+More accounts: CLIPSYNC_SIGNUP=open lets anyone sign up with an email
+address, which needs CLIPSYNC_SMTP_HOST, _USER, _PASSWORD and
+CLIPSYNC_MAIL_FROM (CLIPSYNC_SMTP_PORT, default 465, TLS). Without it, an
+admin invite (POST /api/signup/invites with the admin secret) signs one up.`;
 }
 
 function adminSecret(dataDir: string): { secret: string; source: string } {
@@ -110,7 +117,19 @@ export async function serve(argv: string[], defaults: ServeDefaults): Promise<vo
       R2_CLASS_A_BUDGET: UNMETERED,
       R2_CLASS_B_BUDGET: UNMETERED,
       ...(values.storage ? { R2_STORAGE_BUDGET_BYTES: values.storage } : {}),
+      ...(process.env.CLIPSYNC_SIGNUP ? { SIGNUP: process.env.CLIPSYNC_SIGNUP } : {}),
+      ...(process.env.CLIPSYNC_SIGNUP_PLAN ? { SIGNUP_PLAN: process.env.CLIPSYNC_SIGNUP_PLAN } : {}),
     },
+    mailer: mailerFor(
+      {
+        SMTP_HOST: process.env.CLIPSYNC_SMTP_HOST,
+        SMTP_PORT: process.env.CLIPSYNC_SMTP_PORT,
+        SMTP_USER: process.env.CLIPSYNC_SMTP_USER,
+        SMTP_PASSWORD: process.env.CLIPSYNC_SMTP_PASSWORD,
+        MAIL_FROM: process.env.CLIPSYNC_MAIL_FROM,
+      },
+      tlsConnect,
+    ),
   });
 
   console.log(

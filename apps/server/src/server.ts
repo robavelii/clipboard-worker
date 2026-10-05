@@ -25,7 +25,7 @@ import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { getRequestListener, type HttpBindings, type Http2Bindings } from "@hono/node-server";
 import { WebSocketServer, type WebSocket } from "ws";
-import { app, purgeExpired } from "clipsync:worker-app";
+import { app, purgeExpired, type Mailer } from "clipsync:worker-app";
 import inputs from "clipsync:worker-inputs";
 import { StaticAssets, type WebFiles } from "./assets";
 import { DiskBucket } from "./bucket";
@@ -53,6 +53,8 @@ export interface ServerOptions {
   adminSecret: string;
   /** Overrides for the Worker's vars (wrangler.jsonc), e.g. R2_STORAGE_BUDGET_BYTES. */
   vars?: Record<string, string>;
+  /** How signup codes are mailed; without one, open signup answers 503. */
+  mailer?: Mailer | null;
   purgeIntervalMs?: number;
   log?: (entry: Record<string, unknown>) => void;
 }
@@ -83,6 +85,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     ...Object.fromEntries(Object.entries(inputs.vars).map(([k, v]) => [k, String(v)])),
     ...options.vars,
     ADMIN_SECRET: options.adminSecret,
+    MAILER: options.mailer ?? null,
     DB: db,
     BLOBS: new DiskBucket(join(options.dataDir, "blobs")),
     SYNC: rooms,

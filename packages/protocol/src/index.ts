@@ -131,6 +131,35 @@ export interface BootstrapRequest {
   platform: Platform;
 }
 
+/** POST /api/signup: an account and its first device (decisions §45). */
+export interface SignupRequest {
+  email: string;
+  /** The six digits mailed to `email`, on a server with open signup. */
+  code?: string;
+  /** Or an admin's signup invite, `SIGNUP-…`, on any server. */
+  invite?: string;
+  deviceName: string;
+  platform: Platform;
+}
+
+export interface MintSignupInviteResponse {
+  code: string;
+  expiresAt: number;
+}
+
+export interface SigninSaltResponse {
+  kdfSalt: string;
+}
+
+/** POST /api/signin: this device into an existing account, with no other device at hand. */
+export interface SigninRequest {
+  email: string;
+  /** The passphrase's proof (`openVault(passphrase, kdfSalt).authProof`), never the passphrase. */
+  authProof: string;
+  deviceName: string;
+  platform: Platform;
+}
+
 export interface PairRequest {
   code: string;
   deviceName: string;

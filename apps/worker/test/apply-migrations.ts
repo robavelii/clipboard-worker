@@ -22,6 +22,8 @@ beforeEach(async () => {
       "sync_tickets",
       "link_requests",
       "invites",
+      "email_codes",
+      "signup_invites",
       "users",
     ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),
   );

@@ -698,5 +698,46 @@ phoneSocket.close();
 await pcApi.revokeDevice(phone.credentials.deviceId);
 await pcApi.revokeDevice(linked.credentials.deviceId);
 
+// A second account on the same server (decisions §43-§45): made by an admin
+// invite, so the suite needs no mail; then it must not reach the first
+// account, and its own passphrase signs a new device into it.
+console.log("\n--- a second account ---");
+const OTHER_EMAIL = `other-${RUN}@example.org`;
+const OTHER_PASS = `another account's passphrase ${RUN}`;
+const secondInvite = await new ApiClient(BASE).mintSignupInvite(ADMIN);
+const second = await new ApiClient(BASE).signup({
+  email: OTHER_EMAIL, invite: secondInvite.code, deviceName: `other-${RUN}`, platform: "linux",
+});
+check("an admin invite makes a second account", second.createdAccount === true && second.userId !== pc.userId);
+const secondApi = new ApiClient(BASE, second.token);
+const secondVault = await unlockVault(secondApi, OTHER_PASS, second.kdfSalt, second.wrappedVaultKey, true);
+check("the second account gets a vault key of its own", Boolean(secondVault.vaultKey) && secondVault.vaultKey !== newKey);
+
+const secondClips = await secondApi.listClips();
+check("the second account sees none of the first account's clips",
+  !secondClips.clips.some((c) => c.id === afterRekey.id || c.id === beforeRekey.id));
+await expectStatus("the second account cannot read the first's clip", () => secondApi.getClip(afterRekey.id), 404);
+await expectStatus("the second account cannot revoke the first's device", () => secondApi.revokeDevice(pc.deviceId), 404);
+check("the first account's device still works", (await pcApi.me()).deviceId === pc.deviceId);
+
+const { kdfSalt: secondSalt } = await new ApiClient(BASE).signinSalt(OTHER_EMAIL);
+check("sign-in finds the second account's salt by email", secondSalt === second.kdfSalt);
+await expectStatus("sign-in refuses the wrong passphrase", async () =>
+  new ApiClient(BASE).signin({
+    email: OTHER_EMAIL, deviceName: `wrong-${RUN}`, platform: "linux",
+    authProof: (await openVault("not the passphrase", secondSalt)).authProof,
+  }), 403);
+const signedIn = await new ApiClient(BASE).signin({
+  email: OTHER_EMAIL, deviceName: `signed-in-${RUN}`, platform: "linux",
+  authProof: (await openVault(OTHER_PASS, secondSalt)).authProof,
+});
+const signedInVault = await unlockVault(
+  new ApiClient(BASE, signedIn.token), OTHER_PASS, signedIn.kdfSalt, signedIn.wrappedVaultKey,
+);
+check("the passphrase signs a new device into the second account, with its key",
+  signedIn.userId === second.userId && signedInVault.vaultKey === secondVault.vaultKey);
+await new ApiClient(BASE, signedIn.token).revokeSelf();
+await secondApi.revokeSelf();
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

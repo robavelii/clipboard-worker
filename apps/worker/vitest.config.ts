@@ -36,6 +36,9 @@ export default defineConfig(async () => {
             R2_CLASS_B_BUDGET: 40,
             // Above v0.0.0, so the agent gate has releases to turn away.
             MIN_AGENT_VERSION: "v0.5.0",
+            // Open, with mail kept in memory for the tests to read (mail.ts).
+            SIGNUP: "open",
+            MAIL_MODE: "outbox",
           },
         },
       }),
