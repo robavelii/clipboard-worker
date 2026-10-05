@@ -1658,3 +1658,53 @@ Traps:
   unless told the account is new. Signup has no key yet, so
   `signUp` (`packages/client/src/account.ts`) passes `true`. The CLI and
   the web UI both go through it, so neither can get that wrong.
+
+## 46. Deleting and exporting an account, and the admin account
+
+An account holder must be able to take their data and go. The design doc
+for multiple accounts settled the rules: deleting takes more than a device
+token, and an export is useful without trusting the server.
+
+**Two ways to confirm a deletion.** `DELETE /api/account` takes either
+the passphrase's proof (checked against `auth_hash`, as sign-in does) or
+a six-digit code mailed to the account's address (15 minutes, five
+guesses, one mail a minute). A stolen device token alone can't erase an
+account. The mailed code exists because a device that joined by link or
+invite holds the vault key but not the passphrase, and the account's
+owner should still be able to delete from it. An account without an
+address (bootstrap's) confirms with the passphrase only.
+
+**What deleting does, in order.**
+1. Delete the R2 objects of its files, while their ids can still be read.
+2. Delete the rows in one batch. The users row cascades to devices (and
+   their sealed keys), clips, blobs, codes, tickets, invites, usage and
+   deletion codes. Approved link requests have no foreign key to the
+   account, yet can hold a sealed vault key until collected, so they go
+   by device id. Pending signup codes go by email.
+3. Close every socket. With the tokens already gone, no device can
+   reconnect. Closing first would have left a window in which a device
+   reconnects with a token that still works.
+
+**The export is the server's view.** `GET /api/account/export` returns the
+account as stored: envelopes, wrapped key, devices, and the blobs to fetch.
+It's as safe to hand around as the database. `clipsync export <dir>`
+decrypts on the device, with the key ring it holds: text to `clips.json`,
+images and files under `files/`. A clip under a key that device never
+held is listed as unreadable, not dropped.
+
+**The admin account is marked, not inferred.** Bootstrap used to enrol
+the admin secret's devices into the oldest account (§43). Deletion made
+that unsafe: delete the owner's account and the oldest is a stranger's,
+which the admin secret would then join. `users.admin` marks the account
+bootstrap made. The migration marks today's oldest, and a partial unique
+index allows only one. With none, bootstrap creates a new one, using
+INSERT OR IGNORE so two racing bootstraps share it.
+
+Traps:
+- A new table holding an account's data needs `ON DELETE CASCADE` from
+  `users` or a line in `deleteAccount`. Otherwise deletion leaves it
+  behind, which is what `link_requests` would have done.
+- The free plan refuses `file` clips only when the clip is created, after
+  the upload. The reservation doesn't say what it's for, so a refused
+  file costs an upload, swept within the hour. To fix next: say the type
+  when reserving.

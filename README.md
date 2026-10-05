@@ -342,6 +342,13 @@ month, over SMTP on port 465 with TLS. In the OCI console:
 
 Without mail, open signup answers 503 and invites still work.
 
+**Leaving.** `clipsync export <dir>` saves every clip, decrypted on the
+device: text in `clips.json`, images and files under `files/`.
+`clipsync delete-account` then deletes the account and everything in it:
+clips, files, devices and keys. It asks for the passphrase or, with
+`--by-email`, a code mailed to the account, so a stolen device can't do it
+alone. Backups keep a deleted account until they age out.
+
 ## Adding a device
 
 The first device authenticates with `ADMIN_SECRET`. After that, there are two
@@ -447,6 +454,8 @@ letting you discover the mistake later.
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync watch` | Print each clipboard change as it happens: shows whether the agent hears of copies or polls |
 | `clipsync logout` | Revoke this machine's devices, then forget local credentials |
+| `clipsync export <dir> [--ciphertext]` | Save every clip and file, decrypted on this device (or the server's ciphertext as it comes) |
+| `clipsync delete-account [--by-email]` | Delete the account and everything in it, confirmed by the passphrase or a code mailed to the account |
 | `clipsync install [--dry-run]` | Run the agent in the background at every login (see below) |
 | `clipsync uninstall` | Stop and remove that background service |
 | `clipsync serve [--data dir] [--listen host:port]` | Run the ClipSync server itself, web UI included (see Running it yourself) |
