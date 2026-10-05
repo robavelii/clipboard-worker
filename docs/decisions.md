@@ -1654,3 +1654,7 @@ Traps:
 - A test SMTP server whose close waits for unread output hangs a client
   that never reads the `QUIT` reply. The client now reads it, and ignores
   a server that hangs up first.
+- `unlockVault` takes a missing wrapped key for a legacy account (§11)
+  unless told the account is new. Signup has no key yet, so
+  `signUp` (`packages/client/src/account.ts`) passes `true`. The CLI and
+  the web UI both go through it, so neither can get that wrong.

@@ -117,7 +117,7 @@ Secrets always travel in URL **fragments** (`/link#…`, `/join#…`), which bro
 
 ### Accounts (decisions §43–§45)
 
-A server holds many accounts; every request names its account (see Invariants). Beyond bootstrap's first account, `routes/signup.ts` makes accounts from a mailed six-digit code (`SIGNUP=open`) or an admin invite (`POST /api/signup/invites` with `ADMIN_SECRET`, any setting), and signs a device in with email + the passphrase's `authProof`. Unknown emails get a stand-in salt (HMAC of the address under `ADMIN_SECRET`), so neither route says whether an address has an account. Mail is SMTP over TLS (OCI Email Delivery, port 465) in `mail.ts`, which speaks the protocol over any byte-stream socket: the runtime's entry builds the mailer (`index.ts` with `cloudflare:sockets`, `apps/server` with `node:tls`) and puts it on the env as `MAILER`, so `app.ts` still imports no runtime. Worker tests run with `SIGNUP=open` and `MAIL_MODE=outbox`, which keeps mail in `outbox` for them to read. The e2e suite's last section makes a second account by invite.
+A server holds many accounts; every request names its account (see Invariants). Beyond bootstrap's first account, `routes/signup.ts` makes accounts from a mailed six-digit code (`SIGNUP=open`) or an admin invite (`POST /api/signup/invites` with `ADMIN_SECRET`, any setting), and signs a device in with email + the passphrase's `authProof`. Unknown emails get a stand-in salt (HMAC of the address under `ADMIN_SECRET`), so neither route says whether an address has an account. Mail is SMTP over TLS (OCI Email Delivery, port 465) in `mail.ts`, which speaks the protocol over any byte-stream socket: the runtime's entry builds the mailer (`index.ts` with `cloudflare:sockets`, `apps/server` with `node:tls`) and puts it on the env as `MAILER`, so `app.ts` still imports no runtime. Worker tests run with `SIGNUP=open` and `MAIL_MODE=outbox`, which keeps mail in `outbox` for them to read. The e2e suite's last section makes a second account by invite. Clients call `signUp`/`signIn` in `packages/client/src/account.ts` (CLI `clipsync signup`/`signin`, the web UI's enrol screen), never the routes: `signUp` must tell `unlockVault` the account is new, or it takes the missing key for a legacy account's.
 
 ### Sync
 
@@ -195,6 +195,7 @@ The `Dockerfile` (decisions §41) builds the bundle once on the builder's platfo
 - Tokens, pair codes, pickup tokens and tickets are stored as SHA-256 digests; single-use claims are a conditional `UPDATE`/`DELETE … RETURNING`, so the write *is* the mutex.
 - The Worker imports `@clipsync/crypto` for types and non-secret helpers only. It never holds a vault key.
 - `workers_dev: false`: `wrangler.jsonc` binds the custom domain as the only public door.
+- Fake credentials in tests (passwords, tokens, API keys) are generated at runtime or named so they plainly aren't secrets (`test-admin-secret`). Never write a password-like literal: GitGuardian checks every PR commit and flags it as a leaked secret.
 - `apps/worker/worker-configuration.d.ts` is generated (`wrangler types`), so don't edit it. Secrets the Worker reads are declared by hand in `apps/worker/src/secrets.d.ts`.
 
 ### Abuse limits
