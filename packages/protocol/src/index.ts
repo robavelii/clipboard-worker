@@ -304,6 +304,19 @@ export interface BlobUsageResponse {
   classABudget: number;
   classB: number;
   classBBudget: number;
+  /**
+   * The calling account's share under its plan; a null budget means the
+   * plan sets none of its own. Absent from servers older than plans.
+   */
+  account?: {
+    plan: string;
+    storedBytes: number;
+    storageBytes: number | null;
+    classA: number;
+    classABudget: number | null;
+    classB: number;
+    classBBudget: number | null;
+  };
 }
 
 export interface CreateClipResponse {
