@@ -84,6 +84,7 @@ Usage
   clipsync recovery [new|off]                           Show, make (or replace) or remove the recovery key
   clipsync recover --url <url> [--revoke-others]        Forgot the passphrase: reset it with the recovery key
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
+  clipsync devices --rename <id> <name>                 Rename a device
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
   clipsync watch                                        Print each clipboard change as it happens (a check)
@@ -899,9 +900,16 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-async function cmdDevices(opts: { revoke?: string; rekey?: boolean }): Promise<void> {
+async function cmdDevices(opts: { revoke?: string; rekey?: boolean; rename?: string; name?: string }): Promise<void> {
   const config = await requireConfig();
   const api = new ApiClient(config.baseUrl, config.token);
+
+  if (opts.rename) {
+    if (!opts.name) throw new Error("usage: clipsync devices --rename <id> <new name>");
+    const { name } = await api.renameDevice(opts.rename, opts.name);
+    console.log(`Renamed ${opts.rename} to "${name}".`);
+    return;
+  }
 
   if (opts.revoke) {
     await api.revokeDevice(opts.revoke);
@@ -1327,6 +1335,7 @@ async function main(): Promise<void> {
       url: { type: "string" },
       name: { type: "string" },
       revoke: { type: "string" },
+      rename: { type: "string" },
       rekey: { type: "boolean" },
       finish: { type: "boolean" },
       number: { type: "string", short: "n" },
@@ -1401,7 +1410,7 @@ async function main(): Promise<void> {
     case "recover":
       return cmdRecover({ url: values.url, name: values.name, email: values.email, revokeOthers: values["revoke-others"] });
     case "devices":
-      return cmdDevices({ revoke: values.revoke, rekey: values.rekey });
+      return cmdDevices({ revoke: values.revoke, rekey: values.rekey, rename: values.rename, name: positionals.slice(1).join(" ") });
     case "rekey":
       return cmdRekey({ finish: values.finish });
     case "status":

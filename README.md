@@ -454,6 +454,7 @@ letting you discover the mistake later.
 | `clipsync passphrase` | Change the passphrase |
 | `clipsync-desktop` | Tray panel (see below) |
 | `clipsync devices [--revoke <id> [--rekey]]` | List or revoke devices; `--rekey` re-keys straight after |
+| `clipsync devices --rename <id> <name>` | Rename a device (the web UI: Settings → Devices) |
 | `clipsync rekey [--finish]` | Move every device to a new vault key (see below) |
 | `clipsync status` | Config, clipboard backend, token validity |
 | `clipsync watch` | Print each clipboard change as it happens: shows whether the agent hears of copies or polls |

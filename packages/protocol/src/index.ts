@@ -387,6 +387,26 @@ export interface ReencryptClipsResponse {
   epoch: number;
 }
 
+/** GET /api/account/plan: what this account's plan allows, and the devices it has. */
+export interface AccountPlan {
+  name: string;
+  /** null: no limit of the plan's own. */
+  maxDevices: number | null;
+  /** Active devices now. */
+  devices: number;
+  textTtlDays: number;
+  fileTtlDays: number;
+  /** false: text and images only. */
+  files: boolean;
+  /** Bytes of encrypted files held at once; null for no limit of the plan's own. */
+  storageBytes: number | null;
+}
+
+/** PATCH /api/devices/:id */
+export interface RenameDeviceRequest {
+  name: string;
+}
+
 export interface WhoAmI {
   userId: string;
   /** The account's address; null when it has none. Absent from servers before accounts had one. */
