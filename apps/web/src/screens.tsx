@@ -59,6 +59,8 @@ export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
               Forgot the passphrase?
             </button>
           )}
+          {" · "}
+          <a href="/docs/">How ClipSync works</a>
         </p>
       </div>
     </div>

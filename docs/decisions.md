@@ -1924,3 +1924,46 @@ Choices:
 
 The invite still lasts five minutes and works once. The panel counts down,
 and offers a new code once it has expired.
+
+## 53. The docs are static pages the server serves at /docs
+
+The README had grown to nearly a thousand lines: installing, every way to
+add a device, self-hosting, mail, the CLI, the security model. That was too
+much for a front page, and people using the web app had nowhere to look.
+The docs now live as Markdown in `apps/web/docs/`, in the order
+`nav.json` gives, and `build-docs.mjs` renders them into `dist/docs/` after
+`vite build`. Every server serves its own copy, the hosted one at
+clip.rfh.et/docs. The README is a short front page that links to them.
+
+Choices:
+- **Same origin, same CSP.** The docs share the web app's origin, and the
+  web app's origin is where a phone can keep the vault key. A docs framework
+  that puts a theme script or inline styles on the page (VitePress,
+  Starlight, Docusaurus all do) would need `unsafe-inline` for the whole
+  origin, or a separate rule for `/docs` that a mistake could widen.
+  Instead every decision is made at build time: highlight.js emits class
+  names, not colours, and the one script, `docs.js`, is a file. It adds
+  search, copy buttons and the folding contents list on a phone. Without it
+  everything but search works. Search reads a JSON index, and its results
+  are built from text nodes, never parsed as HTML.
+- **A separate domain was the other way.** It would have isolated the docs
+  completely, but it costs a second deploy, and a self-hosted server would
+  ship without its documentation.
+- **Not part of the React app.** Pages that render without JavaScript can be
+  read by search engines and by `curl`, load before the app bundle, and keep
+  their Markdown readable on GitHub. Links between pages are written as
+  `other.md#anchor` so they work in both places, and the build rewrites them.
+- **The build fails on a broken link** to a page or a heading, so a renamed
+  heading can't strand a link silently.
+- **Fonts and tokens are the app's.** The page CSS is `tokens.css` and
+  `base.css` plus `docs-assets/docs.css`, and the three font files are
+  copied from `@fontsource`, so the docs look like the product and nothing
+  loads from a CDN.
+
+Trap: Cloudflare serves `/docs/cli` from `docs/cli.html` and `/docs/` from
+`docs/index.html` (`html_handling`, auto-trailing-slash). The Node server's
+`StaticAssets` served only exact paths, so every docs page fell through to
+the app shell. It now looks for `<path>.html` and `<path>/index.html` too.
+Without redirects it doesn't match Cloudflare exactly (`/docs` is served
+rather than redirected to `/docs/`), but the pages' links are absolute, so
+the difference doesn't matter.

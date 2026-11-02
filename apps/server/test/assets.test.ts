@@ -14,6 +14,8 @@ const files: WebFiles = {
   "/index.html": text("<!doctype html><title>clipsync</title>"),
   "/_headers": text("/*\n  Content-Security-Policy: default-src 'self'\n"),
   "/assets/app.js": text("console.log(1)"),
+  "/docs/index.html": text("<title>docs</title>"),
+  "/docs/cli.html": text("<title>cli</title>"),
 };
 
 const get = (assets: StaticAssets, path: string, headers: Record<string, string> = {}) =>
@@ -36,6 +38,16 @@ describe("StaticAssets.fromFiles", () => {
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
       expect(await res.text()).toContain("<title>clipsync</title>");
     }
+  });
+
+  it("serves a page by its name without .html, and a directory's index.html, as Cloudflare does", async () => {
+    for (const [path, title] of [["/docs/cli", "cli"], ["/docs/", "docs"], ["/docs", "docs"], ["/docs/cli.html", "cli"]] as const) {
+      const res = await get(assets, path);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(res.headers.get("content-security-policy")).toBe("default-src 'self'");
+      expect(await res.text()).toBe(`<title>${title}</title>`);
+    }
+    expect(await (await get(assets, "/docs/nope")).text()).toContain("<title>clipsync</title>");
   });
 
   it("answers a matching If-None-Match with 304", async () => {
