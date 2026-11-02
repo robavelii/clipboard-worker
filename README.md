@@ -324,8 +324,24 @@ and the passphrase: `clipsync signin --url …`, or "Sign in" on the web UI.
 The server checks the passphrase's proof, never the passphrase, and stops
 accepting tries for an hour after ten wrong ones.
 
-**Mail, through OCI Email Delivery.** The Always Free tier sends 3,000 a
-month, over SMTP on port 465 with TLS. In the OCI console:
+**Mail, through Cloudflare Email Service** (the Worker's choice when it has
+one, decisions §51). `wrangler.jsonc` binds `send_email` as `EMAIL`, and
+`MAIL_FROM` is the sender. To turn it on:
+
+1. Cloudflare dashboard → Email Service → Email Sending: onboard the
+   sending domain (`clip.rfh.et` here) and let it add the SPF and DKIM
+   records.
+2. Be on the Workers Paid plan. Sending to any address needs it, and
+   Email Sending is still in beta. On the free plan the binding reaches
+   only your account's verified destination addresses, which is enough to
+   test with but not for open signup.
+3. Deploy. Nothing else is configured: no secrets, no SMTP.
+
+When the binding is there and `MAIL_FROM` is set, SMTP is not used.
+
+**Mail, through OCI Email Delivery** (SMTP: for `clipsync serve`, the
+Docker image, or a Worker without the binding). The Always Free tier sends
+3,000 a month, over SMTP on port 465 with TLS. In the OCI console:
 
 1. Email Delivery → Approved senders: add the sending address, e.g.
    `noreply@clip.example.org`.

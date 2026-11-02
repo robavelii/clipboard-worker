@@ -1,5 +1,6 @@
 /**
- * Sending email: signup codes (decisions §45).
+ * Sending email: signup codes (decisions §45), and Cloudflare Email Service
+ * where the Worker has a `send_email` binding (decisions §51).
  *
  * One SMTP client, over whatever socket the runtime has: the Worker entry
  * passes Cloudflare's TCP sockets, apps/server passes Node's TLS. Both are
@@ -43,18 +44,44 @@ export interface SmtpConfig {
   from: string;
 }
 
+/**
+ * The shape of Cloudflare Email Service's `send_email` binding that this file
+ * uses, declared here so nothing imports a runtime: the Worker entry passes
+ * `env.EMAIL`, and Node has none.
+ */
+export interface EmailBinding {
+  send(message: { to: string; from: { email: string; name: string }; subject: string; text: string }): Promise<unknown>;
+}
+
+/**
+ * Mail through Cloudflare Email Service: one call, no socket. `from` is a
+ * bare address, as for SMTP, and goes out under the same name.
+ */
+export function cloudflareMailer(binding: EmailBinding, from: string): Mailer {
+  const sender = { email: from.trim(), name: "ClipSync" };
+  return {
+    send: async ({ to, subject, text }) => {
+      await binding.send({ to, from: sender, subject, text });
+    },
+  };
+}
+
 /** Messages kept, not sent, when MAIL_MODE is `outbox`: the Worker tests read them. */
 export const outbox: MailMessage[] = [];
 
 /**
- * The mailer this server's settings describe: the outbox in tests, SMTP when
- * a host, credentials and sender are set, or null when mail is not set up.
+ * The mailer this server's settings describe: the outbox in tests, then
+ * Cloudflare Email Service when the Worker has the binding and a sender,
+ * then SMTP when a host, credentials and sender are set, or null when mail
+ * is not set up.
  */
 export function mailerFor(
   env: { MAIL_MODE?: string; MAIL_FROM?: string; SMTP_HOST?: string; SMTP_PORT?: string | number; SMTP_USER?: string; SMTP_PASSWORD?: string },
   connect: Connect | null,
+  email?: EmailBinding | null,
 ): Mailer | null {
   if (env.MAIL_MODE === "outbox") return { send: async (m) => void outbox.push(m) };
+  if (email && env.MAIL_FROM) return cloudflareMailer(email, env.MAIL_FROM);
   if (!connect || !env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM) return null;
   return smtpMailer(
     {
