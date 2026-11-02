@@ -105,16 +105,14 @@ export function FileView({
       {isImage && url && <img className="preview" src={url} alt={meta.name} />}
       <div className="fileinfo">
         <span className="filename">{meta.name}</span>
-        <span className="muted small">
-          {formatBytes(meta.size)}
-          {busy ? " · loading…" : ""}
-        </span>
+        <span className="measured small">{formatBytes(meta.size)}</span>
+        {busy && <span className="muted small">Loading…</span>}
         {isImage && !url && !busy && (
-          <button className="link" onClick={() => void load()}>
+          <button type="button" className="link" onClick={() => void load()}>
             Show image
           </button>
         )}
-        <button onClick={() => void save()} disabled={busy}>
+        <button type="button" onClick={() => void save()} disabled={busy}>
           Download
         </button>
       </div>

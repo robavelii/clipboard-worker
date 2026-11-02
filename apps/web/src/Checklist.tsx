@@ -101,7 +101,7 @@ export function Checklist({
           {steps.length - left} of {steps.length} done
         </span>
         <span className="grow" />
-        <button
+        <button type="button"
           className="link"
           onClick={() => {
             try {
@@ -123,7 +123,7 @@ export function Checklist({
               <strong>{step.label}</strong>
               {!step.done && <small>{step.hint}</small>}
             </div>
-            {!step.done && <button onClick={step.run}>{step.action}</button>}
+            {!step.done && <button type="button" onClick={step.run}>{step.action}</button>}
           </li>
         ))}
       </ol>

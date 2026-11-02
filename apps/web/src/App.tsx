@@ -21,14 +21,13 @@ import { JoinScreen, readInviteFromLocation } from "./JoinScreen";
 import { ShareScreen } from "./ShareScreen";
 import { dropStaleShares, readShareSource } from "./shares";
 import { Compose } from "./Compose";
-import { FileView } from "./FileView";
 import { LatestCard, latestFromElsewhere } from "./Latest";
 import { PhoneSetup } from "./PhoneSetup";
 import { Checklist } from "./Checklist";
+import { History } from "./History";
 import { Settings, sectionFromPath, type Section } from "./Settings";
-import { ago, bytes, expiresIn } from "./time";
-import { canCopy, copyClip, isTouchFirst } from "./clipboard";
-import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
+import { isTouchFirst } from "./clipboard";
+import { useClips, useSync } from "@clipsync/react";
 
 export function App() {
   const [creds, setCreds] = useState(loadCredentials);
@@ -424,90 +423,89 @@ function Workspace({
   }, []);
 
   const online = devices.filter((d) => d.id === deviceId || connected.includes(d.id)).length;
+  const search = useRef<HTMLInputElement>(null);
+
+  // "/" jumps to search, Escape leaves it, as in most tools with a list.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement | null)?.closest("input, textarea");
+      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        search.current?.focus();
+      } else if (e.key === "Escape" && e.target === search.current) {
+        setQuery("");
+        search.current?.blur();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const addDevice = () => void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {});
+  const state =
+    status === "online"
+      ? { cls: "live", text: `${online} of ${devices.length} device${devices.length === 1 ? "" : "s"} online` }
+      : status === "connecting"
+        ? { cls: "", text: "Connecting" }
+        : status === "revoked"
+          ? { cls: "bad", text: "Signed out" }
+          : { cls: "bad", text: "Offline, retrying" };
+
+  const emptyText = loading
+    ? null
+    : query || filter !== "all"
+      ? hasMore
+        ? `Nothing in the ${clips.length} clips loaded so far. Search older ones below.`
+        : "Nothing matches."
+      : "Nothing copied yet. Copy something on a device running ClipSync, or paste it above.";
 
   return (
     <div className="app">
       <header className="topbar">
         <h1 className="brand">ClipSync</h1>
         <span className="grow" />
-        <button
-          className="chip"
-          onClick={() => onSettings("devices")}
-          title={devices.map((d) => d.name).join(", ")}
-        >
-          <span className={`dot ${status === "online" ? "on" : status === "connecting" ? "" : "bad"}`} aria-hidden="true" />
-          {status === "online"
-            ? `${online}/${devices.length} online`
-            : status === "connecting"
-              ? "Connecting…"
-              : status === "revoked"
-                ? "Signed out"
-                : "Offline"}
+        <button type="button" className={`status ${state.cls}`} onClick={() => onSettings("devices")} title={devices.map((d) => d.name).join(", ")}>
+          {state.text}
         </button>
-        <button onClick={onLock} title="Forget the key in this tab; the passphrase unlocks it again">
+        <button type="button" className="quiet" onClick={addDevice}>
+          Add device
+        </button>
+        <button type="button" className="quiet" onClick={onLock} title="Forget the key in this tab. The passphrase opens it again.">
           Lock
         </button>
         <details className="menu">
-          <summary aria-label="Menu">⋯</summary>
+          <summary aria-label="Menu">Menu</summary>
           <div className="menu-items" role="menu">
-            <button role="menuitem" onClick={() => onSettings("devices")}>Devices</button>
-            <button role="menuitem" onClick={() => onSettings("security")}>Security &amp; recovery key</button>
-            <button role="menuitem" onClick={() => onSettings("account")}>Account</button>
-            <button role="menuitem" onClick={() => onSettings("plan")}>Plan &amp; usage</button>
-            <button role="menuitem" onClick={onSetup}>Set up a phone</button>
+            <button type="button" role="menuitem" onClick={() => onSettings("devices")}>Devices</button>
+            <button type="button" role="menuitem" onClick={() => onSettings("security")}>Security and recovery key</button>
+            <button type="button" role="menuitem" onClick={() => onSettings("account")}>Account</button>
+            <button type="button" role="menuitem" onClick={() => onSettings("plan")}>Plan and usage</button>
+            <button type="button" role="menuitem" onClick={onSetup}>Set up a phone</button>
+            <button type="button" role="menuitem" className="narrow-only" onClick={addDevice}>Add device</button>
+            <button type="button" role="menuitem" className="narrow-only" onClick={onLock}>Lock this tab</button>
             <hr />
-            <button role="menuitem" className="danger" onClick={onSignOut}>
+            <button type="button" role="menuitem" className="danger" onClick={onSignOut}>
               Sign out of this browser
             </button>
           </div>
         </details>
       </header>
 
-      <div className="toolbar">
-        <input
-          className="search"
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Search ${clips.length} loaded clip${clips.length === 1 ? "" : "s"}…`}
-          aria-label="Search clips"
-        />
-        <button
-          className="primary"
-          onClick={() =>
-            void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {})
-          }
-        >
-          Add device
-        </button>
-      </div>
-
-      <div className="segmented filters" role="tablist" aria-label="Show">
-        {FILTERS.map(([id, label]) => (
-          <button
-            key={id}
-            role="tab"
-            aria-selected={filter === id}
-            className={filter === id ? "on" : undefined}
-            onClick={() => setFilter(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <Checklist
+      <Compose
         api={api}
-        devices={devices}
-        onAddDevice={() => void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {})}
-        onSettings={onSettings}
+        keys={keys}
+        account={account}
+        deviceId={deviceId}
+        onSent={reload}
+        onStale={onRefreshRing}
       />
 
       {pairCode !== null && (
-        <div className="paircode">
+        <section className="notice" aria-label="Add a device">
+          <h2>Add a device</h2>
           <p>
-            Paste a link from <code>clipsync link</code> — the other device
-            never has to be told the passphrase:
+            On the new device, run <code>clipsync link</code> and paste the link it prints here. It never needs the
+            passphrase.
           </p>
           <form
             className="linkform"
@@ -521,7 +519,11 @@ function Workspace({
               }
             }}
           >
+            <label htmlFor="link-url" className="visually-hidden">
+              Link from clipsync link
+            </label>
             <input
+              id="link-url"
               value={linkUrl}
               onChange={(e) => setLinkUrl(e.target.value)}
               placeholder="https://clip.rfh.et/link#…"
@@ -529,25 +531,31 @@ function Workspace({
             <button type="submit">Open</button>
           </form>
           <p className="muted small">
-            Or use a manual pairing code (that device will ask for the
-            passphrase): <code>{pairCode}</code> — 10 minutes, single use.
+            Or type this pairing code there; that device will then ask for the passphrase. It works once, for 10
+            minutes.
           </p>
-          <button className="link" onClick={() => setPairCode(null)}>
-            dismiss
-          </button>
-        </div>
+          <p className="code measured">{pairCode}</p>
+          <div className="row">
+            <button type="button" className="link" onClick={() => setPairCode(null)}>
+              Done
+            </button>
+          </div>
+        </section>
       )}
 
       {stranded && (
-        <div className="notice">
+        <section className="notice bad" aria-label="This browser missed a re-key">
           <p>
-            Your vault was re-keyed, and this browser did not get the new key —
-            it had no device key registered yet. New clips will not open here
-            until you unlock with your passphrase.
+            Your clipboard was re-keyed, and this browser did not get the new key: it had no device key registered yet.
+            New clips will not open here until you enter your passphrase.
           </p>
-          <button onClick={onUnlockAgain}>Unlock with passphrase</button>
-        </div>
+          <div className="row">
+            <button type="button" onClick={onUnlockAgain}>Enter passphrase</button>
+          </div>
+        </section>
       )}
+
+      <Checklist api={api} devices={devices} onAddDevice={addDevice} onSettings={onSettings} />
 
       {latest && !query && (
         <LatestCard
@@ -559,126 +567,62 @@ function Workspace({
         />
       )}
 
-      <Compose
+      <div className="historyhead">
+        <h2>History</h2>
+        <input
+          ref={search}
+          className="search"
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={`Search ${clips.length} loaded clip${clips.length === 1 ? "" : "s"}`}
+          aria-label="Search clips"
+          aria-keyshortcuts="/"
+        />
+        <div className="segmented filters" role="tablist" aria-label="Show">
+          {FILTERS.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={filter === id}
+              className={filter === id ? "on" : undefined}
+              onClick={() => setFilter(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <p className="error">{error}</p>}
+      {loading && !clips.length && (
+        <ul className="ledger skeleton" aria-hidden="true">
+          <li /><li /><li />
+        </ul>
+      )}
+
+      <History
+        clips={visible}
         api={api}
         keys={keys}
         account={account}
         deviceId={deviceId}
-        onSent={reload}
-        onStale={onRefreshRing}
+        deviceNames={deviceNames}
+        onDelete={(id) => void remove(id)}
+        onTogglePin={(id, pinned) => void togglePin(id, pinned)}
+        emptyText={emptyText}
       />
 
-      {error && <p className="error">{error}</p>}
-      {loading && <p className="muted">Loading…</p>}
-      {!loading && !visible.length && (
-        <p className="empty">
-          {query || filter !== "all"
-            ? hasMore
-              ? `Nothing in the ${clips.length} clips loaded so far.`
-              : "Nothing matches."
-            : "No clips yet. Copy something on a device running ClipSync, or paste above."}
-        </p>
-      )}
-
-      <ul className="clips">
-        {visible.map((clip) => (
-          <ClipRow
-            key={clip.id}
-            clip={clip}
-            api={api}
-            keys={keys}
-            account={account}
-            origin={deviceNames.get(clip.deviceId) ?? "unknown device"}
-            onDelete={() => void remove(clip.id)}
-            onTogglePin={() => void togglePin(clip.id, !clip.pinned)}
-          />
-        ))}
-      </ul>
-
       {hasMore && (
-        <button className="more" onClick={loadMore}>
+        <button type="button" className="more" onClick={loadMore}>
           {query || filter !== "all" ? "Search older clips too" : "Load older clips"}
         </button>
       )}
+
+      <p className="keys muted small" aria-hidden="true">
+        <kbd>/</kbd> search <kbd>j</kbd> <kbd>k</kbd> move <kbd>c</kbd> copy <kbd>p</kbd> pin <kbd>Del</kbd> delete
+      </p>
     </div>
-  );
-}
-
-function ClipRow({
-  clip,
-  api,
-  keys,
-  account,
-  origin,
-  onDelete,
-  onTogglePin,
-}: {
-  clip: DecryptedClip;
-  api: ApiClient;
-  keys: RingKeys;
-  account: string;
-  origin: string;
-  onDelete: () => void;
-  onTogglePin: () => void;
-}) {
-  const [copied, setCopied] = useState<"Copied" | "Copy failed" | null>(null);
-
-  function copy() {
-    // Straight from the tap: iOS refuses a clipboard write made after an await.
-    const flash = (label: "Copied" | "Copy failed") => {
-      setCopied(label);
-      setTimeout(() => setCopied(null), 1500);
-    };
-    copyClip(api, keys, account, clip).then(
-      () => flash("Copied"),
-      () => flash("Copy failed"),
-    );
-  }
-
-  return (
-    <li className={clip.pinned ? "clip pinned" : "clip"}>
-      {clip.file ? (
-        <FileView api={api} keys={keys} account={account} clip={clip} />
-      ) : (
-        <pre className={clip.text === null ? "locked" : undefined}>
-          {clip.text ?? "Cannot decrypt on this device"}
-        </pre>
-      )}
-      <div className="meta">
-        {clip.pinned && <span className="tag">Pinned</span>}
-        <span>{origin}</span>
-        <span aria-hidden="true">·</span>
-        <time
-          dateTime={new Date(clip.createdAt).toISOString()}
-          title={new Date(clip.createdAt).toLocaleString()}
-        >
-          {ago(clip.createdAt)}
-        </time>
-        {clip.file && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span>{bytes(clip.file.size)}</span>
-          </>
-        )}
-        {!clip.pinned && expiresIn(clip.expiresAt) && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span className="expiry">{expiresIn(clip.expiresAt)}</span>
-          </>
-        )}
-        <span className="spacer" />
-        <button onClick={onTogglePin} title="Pinned clips never expire">
-          {clip.pinned ? "Unpin" : "Pin"}
-        </button>
-        {(!clip.file || canCopy(clip)) && (
-          <button onClick={copy} disabled={!canCopy(clip)}>
-            {copied ?? "Copy"}
-          </button>
-        )}
-        <button className="danger" onClick={onDelete}>
-          Delete
-        </button>
-      </div>
-    </li>
   );
 }

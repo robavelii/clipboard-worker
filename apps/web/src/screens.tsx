@@ -12,31 +12,55 @@ type Way = "pair" | "signin" | "signup" | "recover";
 
 /** How this browser joins: a pairing code, the account's email and passphrase, or a new account. */
 export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
-  const [way, setWay] = useState<Way>("pair");
-  const others: [Way, string][] = (
-    [
-      ["pair", "Pair with a code"],
-      ["signin", "Sign in"],
-      ["signup", "Make an account"],
-      ["recover", "Forgot the passphrase?"],
-    ] as [Way, string][]
-  ).filter(([w]) => w !== way);
+  const [way, setWay] = useState<Way>("signin");
+  const tabs: [Way, string][] = [
+    ["signin", "Sign in"],
+    ["signup", "Make an account"],
+    ["pair", "Pair with a code"],
+  ];
   return (
     <div className="enrol">
-      {way === "pair" && <PairScreen onPaired={onEnrolled} />}
-      {way === "signin" && <SignInScreen onEnrolled={onEnrolled} />}
-      {way === "signup" && <SignUpScreen onEnrolled={onEnrolled} />}
-      {way === "recover" && <RecoverScreen onEnrolled={onEnrolled} />}
-      <p className="muted small">
-        {others.map(([w, label], i) => (
-          <span key={w}>
-            {i > 0 && " · "}
-            <button type="button" className="link" onClick={() => setWay(w)}>
-              {label}
+      <section className="enrol-intro">
+        <p className="wordmark">ClipSync</p>
+        <h1>Copy on one device. Paste on the next.</h1>
+        <p className="lead">
+          Your clipboard history, encrypted on your own devices before it leaves them. The server only ever holds
+          ciphertext.
+        </p>
+      </section>
+      <div className="enrol-form">
+        {way !== "recover" && (
+          <div className="segmented" role="tablist" aria-label="How to start">
+            {tabs.map(([w, label]) => (
+              <button
+                key={w}
+                type="button"
+                role="tab"
+                aria-selected={way === w}
+                className={way === w ? "on" : undefined}
+                onClick={() => setWay(w)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {way === "pair" && <PairScreen onPaired={onEnrolled} />}
+        {way === "signin" && <SignInScreen onEnrolled={onEnrolled} />}
+        {way === "signup" && <SignUpScreen onEnrolled={onEnrolled} />}
+        {way === "recover" && <RecoverScreen onEnrolled={onEnrolled} />}
+        <p className="small">
+          {way === "recover" ? (
+            <button type="button" className="link" onClick={() => setWay("signin")}>
+              Back to sign in
             </button>
-          </span>
-        ))}
-      </p>
+          ) : (
+            <button type="button" className="link" onClick={() => setWay("recover")}>
+              Forgot the passphrase?
+            </button>
+          )}
+        </p>
+      </div>
     </div>
   );
 }
@@ -73,7 +97,7 @@ function SignInScreen({ onEnrolled }: { onEnrolled: () => void }) {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>Sign in</h1>
+      <h2>Sign in</h2>
       <p className="muted">
         With no other device at hand: your account's email and passphrase. The passphrase never leaves this
         browser; only a proof of it does.
@@ -91,7 +115,7 @@ function SignInScreen({ onEnrolled }: { onEnrolled: () => void }) {
         <input value={name} onChange={(e) => setName(e.target.value)} required />
       </label>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {busy ? "Signing in…" : "Sign in"}
       </button>
     </form>
@@ -127,7 +151,7 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (passphrase !== confirm) {
-      setError("The passphrases don't match.");
+      setError("The passphrases don’t match.");
       return;
     }
     setBusy(true);
@@ -155,14 +179,14 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
   if (!withInvite && !codeSent) {
     return (
       <form className="card" onSubmit={sendCode}>
-        <h1>Make an account</h1>
-        <p className="muted">We'll email you a six-digit code to confirm the address.</p>
+        <h2>Make an account</h2>
+        <p className="muted">We’ll email you a six-digit code to confirm the address.</p>
         <label>
           Email
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
         </label>
         {error && <p className="error">{error}</p>}
-        <button type="submit" disabled={busy}>
+        <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
           {busy ? "Sending…" : "Email me a code"}
         </button>
         <button type="button" className="link" onClick={() => setWithInvite(true)}>
@@ -174,7 +198,7 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>Make an account</h1>
+      <h2>Make an account</h2>
       {withInvite ? (
         <>
           <label>
@@ -215,11 +239,11 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
         <input value={name} onChange={(e) => setName(e.target.value)} required />
       </label>
       <p className="muted small">
-        The passphrase encrypts everything you copy and never leaves your devices. Next you'll get a recovery
+        The passphrase encrypts everything you copy and never leaves your devices. Next you’ll get a recovery
         key: the only way back in if you forget it.
       </p>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {busy ? "Creating…" : "Create the account"}
       </button>
     </form>
@@ -235,7 +259,7 @@ export function RecoveryKeyCard({ recoveryKey, onDone }: { recoveryKey: string; 
   const [copied, setCopied] = useState(false);
   return (
     <div className="card">
-      <h1>Your recovery key</h1>
+      <h2>Your recovery key</h2>
       <p className="recovery-key">{recoveryKey}</p>
       <p className="muted">
         Write it down and keep it somewhere safe, away from your devices. It is shown once and stored nowhere. If
@@ -253,7 +277,7 @@ export function RecoveryKeyCard({ recoveryKey, onDone }: { recoveryKey: string; 
       </button>
       <label className="checkbox">
         <input type="checkbox" checked={kept} onChange={(e) => setKept(e.target.checked)} />
-        <span>I've kept it somewhere safe</span>
+        <span>I’ve kept it somewhere safe</span>
       </label>
       <button type="button" className="primary" disabled={!kept} onClick={onDone}>
         Continue
@@ -276,7 +300,7 @@ function RecoverScreen({ onEnrolled }: { onEnrolled: () => void }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (passphrase !== confirm) {
-      setError("The passphrases don't match.");
+      setError("The passphrases don’t match.");
       return;
     }
     setBusy(true);
@@ -302,7 +326,7 @@ function RecoverScreen({ onEnrolled }: { onEnrolled: () => void }) {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>Reset the passphrase</h1>
+      <h2>Reset the passphrase</h2>
       <p className="muted">
         With the recovery key you were shown when the account was made. Your clips and your other devices are
         unaffected; only the passphrase changes.
@@ -339,7 +363,7 @@ function RecoverScreen({ onEnrolled }: { onEnrolled: () => void }) {
         <span>Sign every other device out (I lost them)</span>
       </label>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {busy ? "Resetting…" : "Reset the passphrase"}
       </button>
     </form>
@@ -379,7 +403,7 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
         // leave a phantom behind. A fresh code is needed either way.
         await api.revokeSelf().catch(() => undefined);
         setWarning(
-          "That passphrase does not unlock this account. Mint a new pairing code and try again.",
+          "That passphrase does not open this account. Get a new pairing code and try again.",
         );
         setBusy(false);
         return;
@@ -395,10 +419,10 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>Pair this browser</h1>
+      <h2>Pair this browser</h2>
       <p className="muted">
         Easier: run <code>clipsync invite</code> on a device that is already set
-        up and scan the QR it prints — no passphrase, nothing to type.
+        up and scan the QR it prints: no passphrase, nothing to type.
       </p>
       <p className="muted small">
         Otherwise, pair with a code from <code>clipsync pair-code</code>:
@@ -437,7 +461,7 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
       {error && <p className="error">{error}</p>}
       {warning && <p className="error">{warning}</p>}
 
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {busy ? "Pairing…" : "Pair"}
       </button>
     </form>
@@ -473,14 +497,14 @@ export function UnlockScreen({
         ),
       );
     } catch {
-      setError("That passphrase does not unlock this account.");
+      setError("That passphrase does not open this account.");
       setBusy(false);
     }
   }
 
   return (
     <form className="card" onSubmit={submit}>
-      <h1>Unlock</h1>
+      <h1>Enter your passphrase</h1>
       <p className="muted">
         Your clipboard history is encrypted. Enter your passphrase to read it.
       </p>
@@ -498,8 +522,8 @@ export function UnlockScreen({
 
       {error && <p className="error">{error}</p>}
 
-      <button type="submit" disabled={busy}>
-        {busy ? "Unlocking…" : "Unlock"}
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
+        {busy ? "Opening…" : "Open ClipSync"}
       </button>
       <button type="button" className="link" onClick={onForget}>
         Unpair this browser

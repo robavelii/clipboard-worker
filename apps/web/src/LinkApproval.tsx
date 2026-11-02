@@ -44,7 +44,7 @@ export function LinkApproval({
         if (status.publicKey !== publicKey) {
           throw new Error(
             "The key this server returned does not match the one in your link. " +
-              "Do not approve — this is what a tampered link looks like.",
+              "Do not approve: this is what a tampered link looks like.",
           );
         }
         const code = await fingerprint(publicKey);
@@ -95,7 +95,7 @@ export function LinkApproval({
       <div className="card">
         <h1>Cannot approve</h1>
         <p className="error">{state.message}</p>
-        <button onClick={onClose}>Back</button>
+        <button type="button" onClick={onClose}>Back</button>
       </div>
     );
   }
@@ -106,9 +106,9 @@ export function LinkApproval({
         <h1>Approved</h1>
         <p className="muted">
           “{state.deviceName}” is set up and can start syncing. Nobody typed
-          the passphrase on it — and it never learned one.
+          the passphrase on it, and it never learned one.
         </p>
-        <button onClick={onClose}>Done</button>
+        <button type="button" onClick={onClose}>Done</button>
       </div>
     );
   }
@@ -142,8 +142,8 @@ export function LinkApproval({
         your passphrase. If the codes differ, do not approve.
       </p>
 
-      <button onClick={() => void approve()}>Approve</button>
-      <button className="link" onClick={onClose}>
+      <button type="button" className="primary" onClick={() => void approve()}>Approve</button>
+      <button type="button" className="link" onClick={onClose}>
         Cancel
       </button>
     </div>
