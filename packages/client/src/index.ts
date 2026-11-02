@@ -7,6 +7,7 @@
 
 import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
+  SignupInfo,
   AccountPlan,
   AdminPassphraseResetRequest,
   RenameDeviceRequest,
@@ -176,6 +177,11 @@ export class ApiClient {
   /** Delete this account and everything in it, for good. */
   deleteAccount(body: DeleteAccountRequest): Promise<{ ok: boolean }> {
     return this.request("/api/account", { method: "DELETE", body: JSON.stringify(body) });
+  }
+
+  /** How this server takes new accounts: by mailed code (`open`) or only by invite. */
+  signupInfo(): Promise<SignupInfo> {
+    return this.request("/api/signup");
   }
 
   /** Ask for a signup code by mail; the server answers the same whether or not one went out. */
