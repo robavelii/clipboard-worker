@@ -368,7 +368,9 @@ ways to add one.
 
 ### Scanning (phones, tablets, any browser)
 
-On a machine that is already set up:
+In the web app, **Add device** shows a QR code: point the phone's camera at
+it and open the link. It joins straight away, with no passphrase. On a
+machine with the CLI, the same code comes from:
 
 ```bash
 clipsync invite

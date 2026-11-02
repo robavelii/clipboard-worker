@@ -1893,3 +1893,34 @@ under the name "ClipSync".
 Production now sets `SIGNUP` to `open`. Until the SMTP secrets are set there
 is no mailer: the routes that mail answer 503, and `GET /api/signup` reports
 signup closed, so clients ask for an invite instead of failing.
+
+## 52. Adding a phone from the web app is a QR code
+
+The web app's Add device minted a pairing code. You then typed it on the
+phone, along with the passphrase, which is the slowest of the four ways in
+(see the enrolment paths in CLAUDE.md). The invite flow (`clipsync invite`, `/join#…`)
+already did better: the phone gets the vault key from the code itself and
+nobody types anything. Only the CLI could show one.
+
+Add device now mints that invite in the browser (`createInvite`, the same
+call the CLI makes, with this page's origin as the link's base) and shows it
+as a QR code. The secret stays in the URL fragment, as before, so the server
+never sees it. "Copy the link" covers a phone that is the device showing the
+code. A computer still pastes a link from `clipsync link` or takes a pairing
+code, under "Adding a computer?".
+
+Choices:
+- **The code is drawn, not rendered as markup.** `qrcode`'s `create` gives
+  the modules, which become one SVG `path`. Its own `toString` returns SVG
+  text, and putting that in the page needs `innerHTML`; a canvas or a data
+  URL works too, but React can't read either for accessibility. The page's
+  CSP allows no inline style, and a path with classes needs none.
+- **Dark on light in both themes**, on its own pale panel (`--qr-paper`,
+  `--qr-ink`): some phone cameras don't read an inverted code.
+- **No status endpoint.** The panel says the phone joined when a device
+  that wasn't listed when it opened appears in the device list, which the
+  page already refreshes as devices connect. A route that reports an
+  invite's claim would only duplicate that.
+
+The invite still lasts five minutes and works once. The panel counts down,
+and offers a new code once it has expired.
