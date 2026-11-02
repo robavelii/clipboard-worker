@@ -7,7 +7,7 @@
 
 import { connect } from "cloudflare:sockets";
 import { app } from "./app";
-import { mailerFor, type Connect } from "./mail";
+import { mailerFor, type Connect, type EmailBinding } from "./mail";
 import { purgeExpired } from "./purge";
 
 export { SyncRoom } from "./sync-room";
@@ -15,8 +15,12 @@ export { SyncRoom } from "./sync-room";
 /** SMTP over TLS from the first byte, on Cloudflare's TCP sockets. */
 const tlsConnect: Connect = (hostname, port) => connect({ hostname, port }, { secureTransport: "on", allowHalfOpen: false });
 
+/** Cloudflare Email Service, through the EMAIL binding when the deployment has one. */
+const emailOf = (env: Env): EmailBinding | null =>
+  env.EMAIL ? { send: (message) => env.EMAIL.send(message) } : null;
+
 export default {
-  fetch: (request, env, ctx) => app.fetch(request, { ...env, MAILER: mailerFor(env, tlsConnect) }, ctx),
+  fetch: (request, env, ctx) => app.fetch(request, { ...env, MAILER: mailerFor(env, tlsConnect, emailOf(env)) }, ctx),
 
   /** Hourly purge; see purge.ts. */
   async scheduled(_controller, env, _ctx): Promise<void> {

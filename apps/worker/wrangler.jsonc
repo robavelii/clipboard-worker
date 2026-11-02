@@ -65,14 +65,22 @@
     // Who may make an account (decisions §45): "off" (bootstrap's first
     // account, and accounts from admin invites), or "open" (anyone with an
     // email address; needs mail set up). New accounts get SIGNUP_PLAN.
-    "SIGNUP": "off",
+    "SIGNUP": "open",
     "SIGNUP_PLAN": "free",
-    // Outgoing mail, for signup codes: OCI Email Delivery takes SMTP over
-    // TLS on 465. The credentials are secrets: SMTP_USER and SMTP_PASSWORD.
-    "MAIL_FROM": "",
+    // Outgoing mail (signup codes, notices). Cloudflare Email Service through
+    // the EMAIL binding below when it is there (decisions §51); otherwise SMTP
+    // over TLS on 465 (OCI Email Delivery), with the secrets SMTP_USER and
+    // SMTP_PASSWORD. MAIL_FROM is a bare address, sent as "ClipSync", on a
+    // domain onboarded to whichever sends.
+    "MAIL_FROM": "noreply@clip.rfh.et",
     "SMTP_HOST": "",
     "SMTP_PORT": "465"
   },
+
+  // Cloudflare Email Service. Sending to any address needs the Workers Paid
+  // plan and clip.rfh.et onboarded under Email Service > Email Sending; without
+  // them it reaches only the account's verified destination addresses.
+  "send_email": [{ "name": "EMAIL" }],
 
   // One SyncRoom per user: the fan-out point for every connected device.
   "durable_objects": {
