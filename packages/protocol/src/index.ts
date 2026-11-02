@@ -187,6 +187,65 @@ export interface AccountExport {
   blobs: { id: string; chunks: number; size: number }[];
 }
 
+/**
+ * GET /api/account/recovery (decisions §48): whether the account has a
+ * recovery key, and whether it opens the current vault key.
+ */
+export interface RecoveryStatus {
+  /** The recovery key's public key, which a re-key seals the new vault key to. null: none set. */
+  publicKey: string | null;
+  /** The epoch its sealed copy is for; behind keyEpoch means it opens an old key only. */
+  epoch: number | null;
+  keyEpoch: number;
+}
+
+/** PUT /api/account/recovery: set or replace the recovery key. */
+export interface SetRecoveryRequest {
+  /** The passphrase's proof: a device token alone can't replace it. */
+  authProof: string;
+  publicKey: string;
+  wrappedPrivateKey: string;
+  sealed: string;
+  epoch: number;
+  recoveryHash: string;
+}
+
+/** POST /api/recovery/open: what a recovery key needs to open the vault key. */
+export interface RecoveryOpenRequest {
+  email: string;
+  /** `recoveryProofOf(recoveryKey)`, never the key. */
+  recoveryProof: string;
+}
+
+export interface RecoveryOpenResponse {
+  userId: string;
+  kdfSalt: string;
+  keyEpoch: number;
+  publicKey: string;
+  wrappedPrivateKey: string;
+  sealed: string;
+  epoch: number;
+}
+
+/**
+ * POST /api/recovery/reset: a new passphrase for the account, proven by the
+ * recovery key, and this device enrolled into it.
+ */
+export interface RecoveryResetRequest {
+  email: string;
+  recoveryProof: string;
+  /** The vault key, wrapped under the new passphrase. */
+  wrappedVaultKey: string;
+  /** Proof hash for the new passphrase. */
+  authHash: string;
+  /** The epoch the vault key is from; refused if the account has moved on. */
+  keyEpoch: number;
+  deviceName: string;
+  platform: Platform;
+  /** Revoke every other device too: the ones that were lost. */
+  revokeOtherDevices?: boolean;
+}
+
 /** POST /api/signin: this device into an existing account, with no other device at hand. */
 export interface SigninRequest {
   email: string;
@@ -297,6 +356,12 @@ export interface RotateVaultRequest {
   wrappedVaultKey: string;
   /** The new vault key sealed to each device that should keep reading. */
   sealedKeys: SealedKeyEntry[];
+  /**
+   * The new vault key sealed to the account's recovery key (decisions §48),
+   * from `sealForRecovery`. Required when the account has one: a re-key that
+   * left it behind would leave it opening nothing.
+   */
+  recoverySealed?: string;
 }
 
 export interface RotateVaultResponse {

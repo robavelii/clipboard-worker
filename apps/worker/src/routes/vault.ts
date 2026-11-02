@@ -120,12 +120,26 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     }
 
     const userId = c.var.device.userId;
-    const { results: active } = await c.env.DB.prepare(
-      "SELECT id FROM devices WHERE user_id = ? AND revoked_at IS NULL",
-    )
-      .bind(userId)
-      .all<{ id: string }>();
+    const [activeRead, recoveryRead] = await c.env.DB.batch([
+      c.env.DB.prepare("SELECT id FROM devices WHERE user_id = ? AND revoked_at IS NULL").bind(userId),
+      c.env.DB.prepare("SELECT recovery_public_key FROM users WHERE id = ?").bind(userId),
+    ]);
+    const active = (activeRead?.results ?? []) as { id: string }[];
     const activeIds = new Set(active.map((d) => d.id));
+
+    // An account with a recovery key gets the new vault key sealed to it too
+    // (decisions §48), or the recovery key would open nothing after this.
+    const hasRecovery = Boolean((recoveryRead?.results[0] as { recovery_public_key: string | null } | undefined)?.recovery_public_key);
+    const recoverySealed = body.recoverySealed;
+    if (hasRecovery) {
+      if (typeof recoverySealed !== "string" || !recoverySealed.startsWith("d1.") || recoverySealed.length > MAX_WRAPPED_LENGTH) {
+        throw new HTTPException(400, {
+          message:
+            "this account has a recovery key, and the re-key must seal the new vault key to it -- " +
+            "update this client (it predates recovery keys)",
+        });
+      }
+    }
 
     const sealedFor = new Set<string>();
     for (const entry of sealedKeys) {
@@ -161,6 +175,14 @@ export const vaultRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
              SELECT ?, ?, ?, ? WHERE ${bumped}`,
           ).bind(entry.deviceId, toEpoch, entry.sealed, now, userId, toEpoch),
         ),
+        ...(hasRecovery
+          ? [
+              c.env.DB.prepare(
+                `UPDATE users SET recovery_sealed = ?, recovery_epoch = ?
+                  WHERE id = ? AND recovery_public_key IS NOT NULL AND ${bumped}`,
+              ).bind(recoverySealed, toEpoch, userId, userId, toEpoch),
+            ]
+          : []),
         // Copies for retired epochs are dead weight once the bump lands.
         c.env.DB.prepare(
           `DELETE FROM sealed_vault_keys

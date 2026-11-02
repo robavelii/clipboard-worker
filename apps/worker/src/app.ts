@@ -20,6 +20,7 @@ import { deviceRoutes } from "./routes/devices";
 import { installRoutes } from "./routes/install";
 import { inviteRoutes } from "./routes/invites";
 import { linkRoutes } from "./routes/link";
+import { recoveryRoutes } from "./routes/recovery";
 import { signinRoutes, signupRoutes } from "./routes/signup";
 import { syncRoutes } from "./routes/sync";
 import { vaultRoutes } from "./routes/vault";
@@ -37,6 +38,7 @@ export const app = new Hono<{ Bindings: Env }>()
   .route("/api/account", accountRoutes)
   .route("/api/signup", signupRoutes)
   .route("/api/signin", signinRoutes)
+  .route("/api/recovery", recoveryRoutes)
   .route("/api/devices", deviceRoutes)
   .route("/api/vault", vaultRoutes)
   .route("/api/link", linkRoutes)
