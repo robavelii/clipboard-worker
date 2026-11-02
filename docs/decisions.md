@@ -1815,3 +1815,39 @@ What it costs:
 Trap: keyboard shortcuts must ignore keys typed into a field, and any key
 pressed with a modifier, or `c` and `p` land in the paste box. `ignoreKey`
 in `History.tsx` is that check, and the same rule guards `/` in `App.tsx`.
+
+## 50. The operator can reset a passphrase, from one of the account's devices
+
+An account made before recovery keys (§48), whose owner then forgets the
+passphrase, was stuck: every device still synced, but nothing that rewrites
+the key would run, because each needs the passphrase's proof. That covers
+changing it, making a recovery key, setting an address (§47) and re-keying.
+Since the devices hold the vault key, the fix is only to wrap that key again
+under a new passphrase; nothing about the clips changes.
+
+`POST /api/account/passphrase-reset` does that, and takes two things:
+- **the admin secret**, so only the person running the server can do it;
+- **a device token of that account**, because the request carries the new
+  wrap, and only a device that holds the vault key can make one.
+
+Neither is enough alone. The admin secret has no key to wrap, and a device
+token alone must never change the passphrase (§47's reasoning: a stolen
+laptop would lock the owner out). The update is guarded on `key_epoch`, so a
+device that missed a re-key cannot write an old key back. It also clears
+the sign-in failure window and, when the account has an address, mails it.
+
+What it costs:
+- **The server cannot check the wrap.** It never sees the vault key, so a
+  device holding the wrong key could make the passphrase open a key the
+  clips don't use. The client (`resetPassphraseAsAdmin`) therefore opens a
+  clip under the current epoch with its key before sending anything, and
+  refuses if it can't. An account with no clips has nothing to check
+  against, and nothing to lose either.
+- **The operator gains a power over hosted accounts,** but only together
+  with one of that account's own devices, which already reads everything.
+  It adds no access to the clips.
+- **CLI only.** Typing an admin secret into a web page would put it within
+  reach of any script on that page, and the CSP is the only guard there.
+
+Recovery keys (§48) remain the owner's way back. This exists for accounts
+that predate them, and for self-hosters who never made one.

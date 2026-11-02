@@ -45,7 +45,7 @@ import {
   withRing,
   type AgentConfig,
 } from "./config";
-import { changePassphrase, unlockVault } from "@clipsync/client/vault";
+import { changePassphrase, resetPassphraseAsAdmin, unlockVault } from "@clipsync/client/vault";
 import { Daemon, log } from "./daemon";
 import { mimeFor } from "./mime";
 import { receiveSettings, saveReceived } from "./receive";
@@ -81,6 +81,7 @@ Usage
   clipsync get <clip-id> [-o <path>]                    Save an image or file clip
   clipsync receive [on|off] [--to <dir>]                Save other devices' files here, ready to paste
   clipsync passphrase                                   Change the passphrase
+  clipsync passphrase --reset                           Forgot it: reset it with the server's admin secret, from this device
   clipsync recovery [new|off]                           Show, make (or replace) or remove the recovery key
   clipsync recover --url <url> [--revoke-others]        Forgot the passphrase: reset it with the recovery key
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
@@ -1013,6 +1014,36 @@ async function cmdRekey(opts: { finish?: boolean }): Promise<void> {
 }
 
 /**
+ * Forgot the passphrase, no recovery key: reset it as the server's operator
+ * (decisions §50). Needs the admin secret and this device, which wraps the
+ * vault key it already holds; nothing is re-encrypted.
+ */
+async function cmdPassphraseReset(): Promise<void> {
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+  console.log(
+    "Resetting the passphrase with the server's admin secret.\n" +
+      "This device's vault key is wrapped under the new passphrase: no clip is\n" +
+      "re-encrypted and your other devices keep working.\n",
+  );
+  const adminSecret = process.env.CLIPSYNC_ADMIN_SECRET ?? (await askSecret("Admin secret: "));
+  const ring = await resolveVaultRing(config, api);
+  console.log("Choose a new passphrase.");
+  const newPassphrase = await askNewPassphrase();
+  await resetPassphraseAsAdmin(api, {
+    adminSecret,
+    account: config.userId,
+    kdfSalt: config.kdfSalt,
+    ring,
+    newPassphrase,
+  });
+  console.log("\nPassphrase reset. Use the new one everywhere you enter a passphrase.");
+  console.log("Next, so this never needs the admin secret again:");
+  console.log("  clipsync email <address>     add an email address (sign-in, recovery notices)");
+  console.log("  clipsync recovery new        make a recovery key and keep it somewhere safe");
+}
+
+/**
  * Change the passphrase.
  *
  * Re-wraps the vault key. No clip is re-encrypted and no other device has to
@@ -1351,6 +1382,7 @@ async function main(): Promise<void> {
       invite: { type: "string" },
       ciphertext: { type: "boolean" },
       "by-email": { type: "boolean" },
+      reset: { type: "boolean" },
       "revoke-others": { type: "boolean" },
     },
   });
@@ -1404,7 +1436,7 @@ async function main(): Promise<void> {
     case "receive":
       return cmdReceive(arg, values.to);
     case "passphrase":
-      return cmdPassphrase();
+      return values.reset ? cmdPassphraseReset() : cmdPassphrase();
     case "recovery":
       return cmdRecovery(arg);
     case "recover":

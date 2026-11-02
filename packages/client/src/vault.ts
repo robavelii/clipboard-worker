@@ -16,6 +16,7 @@ import {
   type VaultKey,
 } from "@clipsync/crypto";
 import { ApiRequestError, type ApiClient } from "./index";
+import { currentKey, readClip, ringKeysFrom, type VaultRing } from "./ring";
 
 export interface UnlockedVault {
   vaultKey: VaultKey;
@@ -131,6 +132,46 @@ export async function changePassphrase(
     wrappedVaultKey: await wrapVaultKey(next.kek, vaultKey),
     authHash: await authHashOf(next.authProof),
     authProof: current.authProof,
+    keyEpoch,
+  });
+}
+
+/**
+ * Reset a forgotten passphrase as the server's operator, from a device of
+ * the account (decisions §50): the admin secret and this device's token
+ * together. The device wraps the vault key it already holds under the new
+ * passphrase, so no clip is re-encrypted and every other device keeps
+ * working.
+ *
+ * Before anything is sent, it proves the key is the account's: a clip
+ * under the current epoch must open with it. A device holding the wrong key
+ * would otherwise lock the account to a key its clips don't use.
+ */
+export async function resetPassphraseAsAdmin(
+  api: ApiClient,
+  opts: { adminSecret: string; account: string; kdfSalt: string; ring: VaultRing; newPassphrase: string },
+): Promise<void> {
+  const { keyEpoch } = await api.vaultKey();
+  if (keyEpoch !== opts.ring.current) {
+    throw new Error(
+      `this device is on epoch ${opts.ring.current} but the vault is at ${keyEpoch} -- restart it to pick up the current key first`,
+    );
+  }
+  const keys = await ringKeysFrom(opts.ring, opts.kdfSalt);
+  const { clips } = await api.listClips(20);
+  const sample = clips.find((c) => (c.keyEpoch ?? 0) === keyEpoch);
+  if (sample) {
+    try {
+      await readClip(keys, sample, opts.account);
+    } catch {
+      throw new Error("this device's key does not open the account's clips -- nothing was changed");
+    }
+  }
+  const next = await openVault(opts.newPassphrase, opts.kdfSalt);
+  await api.adminPassphraseReset({
+    adminSecret: opts.adminSecret,
+    wrappedVaultKey: await wrapVaultKey(next.kek, currentKey(opts.ring)),
+    authHash: await authHashOf(next.authProof),
     keyEpoch,
   });
 }

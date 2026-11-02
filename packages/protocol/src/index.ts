@@ -159,6 +159,21 @@ export interface DeleteAccountRequest {
   emailCode?: string;
 }
 
+/**
+ * POST /api/account/passphrase-reset (decisions §50): the server's operator
+ * resets a forgotten passphrase from one of the account's own devices. It
+ * takes both the admin secret and a device token, and the device wraps the
+ * vault key it already holds, so nothing is re-encrypted.
+ */
+export interface AdminPassphraseResetRequest {
+  adminSecret: string;
+  /** The vault key of `keyEpoch`, wrapped under the new passphrase ("k1."). */
+  wrappedVaultKey: string;
+  /** SHA-256 of the new passphrase's proof. */
+  authHash: string;
+  keyEpoch: number;
+}
+
 /** PUT /api/account/email (decisions §47): set the account's address. */
 export interface SetEmailRequest {
   email: string;
