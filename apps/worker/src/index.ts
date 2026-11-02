@@ -16,8 +16,7 @@ export { SyncRoom } from "./sync-room";
 const tlsConnect: Connect = (hostname, port) => connect({ hostname, port }, { secureTransport: "on", allowHalfOpen: false });
 
 /** Cloudflare Email Service, through the EMAIL binding when the deployment has one. */
-const emailOf = (env: Env): EmailBinding | null =>
-  env.EMAIL ? { send: (message) => env.EMAIL.send(message) } : null;
+const emailOf = ({ EMAIL }: Env): EmailBinding | null => (EMAIL ? { send: (message) => EMAIL.send(message) } : null);
 
 export default {
   fetch: (request, env, ctx) => app.fetch(request, { ...env, MAILER: mailerFor(env, tlsConnect, emailOf(env)) }, ctx),

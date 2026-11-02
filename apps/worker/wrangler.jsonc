@@ -67,20 +67,16 @@
     // email address; needs mail set up). New accounts get SIGNUP_PLAN.
     "SIGNUP": "open",
     "SIGNUP_PLAN": "free",
-    // Outgoing mail (signup codes, notices). Cloudflare Email Service through
-    // the EMAIL binding below when it is there (decisions §51); otherwise SMTP
-    // over TLS on 465 (OCI Email Delivery), with the secrets SMTP_USER and
-    // SMTP_PASSWORD. MAIL_FROM is a bare address, sent as "ClipSync", on a
-    // domain onboarded to whichever sends.
+    // Outgoing mail (signup codes, notices): SMTP over TLS on 465 to OCI Email
+    // Delivery in the server's region, with the secrets SMTP_USER and
+    // SMTP_PASSWORD (`wrangler secret put`). Until they are set there is no
+    // mailer, and signup asks for an invite. MAIL_FROM is a bare address,
+    // sent as "ClipSync", approved as a sender in OCI. A `send_email` binding
+    // named EMAIL (Cloudflare Email Service) would take over, decisions §51.
     "MAIL_FROM": "noreply@clip.rfh.et",
-    "SMTP_HOST": "",
+    "SMTP_HOST": "smtp.email.eu-amsterdam-1.oci.oraclecloud.com",
     "SMTP_PORT": "465"
   },
-
-  // Cloudflare Email Service. Sending to any address needs the Workers Paid
-  // plan and clip.rfh.et onboarded under Email Service > Email Sending; without
-  // them it reaches only the account's verified destination addresses.
-  "send_email": [{ "name": "EMAIL" }],
 
   // One SyncRoom per user: the fan-out point for every connected device.
   "durable_objects": {
