@@ -12,6 +12,8 @@ interface Env {
   /** OCI Email Delivery's SMTP credentials (decisions §45); mail is off without them. */
   SMTP_USER?: string;
   SMTP_PASSWORD?: string;
+  /** Cloudflare Email Service, when wrangler.jsonc binds `send_email` as EMAIL (decisions §51); it then sends instead of SMTP. */
+  EMAIL?: SendEmail;
   /** `outbox` in the Worker tests: mail is kept in memory, not sent (mail.ts). */
   MAIL_MODE?: string;
   /** How the app sends mail, put on the env by the runtime's entry (index.ts, apps/server); null when not set up. */
