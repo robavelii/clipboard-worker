@@ -28,12 +28,15 @@ export function RecoveryPanel({
   kdfSalt,
   vaultKey,
   onClose,
+  embedded = false,
 }: {
   api: ApiClient;
   account: string;
   kdfSalt: string;
   vaultKey: VaultKey;
-  onClose: () => void;
+  onClose?: () => void;
+  /** Inside Settings: no frame, heading or close button of its own. */
+  embedded?: boolean;
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [action, setAction] = useState<"make" | "remove" | null>(null);
@@ -57,7 +60,7 @@ export function RecoveryPanel({
 
   if (shown) {
     return (
-      <div className="panel">
+      <div className={embedded ? "stack" : "panel"}>
         <RecoveryKeyCard
           recoveryKey={shown}
           onDone={() => {
@@ -96,13 +99,15 @@ export function RecoveryPanel({
   const behind = has && status.epoch !== status.keyEpoch;
 
   return (
-    <div className="panel">
-      <div className="panelhead">
-        <h2>Recovery key</h2>
-        <button className="link" onClick={onClose}>
-          close
-        </button>
-      </div>
+    <div className={embedded ? "stack" : "panel"}>
+      {!embedded && (
+        <div className="panelhead">
+          <h2>Recovery key</h2>
+          <button className="link" onClick={onClose}>
+            close
+          </button>
+        </div>
+      )}
 
       {state.kind === "loading" && <p className="muted">Checking…</p>}
       {state.kind === "unsupported" && <p className="muted">This server does not support recovery keys yet.</p>}

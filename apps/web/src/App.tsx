@@ -24,7 +24,8 @@ import { Compose } from "./Compose";
 import { FileView } from "./FileView";
 import { LatestCard, latestFromElsewhere } from "./Latest";
 import { PhoneSetup } from "./PhoneSetup";
-import { RecoveryPanel } from "./Recovery";
+import { Settings, sectionFromPath, type Section } from "./Settings";
+import { ago, bytes, expiresIn } from "./time";
 import { canCopy, copyClip, isTouchFirst } from "./clipboard";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
@@ -39,6 +40,7 @@ export function App() {
   const [invite, setInvite] = useState(readInviteFromLocation);
   const [shared, setShared] = useState(() => readShareSource());
   const [setup, setSetup] = useState(() => window.location.pathname === "/phone");
+  const [settings, setSettings] = useState<Section | null>(() => sectionFromPath(window.location.pathname));
 
   // A share carried in the fragment (the iOS Shortcut's form) does not reload
   // the page when it lands on a tab that is already at /share.
@@ -53,7 +55,10 @@ export function App() {
 
   // Back from /phone to wherever it was opened from.
   useEffect(() => {
-    const onPop = () => setSetup(window.location.pathname === "/phone");
+    const onPop = () => {
+      setSetup(window.location.pathname === "/phone");
+      setSettings(sectionFromPath(window.location.pathname));
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -221,14 +226,63 @@ export function App() {
 
   if (!keys || !ring) return null;
 
+  const signOut = () => {
+    // Revoke before forgetting: otherwise the device stays listed and
+    // keeps being sealed to by every re-key. Offline, it unpairs anyway;
+    // another device can revoke what is left.
+    void new ApiClient("", creds.token)
+      .revokeSelf()
+      .catch(() => undefined)
+      .finally(() => {
+        clearSession();
+        window.history.replaceState(null, "", "/");
+        setSettings(null);
+        setRing(null);
+        setCreds(null);
+      });
+  };
+  const openSettings = (section: Section) => {
+    const path = `/settings/${section}`;
+    if (settings) window.history.replaceState({ settings: true }, "", path);
+    else window.history.pushState({ settings: true }, "", path);
+    setSettings(section);
+  };
+
+  if (settings) {
+    return (
+      <Settings
+        api={new ApiClient("", creds.token)}
+        creds={creds}
+        ring={ring}
+        section={settings}
+        onSection={openSettings}
+        onBack={() => {
+          if ((window.history.state as { settings?: boolean } | null)?.settings) {
+            window.history.back();
+            return;
+          }
+          window.history.replaceState(null, "", "/");
+          setSettings(null);
+        }}
+        onRing={setRing}
+        onSignOut={signOut}
+        onDeleted={() => {
+          clearSession();
+          window.history.replaceState(null, "", "/");
+          setSettings(null);
+          setRing(null);
+          setCreds(null);
+        }}
+      />
+    );
+  }
+
   return (
     <Workspace
       keys={keys}
       token={creds.token}
       account={creds.userId}
       deviceId={creds.deviceId}
-      kdfSalt={creds.kdfSalt}
-      vaultKey={currentKey(ring)}
       stranded={stranded}
       onRefreshRing={refreshRing}
       onUnlockAgain={() => setNeedsPassphrase(true)}
@@ -236,19 +290,8 @@ export function App() {
         window.history.pushState({ setup: true }, "", "/phone");
         setSetup(true);
       }}
-      onSignOut={() => {
-        // Revoke before forgetting: otherwise the device stays listed and
-        // keeps being sealed to by every re-key. Offline, it unpairs anyway;
-        // another device can revoke what is left.
-        void new ApiClient("", creds.token)
-          .revokeSelf()
-          .catch(() => undefined)
-          .finally(() => {
-            clearSession();
-            setRing(null);
-            setCreds(null);
-          });
-      }}
+      onSettings={openSettings}
+      onSignOut={signOut}
       onLock={() => {
         forgetVaultKey();
         setRing(null);
@@ -256,6 +299,14 @@ export function App() {
     />
   );
 }
+
+type Filter = "all" | "pinned" | "files" | "here";
+const FILTERS: [Filter, string][] = [
+  ["all", "All"],
+  ["pinned", "Pinned"],
+  ["files", "Images & files"],
+  ["here", "From this browser"],
+];
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <main className="centered">{children}</main>;
@@ -266,12 +317,11 @@ function Workspace({
   token,
   account,
   deviceId,
-  kdfSalt,
-  vaultKey,
   stranded,
   onRefreshRing,
   onUnlockAgain,
   onSetup,
+  onSettings,
   onSignOut,
   onLock,
 }: {
@@ -280,13 +330,11 @@ function Workspace({
   /** The user id envelopes are bound to. */
   account: string;
   deviceId: string;
-  kdfSalt: string;
-  /** The current vault key, for making a recovery key. */
-  vaultKey: string;
   stranded: boolean;
   onRefreshRing: () => Promise<void>;
   onUnlockAgain: () => void;
   onSetup: () => void;
+  onSettings: (section: Section) => void;
   onSignOut: () => void;
   onLock: () => void;
 }) {
@@ -331,7 +379,7 @@ function Workspace({
   const [query, setQuery] = useState("");
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
-  const [recovery, setRecovery] = useState(false);
+  const [filter, setFilter] = useState<Filter>("all");
 
   const refreshDevices = useCallback(() => {
     void api.devices().then((r) => setDevices(r.devices)).catch(() => {});
@@ -353,48 +401,98 @@ function Workspace({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return clips;
-    return clips.filter((c) => c.text?.toLowerCase().includes(needle));
-  }, [clips, query]);
+    return clips.filter(
+      (c) =>
+        (filter === "all" ||
+          (filter === "pinned" && c.pinned) ||
+          (filter === "files" && c.type !== "text") ||
+          (filter === "here" && c.deviceId === deviceId)) &&
+        (!needle || c.text?.toLowerCase().includes(needle)),
+    );
+  }, [clips, query, filter, deviceId]);
+
+  // The ⋯ menu is a <details>: close it on a click anywhere outside it.
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      for (const menu of document.querySelectorAll<HTMLDetailsElement>("details.menu[open]")) {
+        if (!menu.contains(e.target as Node)) menu.open = false;
+      }
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, []);
+
+  const online = devices.filter((d) => d.id === deviceId || connected.includes(d.id)).length;
 
   return (
     <div className="app">
-      <header>
-        <h1>ClipSync</h1>
-        <div className="devices">
-          {devices.map((device) => (
-            <span
-              key={device.id}
-              className={`device ${connected.includes(device.id) || device.id === deviceId ? "on" : "off"}`}
-              title={`${device.platform} · last seen ${device.lastSeen ? new Date(device.lastSeen).toLocaleString() : "never"}`}
-            >
-              {device.name}
-            </span>
-          ))}
-          <span className={`status ${status}`}>{status}</span>
-        </div>
+      <header className="topbar">
+        <h1 className="brand">ClipSync</h1>
+        <span className="grow" />
+        <button
+          className="chip"
+          onClick={() => onSettings("devices")}
+          title={devices.map((d) => d.name).join(", ")}
+        >
+          <span className={`dot ${status === "online" ? "on" : status === "connecting" ? "" : "bad"}`} aria-hidden="true" />
+          {status === "online"
+            ? `${online}/${devices.length} online`
+            : status === "connecting"
+              ? "Connecting…"
+              : status === "revoked"
+                ? "Signed out"
+                : "Offline"}
+        </button>
+        <button onClick={onLock} title="Forget the key in this tab; the passphrase unlocks it again">
+          Lock
+        </button>
+        <details className="menu">
+          <summary aria-label="Menu">⋯</summary>
+          <div className="menu-items" role="menu">
+            <button role="menuitem" onClick={() => onSettings("devices")}>Devices</button>
+            <button role="menuitem" onClick={() => onSettings("security")}>Security &amp; recovery key</button>
+            <button role="menuitem" onClick={() => onSettings("account")}>Account</button>
+            <button role="menuitem" onClick={() => onSettings("plan")}>Plan &amp; usage</button>
+            <button role="menuitem" onClick={onSetup}>Set up a phone</button>
+            <hr />
+            <button role="menuitem" className="danger" onClick={onSignOut}>
+              Sign out of this browser
+            </button>
+          </div>
+        </details>
       </header>
 
       <div className="toolbar">
         <input
           className="search"
+          type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search clipboard…"
+          placeholder={`Search ${clips.length} loaded clip${clips.length === 1 ? "" : "s"}…`}
+          aria-label="Search clips"
         />
         <button
+          className="primary"
           onClick={() =>
             void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {})
           }
         >
           Add device
         </button>
-        <button onClick={onSetup}>Phone setup</button>
-        <button onClick={() => setRecovery((open) => !open)}>Recovery key</button>
-        <button onClick={onLock}>Lock</button>
-        <button className="link" onClick={onSignOut}>
-          Unpair
-        </button>
+      </div>
+
+      <div className="segmented filters" role="tablist" aria-label="Show">
+        {FILTERS.map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={filter === id}
+            className={filter === id ? "on" : undefined}
+            onClick={() => setFilter(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {pairCode !== null && (
@@ -432,16 +530,6 @@ function Workspace({
         </div>
       )}
 
-      {recovery && (
-        <RecoveryPanel
-          api={api}
-          account={account}
-          kdfSalt={kdfSalt}
-          vaultKey={vaultKey}
-          onClose={() => setRecovery(false)}
-        />
-      )}
-
       {stranded && (
         <div className="notice">
           <p>
@@ -475,8 +563,12 @@ function Workspace({
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}
       {!loading && !visible.length && (
-        <p className="muted">
-          {query ? "Nothing matches." : "No clips yet — copy something."}
+        <p className="empty">
+          {query || filter !== "all"
+            ? hasMore
+              ? `Nothing in the ${clips.length} clips loaded so far.`
+              : "Nothing matches."
+            : "No clips yet. Copy something on a device running ClipSync, or paste above."}
         </p>
       )}
 
@@ -495,9 +587,9 @@ function Workspace({
         ))}
       </ul>
 
-      {hasMore && !query && (
+      {hasMore && (
         <button className="more" onClick={loadMore}>
-          Load older clips
+          {query || filter !== "all" ? "Search older clips too" : "Load older clips"}
         </button>
       )}
     </div>
@@ -545,11 +637,27 @@ function ClipRow({
         </pre>
       )}
       <div className="meta">
+        {clip.pinned && <span className="tag">Pinned</span>}
         <span>{origin}</span>
-        <span>·</span>
-        <time dateTime={new Date(clip.createdAt).toISOString()}>
-          {new Date(clip.createdAt).toLocaleString()}
+        <span aria-hidden="true">·</span>
+        <time
+          dateTime={new Date(clip.createdAt).toISOString()}
+          title={new Date(clip.createdAt).toLocaleString()}
+        >
+          {ago(clip.createdAt)}
         </time>
+        {clip.file && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{bytes(clip.file.size)}</span>
+          </>
+        )}
+        {!clip.pinned && expiresIn(clip.expiresAt) && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span className="expiry">{expiresIn(clip.expiresAt)}</span>
+          </>
+        )}
         <span className="spacer" />
         <button onClick={onTogglePin} title="Pinned clips never expire">
           {clip.pinned ? "Unpin" : "Pin"}
