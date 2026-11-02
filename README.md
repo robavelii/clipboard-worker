@@ -773,6 +773,7 @@ Re-wraps the vault key. No clip is re-encrypted, and your other devices keep
 working without doing anything — they hold the vault key, not the passphrase.
 
 It asks for the current passphrase first (or reads `CLIPSYNC_PASSPHRASE`).
+In the web UI it is **Settings → Security → Change passphrase**.
 Holding the vault key is enough to wrap it under a passphrase of your choosing,
 so the server stores a hash of a proof derived from the passphrase and accepts
 a new wrapped key only with that proof. A phone that joined by QR can read your
@@ -818,7 +819,7 @@ clipsync recovery new      # make one (accounts from before it existed), or repl
 clipsync recovery off      # remove it
 ```
 
-In the web UI, **Recovery key** in the workspace toolbar does the same three
+In the web UI, **Settings → Security** (the ⋯ menu) does the same three
 things; each takes the passphrase.
 
 Re-keying seals the new vault key to the recovery key too, so it keeps
@@ -830,6 +831,8 @@ an account that has one; update them first.
 ```bash
 clipsync devices --revoke <id> --rekey     # or: clipsync rekey
 ```
+
+In the web UI: **Settings → Devices → Revoke**, which then offers **Re-key now**.
 
 Revoking a device stops its token at once, but it still holds the vault key it
 was given, and that key opens every clip it could get hold of — a copy of the
