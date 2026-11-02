@@ -1729,3 +1729,57 @@ code is requested, and again in the UPDATE that sets it, in case two
 accounts race for it.
 
 `/api/auth/me` now reports the address, and `clipsync status` shows it.
+
+## 48. A recovery key, sealed to like a device
+
+The passphrase is the only thing that unwraps the vault key, and the server
+can't help: it holds ciphertext. Forget the passphrase and keep a device,
+and the clips are still readable but the passphrase can't be changed (that
+takes its proof). Forget it with no device left, and everything is gone.
+Neither is acceptable for a service people will pay for.
+
+**A key the owner writes down, never the server's.** Sign-up (and the first
+`clipsync login`) makes a recovery key: 32 random bytes, shown once as
+`CSR1-` and 14 groups of four Crockford base32 characters, with a 3-byte
+SHA-256 checksum so a typo is caught locally. It is stored nowhere.
+`clipsync recovery new` replaces it, `off` removes it; both take the
+passphrase's proof, as setting the address does (§47), because whoever
+holds a recovery key can reset the passphrase. The other routes considered:
+- Escrowing the vault key with the server, or behind the email address,
+  would break the one promise everything else rests on: the server never
+  holds a key.
+- A second passphrase-wrapped copy, under a "recovery passphrase", is the
+  same problem again, with a secret people choose badly and forget too.
+
+**Sealed to, not wrapped under.** The obvious design, the vault key wrapped
+under the recovery key, dies at the first re-key: the device minting the
+new vault key has never seen the recovery key, so it can't wrap anything
+under it. Instead the recovery key unwraps a P-256 private key (`r1.`,
+AES-GCM with the account id as associated data), and its public key is
+treated like one more device. Every re-key seals the new vault key to it
+(`d1.`, the same code as device seals, with `recovery:<account>` as the
+device id so a seal can't be moved between accounts or epochs). The server
+keeps the public key, the wrapped private key, the sealed vault key with
+its epoch, and SHA-256 of a proof (an HKDF branch of the recovery key, like
+the passphrase's). Nothing there opens anything.
+
+**Recovery changes the passphrase, nothing else.** `/api/recovery/open`
+returns the wrapped private key and the seal, for the proof. The client
+opens the vault key, wraps it under a new passphrase, and
+`/api/recovery/reset` swaps the wrap in and enrols the device. Both steps
+are guarded on the same proof and epoch. The vault key is unchanged, so
+every clip stays readable and every other device keeps working. Optionally
+it signs every other device out, for the case where they were lost. The
+owner's address is mailed about it, since the recovery key is a bearer
+secret. Wrong proofs and unknown addresses get the same 403; the routes
+are on the strict per-address limit, though 256 bits needs no lockout.
+
+Traps:
+- A re-key from a client that predates this would mint a key the recovery
+  key can't open, silently. So `/api/vault/rotate` refuses, with 400 and a
+  message to update, when the account has a recovery key and the request
+  carries no `recoverySealed`. `/recovery/open` also answers 409 if the seal
+  is behind `key_epoch`, rather than handing out an old key.
+- The recovery key still works after a recovery. The CLI says so and
+  suggests `clipsync recovery new`; it isn't rotated automatically, because
+  the person recovering may have no safe place to write a new one yet.

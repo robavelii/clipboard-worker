@@ -19,6 +19,7 @@
     "hono": "^4.13.13"
   },
   "devDependencies": {
+    "@clipsync/client": "*",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12",

@@ -3,11 +3,12 @@
 import { useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
 import { requestSignupCode, signIn, signUp, type Enrolled } from "@clipsync/client/account";
+import { recoverAccount } from "@clipsync/client/recovery";
 import type { Credentials } from "@clipsync/protocol";
 import type { VaultRing } from "@clipsync/client/ring";
 import { cacheEnrolmentKey, saveCredentials, unlockWithPassphrase } from "./session";
 
-type Way = "pair" | "signin" | "signup";
+type Way = "pair" | "signin" | "signup" | "recover";
 
 /** How this browser joins: a pairing code, the account's email and passphrase, or a new account. */
 export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
@@ -17,6 +18,7 @@ export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
       ["pair", "Pair with a code"],
       ["signin", "Sign in"],
       ["signup", "Make an account"],
+      ["recover", "Forgot the passphrase?"],
     ] as [Way, string][]
   ).filter(([w]) => w !== way);
   return (
@@ -24,6 +26,7 @@ export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
       {way === "pair" && <PairScreen onPaired={onEnrolled} />}
       {way === "signin" && <SignInScreen onEnrolled={onEnrolled} />}
       {way === "signup" && <SignUpScreen onEnrolled={onEnrolled} />}
+      {way === "recover" && <RecoverScreen onEnrolled={onEnrolled} />}
       <p className="muted small">
         {others.map(([w, label], i) => (
           <span key={w}>
@@ -39,7 +42,7 @@ export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
 }
 
 /** Keep what an enrolment returned: the credentials, and the vault key for this tab. */
-function keep({ credentials, vaultKey }: Enrolled): void {
+function keep({ credentials, vaultKey }: Pick<Enrolled, "credentials" | "vaultKey">): void {
   saveCredentials(credentials);
   cacheEnrolmentKey(vaultKey, credentials.keyEpoch);
 }
@@ -106,6 +109,7 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
   const [name, setName] = useState("Browser");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
 
   async function sendCode(event: FormEvent) {
     event.preventDefault();
@@ -129,22 +133,24 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      keep(
-        await signUp({
-          baseUrl: "",
-          email,
-          passphrase,
-          deviceName: name,
-          platform: "web",
-          ...(withInvite ? { invite } : { code }),
-        }),
-      );
-      onEnrolled();
+      const enrolled = await signUp({
+        baseUrl: "",
+        email,
+        passphrase,
+        deviceName: name,
+        platform: "web",
+        ...(withInvite ? { invite } : { code }),
+      });
+      keep(enrolled);
+      if (enrolled.recoveryKey) setRecoveryKey(enrolled.recoveryKey);
+      else onEnrolled();
     } catch (err) {
       setError(message(err));
       setBusy(false);
     }
   }
+
+  if (recoveryKey) return <RecoveryKeyCard recoveryKey={recoveryKey} onDone={onEnrolled} />;
 
   if (!withInvite && !codeSent) {
     return (
@@ -209,12 +215,132 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
         <input value={name} onChange={(e) => setName(e.target.value)} required />
       </label>
       <p className="muted small">
-        The passphrase encrypts everything you copy and never leaves your devices. Nobody, not the server
-        either, can recover your clips without it.
+        The passphrase encrypts everything you copy and never leaves your devices. Next you'll get a recovery
+        key: the only way back in if you forget it.
       </p>
       {error && <p className="error">{error}</p>}
       <button type="submit" disabled={busy}>
         {busy ? "Creating…" : "Create the account"}
+      </button>
+    </form>
+  );
+}
+
+/**
+ * The recovery key, shown the one time it exists anywhere but on paper
+ * (decisions §48). Continuing waits for the owner to say it is kept.
+ */
+function RecoveryKeyCard({ recoveryKey, onDone }: { recoveryKey: string; onDone: () => void }) {
+  const [kept, setKept] = useState(false);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="card">
+      <h1>Your recovery key</h1>
+      <p className="recovery-key">{recoveryKey}</p>
+      <p className="muted">
+        Write it down and keep it somewhere safe, away from your devices. It is shown once and stored nowhere. If
+        you forget the passphrase, it is the only way back in; whoever holds it can reset the passphrase, so treat
+        it like one.
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          // Straight from the tap, or iOS refuses the write.
+          navigator.clipboard.writeText(recoveryKey).then(() => setCopied(true), () => setCopied(false));
+        }}
+      >
+        {copied ? "Copied" : "Copy it"}
+      </button>
+      <label className="checkbox">
+        <input type="checkbox" checked={kept} onChange={(e) => setKept(e.target.checked)} />
+        <span>I've kept it somewhere safe</span>
+      </label>
+      <button type="button" className="primary" disabled={!kept} onClick={onDone}>
+        Continue
+      </button>
+    </div>
+  );
+}
+
+/** Forgot the passphrase: reset it with the recovery key, and enrol this browser. */
+function RecoverScreen({ onEnrolled }: { onEnrolled: () => void }) {
+  const [email, setEmail] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [name, setName] = useState("Browser");
+  const [revokeOthers, setRevokeOthers] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (passphrase !== confirm) {
+      setError("The passphrases don't match.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      keep(
+        await recoverAccount({
+          baseUrl: "",
+          email,
+          recoveryKey,
+          newPassphrase: passphrase,
+          deviceName: name,
+          platform: "web",
+          revokeOtherDevices: revokeOthers,
+        }),
+      );
+      onEnrolled();
+    } catch (err) {
+      setError(message(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="card" onSubmit={submit}>
+      <h1>Reset the passphrase</h1>
+      <p className="muted">
+        With the recovery key you were shown when the account was made. Your clips and your other devices are
+        unaffected; only the passphrase changes.
+      </p>
+      <label>
+        Email
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+      </label>
+      <label>
+        Recovery key
+        <input
+          value={recoveryKey}
+          onChange={(e) => setRecoveryKey(e.target.value)}
+          placeholder="CSR1-…"
+          autoComplete="off"
+          spellCheck={false}
+          required
+        />
+      </label>
+      <label>
+        New passphrase
+        <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} required />
+      </label>
+      <label>
+        New passphrase again
+        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+      </label>
+      <label>
+        Device name
+        <input value={name} onChange={(e) => setName(e.target.value)} required />
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={revokeOthers} onChange={(e) => setRevokeOthers(e.target.checked)} />
+        <span>Sign every other device out (I lost them)</span>
+      </label>
+      {error && <p className="error">{error}</p>}
+      <button type="submit" disabled={busy}>
+        {busy ? "Resetting…" : "Reset the passphrase"}
       </button>
     </form>
   );

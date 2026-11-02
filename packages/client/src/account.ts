@@ -11,7 +11,8 @@
 
 import type { Credentials, Platform } from "@clipsync/protocol";
 import { openVault, type VaultKey } from "@clipsync/crypto";
-import { ApiClient } from "./index";
+import { ApiClient, ApiRequestError } from "./index";
+import { setUpRecovery } from "./recovery";
 import { unlockVault } from "./vault";
 
 export interface Enrolled {
@@ -57,8 +58,12 @@ export function requestSignupCode(baseUrl: string, email: string, fetchImpl?: ty
   return new ApiClient(baseUrl, undefined, fetchImpl).signupEmail(email);
 }
 
-/** Make an account with a mailed `code` or an admin's `invite`, and this device in it. */
-export async function signUp(opts: Common & { code?: string; invite?: string }): Promise<Enrolled> {
+/**
+ * Make an account with a mailed `code` or an admin's `invite`, and this
+ * device in it. Also makes its recovery key (decisions §48), returned to be
+ * shown once: null only against a server that predates recovery keys.
+ */
+export async function signUp(opts: Common & { code?: string; invite?: string }): Promise<Enrolled & { recoveryKey: string | null }> {
   const credentials = await new ApiClient(opts.baseUrl, undefined, opts.fetchImpl).signup({
     email: opts.email,
     code: opts.code,
@@ -70,7 +75,18 @@ export async function signUp(opts: Common & { code?: string; invite?: string }):
   // A new account: a fresh random vault key. Without `true`, unlockVault
   // would take a missing key for a legacy account's.
   const { vaultKey, proofConflict } = await unlockVault(api, opts.passphrase, credentials.kdfSalt, null, true);
-  return { credentials, vaultKey, proofConflict };
+  let recoveryKey: string | null = null;
+  try {
+    recoveryKey = await setUpRecovery(api, {
+      account: credentials.userId,
+      passphrase: opts.passphrase,
+      kdfSalt: credentials.kdfSalt,
+      vaultKey,
+    });
+  } catch (err) {
+    if (!(err instanceof ApiRequestError && err.status === 404)) throw err;
+  }
+  return { credentials, vaultKey, proofConflict, recoveryKey };
 }
 
 /** Enrol this device into the account at `email`, given its passphrase. */

@@ -7,6 +7,11 @@
 
 import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
+  RecoveryOpenRequest,
+  RecoveryOpenResponse,
+  RecoveryResetRequest,
+  RecoveryStatus,
+  SetRecoveryRequest,
   AccountExport,
   ApiError,
   BlobUsageResponse,
@@ -133,6 +138,31 @@ export class ApiClient {
   /** Set this account's address, with the mailed code and the passphrase's proof. */
   setEmail(body: SetEmailRequest): Promise<{ ok: boolean; email: string }> {
     return this.request("/api/account/email", { method: "PUT", body: JSON.stringify(body) });
+  }
+
+  /** Whether this account has a recovery key, and which vault key it opens (decisions §48). */
+  recoveryStatus(): Promise<RecoveryStatus> {
+    return this.request("/api/account/recovery");
+  }
+
+  /** Set or replace the recovery key, with the passphrase's proof. */
+  setRecovery(body: SetRecoveryRequest): Promise<{ ok: boolean }> {
+    return this.request("/api/account/recovery", { method: "PUT", body: JSON.stringify(body) });
+  }
+
+  /** Remove the recovery key, with the passphrase's proof. */
+  removeRecovery(authProof: string): Promise<{ ok: boolean }> {
+    return this.request("/api/account/recovery", { method: "DELETE", body: JSON.stringify({ authProof }) });
+  }
+
+  /** What a recovery key needs to open the vault key; no device needed. */
+  recoveryOpen(body: RecoveryOpenRequest): Promise<RecoveryOpenResponse> {
+    return this.request("/api/recovery/open", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /** A new passphrase proven by the recovery key, and this device enrolled. */
+  recoveryReset(body: RecoveryResetRequest): Promise<Credentials> {
+    return this.request("/api/recovery/reset", { method: "POST", body: JSON.stringify(body) });
   }
 
   /** Mail a code that confirms deleting this account, to its address. */
@@ -326,7 +356,8 @@ export class ApiClient {
     const { ticket } = await this.syncTicket();
     const url = new URL(
       "/api/sync/ws",
-      this.baseUrl || globalThis.location?.origin,
+      // Browsers have a location; Node and Workers don't, and need a baseUrl.
+      this.baseUrl || (globalThis as { location?: { origin: string } }).location?.origin,
     );
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("ticket", ticket);

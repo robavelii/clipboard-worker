@@ -18,6 +18,7 @@ import { requireDevice, type AuthVars } from "../auth";
 import { toClip, toDevice, type ClipRow, type DeviceRow, type UserRow } from "../db";
 import { sha256, timingSafeEqual } from "../ids";
 import { deleteBlobs } from "../r2";
+import { accountRecoveryRoutes } from "./recovery";
 import { requireEmail, sixDigits } from "./signup";
 
 const CODE_TTL_MS = 15 * 60 * 1000;
@@ -55,6 +56,8 @@ export async function deleteAccount(env: Env, userId: string): Promise<void> {
 export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
 
   .use("*", requireDevice)
+
+  .route("/recovery", accountRecoveryRoutes)
 
   /** Mail a code that confirms deleting this account, to its address. */
   .post("/deletion-code", async (c) => {

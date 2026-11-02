@@ -11,6 +11,7 @@ import {
   generateVaultKey,
   openVault,
   openVaultKeyForDevice,
+  sealForRecovery,
   sealVaultKeyForDevice,
   unwrapVaultKey,
   wrapVaultKey,
@@ -22,6 +23,7 @@ import {
   type ReencryptItem,
 } from "@clipsync/protocol";
 import { ApiRequestError, type ApiClient } from "./index";
+import { recoveryPublicKey } from "./recovery";
 import {
   currentKey,
   readClip,
@@ -229,12 +231,17 @@ export async function rekeyVault(
       })),
   );
 
+  // The recovery key, if there is one, is sealed the new key too (decisions §48).
+  const recovery = await recoveryPublicKey(api);
+  const recoverySealed = recovery ? await sealForRecovery(recovery, account, toEpoch, newKey) : undefined;
+
   const rotated = await api.rotateVault({
     fromEpoch: keyEpoch,
     authProof: opened.authProof,
     authHash,
     wrappedVaultKey: await wrapVaultKey(opened.kek, newKey),
     sealedKeys,
+    ...(recoverySealed ? { recoverySealed } : {}),
   });
 
   const next = withKey(ring, rotated.epoch, newKey);

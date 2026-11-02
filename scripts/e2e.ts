@@ -14,6 +14,7 @@
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { changePassphrase, unlockVault } from "@clipsync/client/vault";
 import { deleteAccountWithPassphrase } from "@clipsync/client/account";
+import { recoverAccount, setUpRecovery } from "@clipsync/client/recovery";
 import { claimInvite, createInvite, parseInviteUrl } from "@clipsync/client/invite";
 import { inviteProof } from "@clipsync/crypto";
 import {
@@ -24,7 +25,7 @@ import {
 } from "@clipsync/client/link";
 import { createLinkKeypair } from "@clipsync/crypto";
 import { encryptText, decryptText, dedupeHash, vaultKeysFrom } from "@clipsync/crypto";
-import { authHashOf, openVault, wrapVaultKey } from "@clipsync/crypto";
+import { authHashOf, generateRecoveryKey, openVault, wrapVaultKey } from "@clipsync/crypto";
 import { generateDeviceKeypair, openVaultKeyForDevice } from "@clipsync/crypto";
 import {
   reencryptHistory,
@@ -739,6 +740,31 @@ check("the passphrase signs a new device into the second account, with its key",
   signedIn.userId === second.userId && signedInVault.vaultKey === secondVault.vaultKey);
 await new ApiClient(BASE, signedIn.token).revokeSelf();
 
+// The recovery key (decisions §48): the second account's passphrase is
+// forgotten, and the recovery key resets it without touching the vault key.
+const recoveryKey = await setUpRecovery(secondApi, {
+  account: second.userId, passphrase: OTHER_PASS, kdfSalt: second.kdfSalt, vaultKey: secondVault.vaultKey,
+});
+check("a recovery key is made, and its status says it opens the current key",
+  /^CSR1-/.test(recoveryKey) && (await secondApi.recoveryStatus()).epoch === 0);
+const RESET_PASS = `the second account's new passphrase ${RUN}`;
+const recovered = await recoverAccount({
+  baseUrl: BASE, email: OTHER_EMAIL, recoveryKey, newPassphrase: RESET_PASS,
+  deviceName: `recovered-${RUN}`, platform: "linux",
+});
+check("the recovery key opens the same vault key and enrols a device",
+  recovered.vaultKey === secondVault.vaultKey && recovered.credentials.userId === second.userId);
+await expectStatus("after recovery the old passphrase signs nothing in", async () =>
+  new ApiClient(BASE).signin({
+    email: OTHER_EMAIL, deviceName: `old-pass-${RUN}`, platform: "linux",
+    authProof: (await openVault(OTHER_PASS, second.kdfSalt)).authProof,
+  }), 403);
+check("the device enrolled before recovery keeps working", (await secondApi.me()).deviceId === second.deviceId);
+await expectStatus("a recovery key for another account opens nothing", async () =>
+  recoverAccount({ baseUrl: BASE, email: OTHER_EMAIL, recoveryKey: await generateRecoveryKey(),
+    newPassphrase: "x", deviceName: `nope-${RUN}`, platform: "linux" }), 403);
+await new ApiClient(BASE, recovered.credentials.token).revokeSelf();
+
 // Export, then deletion (decisions §46): the account goes, with everything
 // in it, and the first account is untouched.
 const SECOND_TEXT = `the second account's clip # ${RUN}`;
@@ -755,12 +781,12 @@ check("the export holds the account's clips, and only as ciphertext",
   !JSON.stringify(exported).includes(SECOND_TEXT) &&
   (await decryptText(secondKeys, exported.clips.find((c) => c.id === secondClip.id)!.envelope)) === SECOND_TEXT);
 await expectStatus("deleting needs the passphrase, not just the token", () => secondApi.deleteAccount({}), 400);
-await deleteAccountWithPassphrase(secondApi, OTHER_PASS, second.kdfSalt);
+await deleteAccountWithPassphrase(secondApi, RESET_PASS, second.kdfSalt);
 await expectStatus("the deleted account's device is gone", () => secondApi.me(), 401);
 await expectStatus("the deleted account's passphrase signs nothing in", async () =>
   new ApiClient(BASE).signin({
     email: OTHER_EMAIL, deviceName: `after-${RUN}`, platform: "linux",
-    authProof: (await openVault(OTHER_PASS, second.kdfSalt)).authProof,
+    authProof: (await openVault(RESET_PASS, second.kdfSalt)).authProof,
   }), 403);
 check("the first account is untouched by the deletion", (await pcApi.getClip(afterRekey.id)).id === afterRekey.id);
 

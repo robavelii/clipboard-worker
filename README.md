@@ -791,6 +791,37 @@ secret. `clipsync rekey` retires it: a fresh random vault key, and history
 re-encrypted under it. Accounts created after this change get a random vault
 key and do not have the problem.
 
+## The recovery key
+
+Signing up (or the first `clipsync login`) shows a recovery key once:
+
+```
+CSR1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX
+```
+
+Write it down. It's stored nowhere, not on the server either. If you
+forget the passphrase, it resets it, whether or not a device is left:
+
+```bash
+clipsync recover --url https://clip.example.org            # asks for the email, the key and a new passphrase
+clipsync recover --url https://clip.example.org --revoke-others   # and sign out the devices you lost
+```
+
+or "Forgot the passphrase?" in the web UI. The vault key doesn't change, so
+your clips stay readable and your other devices keep working; the
+account's address is told it happened. Anyone holding the recovery key can
+do this, so keep it like the passphrase.
+
+```bash
+clipsync recovery          # is there one, and does it open the current key?
+clipsync recovery new      # make one (accounts from before it existed), or replace it
+clipsync recovery off      # remove it
+```
+
+Re-keying seals the new vault key to the recovery key too, so it keeps
+working (decisions §48). Clients from before recovery keys can't re-key
+an account that has one; update them first.
+
 ## Re-keying after a revoke
 
 ```bash

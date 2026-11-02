@@ -11,7 +11,8 @@
     "./ring": "./src/ring.ts",
     "./rekey": "./src/rekey.ts",
     "./files": "./src/files.ts",
-    "./account": "./src/account.ts"
+    "./account": "./src/account.ts",
+    "./recovery": "./src/recovery.ts"
   },
   "dependencies": {
     "@clipsync/protocol": "*",

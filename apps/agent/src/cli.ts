@@ -6,7 +6,7 @@ import { hostname, platform as osPlatform } from "node:os";
 import { basename, extname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Credentials, Platform } from "@clipsync/protocol";
-import { DecryptError } from "@clipsync/crypto";
+import { DecryptError, openVault } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import {
   approveLink,
@@ -17,6 +17,7 @@ import {
 } from "@clipsync/client/link";
 import { deleteAccountWithPassphrase, requestSignupCode, setAccountEmail, signIn, signUp } from "@clipsync/client/account";
 import { createInvite } from "@clipsync/client/invite";
+import { recoverAccount, setUpRecovery } from "@clipsync/client/recovery";
 import { downloadFile, uploadFile } from "@clipsync/client/files";
 import { reencryptHistory, rekeyVault } from "@clipsync/client/rekey";
 import {
@@ -38,6 +39,7 @@ import {
   loadConfig,
   loadTrayCredentials,
   requireConfig,
+  resolveVaultRing,
   saveConfig,
   storedRing,
   withRing,
@@ -79,6 +81,8 @@ Usage
   clipsync get <clip-id> [-o <path>]                    Save an image or file clip
   clipsync receive [on|off] [--to <dir>]                Save other devices' files here, ready to paste
   clipsync passphrase                                   Change the passphrase
+  clipsync recovery [new|off]                           Show, make (or replace) or remove the recovery key
+  clipsync recover --url <url> [--revoke-others]        Forgot the passphrase: reset it with the recovery key
   clipsync devices [--revoke <id> [--rekey]]            List or revoke devices
   clipsync rekey [--finish]                             Move to a new vault key (after a revoke)
   clipsync status                                       Show current configuration
@@ -221,7 +225,7 @@ async function cmdSignup(opts: { url?: string; name?: string; email?: string; in
   }
   const passphrase = await askNewPassphrase();
 
-  const { credentials, vaultKey, proofConflict } = await signUp({
+  const { credentials, vaultKey, proofConflict, recoveryKey } = await signUp({
     baseUrl,
     email,
     code,
@@ -233,7 +237,8 @@ async function cmdSignup(opts: { url?: string; name?: string; email?: string; in
   await enrol(baseUrl, deviceName, credentials, vaultKey);
   if (proofConflict) warnProofConflict();
   console.log(`Created the account for ${email}, and enrolled "${deviceName}" (${credentials.deviceId}).`);
-  console.log("Keep the passphrase safe: nobody, not the server either, can recover your clips without it.");
+  if (recoveryKey) showRecoveryKey(recoveryKey);
+  else console.log("Keep the passphrase safe: nobody, not the server either, can recover your clips without it.");
   console.log(`\nNext: clipsync run`);
 }
 
@@ -255,6 +260,103 @@ async function cmdSignin(opts: { url?: string; name?: string; email?: string }):
   await enrol(baseUrl, deviceName, credentials, vaultKey);
   if (proofConflict) warnProofConflict();
   console.log(`Signed in as ${email}: enrolled "${deviceName}" (${credentials.deviceId}).`);
+  console.log(`\nNext: clipsync run`);
+}
+
+/** A recovery key, shown the one time it exists anywhere but on paper. */
+function showRecoveryKey(recoveryKey: string): void {
+  console.log(
+    [
+      "",
+      "Your recovery key:",
+      "",
+      `    ${recoveryKey}`,
+      "",
+      "Write it down and keep it somewhere safe, away from this device. It is",
+      "shown once and stored nowhere. If you forget the passphrase, it is the",
+      "only way back in (clipsync recover); whoever holds it can reset the",
+      "passphrase, so treat it like one.",
+    ].join("\n"),
+  );
+}
+
+/**
+ * The recovery key (decisions §48): `clipsync recovery` says whether there
+ * is one, `new` makes or replaces it, `off` removes it. Both need the
+ * passphrase.
+ */
+async function cmdRecovery(action: string | undefined): Promise<void> {
+  const config = await requireConfig();
+  const api = new ApiClient(config.baseUrl, config.token);
+
+  if (!action) {
+    const status = await api.recoveryStatus();
+    if (!status.publicKey) {
+      console.log("This account has no recovery key. Make one with: clipsync recovery new");
+    } else if (status.epoch !== status.keyEpoch) {
+      console.log(
+        `This account's recovery key opens an older vault key (epoch ${status.epoch}, now ${status.keyEpoch}):\n` +
+          "a re-key left it behind. Make a new one with: clipsync recovery new",
+      );
+    } else {
+      console.log("This account has a recovery key, and it opens the current vault key.");
+    }
+    return;
+  }
+
+  if (action === "off") {
+    const { authProof } = await openVault(await askSecret("Passphrase: "), config.kdfSalt);
+    await api.removeRecovery(authProof);
+    console.log("The recovery key is removed. Without it, a forgotten passphrase means starting again.");
+    return;
+  }
+  if (action !== "new") throw new Error("usage: clipsync recovery [new|off]");
+
+  const ring = await resolveVaultRing(config, api);
+  const passphrase = process.env.CLIPSYNC_PASSPHRASE ?? (await askSecret("Passphrase: "));
+  let recoveryKey: string;
+  try {
+    recoveryKey = await setUpRecovery(api, {
+      account: config.userId,
+      passphrase,
+      kdfSalt: config.kdfSalt,
+      vaultKey: currentKey(ring),
+    });
+  } catch (err) {
+    if (err instanceof DecryptError) throw new Error("that is not the passphrase -- nothing was changed");
+    throw err;
+  }
+  console.log("Made a new recovery key. Any earlier one no longer works.");
+  showRecoveryKey(recoveryKey);
+}
+
+/** Forgot the passphrase: a new one, proven by the recovery key, and this device enrolled. */
+async function cmdRecover(opts: { url?: string; name?: string; email?: string; revokeOthers?: boolean }): Promise<void> {
+  const baseUrl = opts.url ?? (await ask("Server URL: "));
+  if (!baseUrl) throw new Error("--url is required");
+  const email = opts.email ?? (await ask("Email: "));
+  const deviceName = opts.name ?? hostname();
+  const recoveryKey = await askSecret("Recovery key: ");
+  console.log("Choose a new passphrase.");
+  const newPassphrase = await askNewPassphrase();
+
+  const { credentials, vaultKey } = await recoverAccount({
+    baseUrl,
+    email,
+    recoveryKey,
+    newPassphrase,
+    deviceName,
+    platform: currentPlatform(),
+    revokeOtherDevices: opts.revokeOthers ?? false,
+  });
+  await enrol(baseUrl, deviceName, credentials, vaultKey);
+  console.log(`The passphrase for ${email} is reset, and "${deviceName}" is enrolled.`);
+  console.log(
+    opts.revokeOthers
+      ? "Every other device was signed out."
+      : "Your other devices are unchanged. Lost one? clipsync devices --revoke <id> --rekey",
+  );
+  console.log("The recovery key still works. To be safe, make a new one: clipsync recovery new");
   console.log(`\nNext: clipsync run`);
 }
 
@@ -298,6 +400,14 @@ async function cmdLogin(opts: { url?: string; name?: string }): Promise<void> {
     console.log("Upgraded this account to a wrapped vault key.");
   }
   if (proofConflict) warnProofConflict();
+  // A new account gets its recovery key now, as signup's do (decisions §48).
+  if (creds.createdAccount) {
+    try {
+      showRecoveryKey(await setUpRecovery(api, { account: creds.userId, passphrase, kdfSalt: creds.kdfSalt, vaultKey }));
+    } catch (err) {
+      if (!(err instanceof ApiRequestError && err.status === 404)) throw err;
+    }
+  }
   console.log(`Enrolled "${deviceName}" (${creds.deviceId}).`);
   console.log(`Credentials written to ${configPath()}.`);
   console.log(`\nNext: clipsync run`);
@@ -1232,6 +1342,7 @@ async function main(): Promise<void> {
       invite: { type: "string" },
       ciphertext: { type: "boolean" },
       "by-email": { type: "boolean" },
+      "revoke-others": { type: "boolean" },
     },
   });
 
@@ -1285,6 +1396,10 @@ async function main(): Promise<void> {
       return cmdReceive(arg, values.to);
     case "passphrase":
       return cmdPassphrase();
+    case "recovery":
+      return cmdRecovery(arg);
+    case "recover":
+      return cmdRecover({ url: values.url, name: values.name, email: values.email, revokeOthers: values["revoke-others"] });
     case "devices":
       return cmdDevices({ revoke: values.revoke, rekey: values.rekey });
     case "rekey":
