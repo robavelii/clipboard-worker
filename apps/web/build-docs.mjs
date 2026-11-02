@@ -172,7 +172,7 @@ function render(slug, body) {
 const pages = order.map(({ slug, section }) => {
   const file = join(source, `${slug}.md`);
   if (!existsSync(file)) throw new Error(`docs/nav.json names ${slug}, but docs/${slug}.md does not exist`);
-  const { meta, body } = frontMatter(readFileSync(file, "utf8"), `docs/${slug}.md`);
+  const { meta, body } = frontMatter(readFileSync(file, "utf8").replace(/\r\n?/g, "\n"), `docs/${slug}.md`);
   return { slug, section, meta, ...render(slug, body) };
 });
 
