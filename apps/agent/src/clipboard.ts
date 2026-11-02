@@ -465,6 +465,9 @@ function run(argv) {
 }
 `;
 
+/** Writes of a file reference before giving up; one is lost now and then. */
+const MAC_FILE_WRITE_ATTEMPTS = 4;
+
 /** The pasteboard class each image type is written under. */
 const MAC_IMAGE_CLASSES: Record<string, string> = {
   "image/png": "PNGf",
@@ -531,12 +534,26 @@ export const macos: ClipboardBackend = {
     return code === 0 && path.startsWith("/") ? [path] : [];
   },
   // A file reference (furl), as Finder's Copy makes: Finder pastes the file.
+  // The writer's own read-back can be answered from its process's cache, so
+  // a write the pasteboard server never got still passes it (decisions
+  // §37). Only another process's read asks the server; write again until
+  // one sees the file.
   async writeFilePath(path) {
-    const { code, stderr } = await run("osascript", ["-l", "JavaScript", "-e", MACOS_WRITE_FILE, path], {
-      settleOn: "exit",
-      env: utf8Env(),
-    });
-    if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
+    for (let attempt = 1; ; attempt++) {
+      const { code, stderr } = await run("osascript", ["-l", "JavaScript", "-e", MACOS_WRITE_FILE, path], {
+        settleOn: "exit",
+        env: utf8Env(),
+      });
+      if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
+      // The pasteboard names the resolved path (/private/var for /var), in
+      // decomposed Unicode (é as e and an accent): compare both as NFC.
+      const [seen] = await macos.readFiles!();
+      const want = path.normalize("NFC");
+      if (seen && seen.normalize("NFC").endsWith(want)) return;
+      if (attempt === MAC_FILE_WRITE_ATTEMPTS) {
+        throw new Error(`the pasteboard did not keep the file (it holds ${seen ? JSON.stringify(seen) : "no file"})`);
+      }
+    }
   },
   watch: (onChange, onLost) =>
     lineWatcher(
