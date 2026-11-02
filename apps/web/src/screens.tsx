@@ -230,7 +230,7 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
  * The recovery key, shown the one time it exists anywhere but on paper
  * (decisions §48). Continuing waits for the owner to say it is kept.
  */
-function RecoveryKeyCard({ recoveryKey, onDone }: { recoveryKey: string; onDone: () => void }) {
+export function RecoveryKeyCard({ recoveryKey, onDone }: { recoveryKey: string; onDone: () => void }) {
   const [kept, setKept] = useState(false);
   const [copied, setCopied] = useState(false);
   return (
