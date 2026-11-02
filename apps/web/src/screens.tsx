@@ -1,6 +1,6 @@
 /** Pre-session screens: enrolling this browser (pair, sign in, sign up), and unlocking the vault. */
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiClient } from "@clipsync/client";
 import { requestSignupCode, signIn, signUp, type Enrolled } from "@clipsync/client/account";
 import { recoverAccount } from "@clipsync/client/recovery";
@@ -125,7 +125,20 @@ function SignInScreen({ onEnrolled }: { onEnrolled: () => void }) {
 function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
   const [email, setEmail] = useState("");
   const [withInvite, setWithInvite] = useState(false);
+  /** null until the server says; false: invite only, so there is no email path to offer. */
+  const [open, setOpen] = useState<boolean | null>(null);
   const [codeSent, setCodeSent] = useState(false);
+
+  useEffect(() => {
+    new ApiClient("").signupInfo().then(
+      ({ open }) => {
+        setOpen(open);
+        if (!open) setWithInvite(true);
+      },
+      // A server from before the question: offer both, as before.
+      () => setOpen(true),
+    );
+  }, []);
   const [code, setCode] = useState("");
   const [invite, setInvite] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -176,6 +189,15 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
 
   if (recoveryKey) return <RecoveryKeyCard recoveryKey={recoveryKey} onDone={onEnrolled} />;
 
+  if (open === null) {
+    return (
+      <div className="card">
+        <h2>Make an account</h2>
+        <p className="muted">Checking how this server takes new accounts…</p>
+      </div>
+    );
+  }
+
   if (!withInvite && !codeSent) {
     return (
       <form className="card" onSubmit={sendCode}>
@@ -199,6 +221,9 @@ function SignUpScreen({ onEnrolled }: { onEnrolled: () => void }) {
   return (
     <form className="card" onSubmit={submit}>
       <h2>Make an account</h2>
+      {open === false && (
+        <p className="muted">This server takes new accounts by invite. Ask whoever runs it for an invite code.</p>
+      )}
       {withInvite ? (
         <>
           <label>

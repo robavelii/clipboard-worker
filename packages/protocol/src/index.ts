@@ -174,6 +174,14 @@ export interface AdminPassphraseResetRequest {
   keyEpoch: number;
 }
 
+/**
+ * GET /api/signup: how this server takes new accounts. `open`: by a code
+ * mailed to the address. Otherwise only with an invite from its operator.
+ */
+export interface SignupInfo {
+  open: boolean;
+}
+
 /** PUT /api/account/email (decisions §47): set the account's address. */
 export interface SetEmailRequest {
   email: string;

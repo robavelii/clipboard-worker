@@ -135,3 +135,12 @@ describe("sign-in with the passphrase", () => {
     expect((await api("/api/signin", { method: "POST", body: { email, authProof, ...device } })).status).toBe(429);
   });
 });
+
+describe("how this server takes new accounts", () => {
+  it("says so, so a client can ask for an invite instead of failing", async () => {
+    const res = await api("/api/signup");
+    expect(res.status).toBe(200);
+    // The tests run with SIGNUP=open and mail kept in the outbox.
+    expect(await res.json()).toEqual({ open: true });
+  });
+});

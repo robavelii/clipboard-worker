@@ -220,7 +220,15 @@ async function cmdSignup(opts: { url?: string; name?: string; email?: string; in
   const deviceName = opts.name ?? hostname();
 
   let code: string | undefined;
-  if (!opts.invite) {
+  let invite = opts.invite;
+  // A server that only takes invites says so; servers from before the
+  // question was asked answer 404, and get the mailed code as before.
+  const open = await new ApiClient(baseUrl).signupInfo().then((s) => s.open, () => true);
+  if (!invite && !open) {
+    console.log("This server takes new accounts by invite only: ask whoever runs it for one.");
+    invite = await ask("Invite code: ");
+  }
+  if (!invite) {
     await requestSignupCode(baseUrl, email);
     console.log(`If ${email} can sign up here, a code is on its way to it.`);
     code = await ask("Code from the email: ");
@@ -231,7 +239,7 @@ async function cmdSignup(opts: { url?: string; name?: string; email?: string; in
     baseUrl,
     email,
     code,
-    invite: opts.invite,
+    invite,
     passphrase,
     deviceName,
     platform: currentPlatform(),

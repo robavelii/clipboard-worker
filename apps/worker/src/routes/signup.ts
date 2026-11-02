@@ -25,6 +25,7 @@ import type {
   MintSignupInviteResponse,
   SigninRequest,
   SigninSaltResponse,
+  SignupInfo,
   SignupRequest,
 } from "@clipsync/protocol";
 import { rateLimit } from "../limits";
@@ -77,6 +78,9 @@ async function standInSalt(secret: string, email: string): Promise<string> {
 const signupOpen = (env: Env): boolean => String(env.SIGNUP) === "open";
 
 export const signupRoutes = new Hono<{ Bindings: Env }>()
+
+  /** Whether anyone may sign up by email here, so clients ask for an invite instead of failing. */
+  .get("/", (c) => c.json<SignupInfo>({ open: signupOpen(c.env) && Boolean(c.env.MAILER) }))
 
   /**
    * Mail a code to `email`. Answers 202 whether or not one went out, and
