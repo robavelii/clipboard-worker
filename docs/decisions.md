@@ -1245,6 +1245,15 @@ exiting: the agent's JXA writer sets `public.file-url`, reads it, checks
 it, and only then exits. 30 of 30 test runs passed on each Mac. Image
 writes copy their bytes through AppleScript, and none of 160 was lost.
 
+That read-back was not the whole fix: the v0.8.0 release run lost a file
+on the Intel runner with it in place. A read inside the writing process
+can be answered from that process's own copy of the pasteboard, so a
+write the server never received still passes it. `writeFilePath` now
+confirms each write with a read from a separate process (`osascript`,
+which must ask the server) and writes again, up to four times, if the
+file isn't there. A received file costs one more `osascript` run; one
+that silently isn't on the clipboard costs the whole feature.
+
 ## 38. The same server on Node: the bindings are the seam
 
 The Worker only ran on Cloudflare. To run it on a home server, a NAS or any

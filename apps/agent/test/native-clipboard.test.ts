@@ -41,11 +41,16 @@ describe.skipIf(!native)("this machine's clipboard", () => {
     expect(await clipboard.read()).toBe("native ✓ text");
   }, 60_000);
 
+  // Ten times, with text in between so a file left from the last round
+  // can't pass: on macOS a write is lost only now and then (decisions §37).
   it("puts a file on the clipboard as a file", async () => {
-    await clipboard.writeFilePath!(file);
-    const files = await clipboard.readFiles!();
-    expect(await Promise.all(files.map((f) => realpath(f)))).toEqual([file]);
-  }, 60_000);
+    for (let round = 0; round < 10; round++) {
+      await clipboard.write(`between files ${round}`);
+      await clipboard.writeFilePath!(file);
+      const files = await clipboard.readFiles!();
+      expect(await Promise.all(files.map((f) => realpath(f))), `round ${round}`).toEqual([file]);
+    }
+  }, 120_000);
 
   it("announces a change", async () => {
     let changes = 0;
