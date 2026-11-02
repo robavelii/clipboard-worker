@@ -521,6 +521,13 @@ meter { width: 100%; max-width: 420px; height: 8px; }
   .group { padding: var(--space-md); }
 }
 
+/* Links in clips: open in a new tab; the button is a secondary, the primary stays Copy. */
+a.button.secondary { background: var(--color-paper-2); border-color: var(--color-rule-2); color: var(--color-ink); }
+@media (hover: hover) { a.button.secondary:hover { background: var(--color-paper-3); border-color: var(--color-muted); } }
+.detail-text a, .latesttext a { color: var(--color-cool); text-decoration-color: color-mix(in oklab, var(--color-cool) 45%, transparent); text-underline-offset: 0.18em; overflow-wrap: anywhere; }
+@media (hover: hover) { .detail-text a:hover, .latesttext a:hover { text-decoration-color: currentColor; } }
+.detail-text a:focus-visible, .latesttext a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: 2px; }
+
 /* ---------- Adding a device: the QR first ---------- */
 .adddevice-body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-lg); align-items: center; }
 .adddevice-text { display: flex; flex-direction: column; gap: var(--space-sm); max-width: 46ch; }

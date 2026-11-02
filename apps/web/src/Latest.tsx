@@ -13,6 +13,8 @@ import type { RingKeys } from "@clipsync/client/ring";
 import type { DecryptedClip } from "@clipsync/react";
 import { canCopy, copyClip } from "./clipboard";
 import { FileView } from "./FileView";
+import { Linked } from "./History";
+import { linkOf } from "./links";
 
 /** The newest clip another device wrote, if any. */
 export function latestFromElsewhere(
@@ -70,6 +72,11 @@ export function LatestCard({
             {ago(clip.createdAt)}
           </time>
         </div>
+        {!clip.file && linkOf(clip.text) && (
+          <a className="button secondary" href={linkOf(clip.text)!} target="_blank" rel="noopener noreferrer">
+            Open
+          </a>
+        )}
         {canCopy(clip) && (
           <button type="button" className="primary" onClick={copy}>
             {done ? (done.ok ? "Copied" : "Copy failed") : "Copy"}
@@ -80,7 +87,7 @@ export function LatestCard({
         <FileView api={api} keys={keys} account={account} clip={clip} />
       ) : (
         <pre className={clip.text === null ? "latesttext locked" : "latesttext"}>
-          {clip.text ?? "Cannot decrypt on this device"}
+          {clip.text === null ? "Cannot decrypt on this device" : <Linked text={clip.text} />}
         </pre>
       )}
     </section>

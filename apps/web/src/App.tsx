@@ -587,7 +587,7 @@ function Workspace({
       )}
 
       <p className="keys muted small" aria-hidden="true">
-        <kbd>/</kbd> search <kbd>j</kbd> <kbd>k</kbd> move <kbd>c</kbd> copy <kbd>p</kbd> pin <kbd>Del</kbd> delete
+        <kbd>/</kbd> search <kbd>j</kbd> <kbd>k</kbd> move <kbd>c</kbd> copy <kbd>p</kbd> pin <kbd>o</kbd> open link <kbd>Del</kbd> delete
       </p>
     </div>
   );
