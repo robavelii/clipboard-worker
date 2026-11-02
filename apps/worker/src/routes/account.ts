@@ -13,12 +13,21 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type { AccountExport, AccountPlan, DeleteAccountRequest, SetEmailRequest } from "@clipsync/protocol";
+import {
+  STALE_EPOCH_ERROR,
+  type AccountExport,
+  type AccountPlan,
+  type AdminPassphraseResetRequest,
+  type ApiError,
+  type DeleteAccountRequest,
+  type SetEmailRequest,
+} from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, toDevice, type ClipRow, type DeviceRow, type UserRow } from "../db";
 import { sha256, timingSafeEqual } from "../ids";
 import { deleteBlobs } from "../r2";
 import { accountRecoveryRoutes } from "./recovery";
+import { rateLimit } from "../limits";
 import { requireEmail, sixDigits } from "./signup";
 
 const CODE_TTL_MS = 15 * 60 * 1000;
@@ -58,6 +67,63 @@ export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
   .use("*", requireDevice)
 
   .route("/recovery", accountRecoveryRoutes)
+
+  /**
+   * A forgotten passphrase, reset by the server's operator from one of the
+   * account's own devices (decisions §50). Both halves are required: the
+   * admin secret alone has no vault key to wrap, and a device token alone
+   * must never change the passphrase (§47). Guarded on the epoch, so a
+   * device that missed a re-key cannot write an old key back.
+   */
+  .post("/passphrase-reset", rateLimit("STRICT_LIMIT", "passphrase-reset"), async (c) => {
+    const body = await c.req.json<Partial<AdminPassphraseResetRequest>>().catch(() => ({}) as Partial<AdminPassphraseResetRequest>);
+    if (!c.env.ADMIN_SECRET || typeof body.adminSecret !== "string" || !timingSafeEqual(body.adminSecret, c.env.ADMIN_SECRET)) {
+      throw new HTTPException(403, { message: "bad admin secret" });
+    }
+    const wrapped = body.wrappedVaultKey;
+    if (typeof wrapped !== "string" || !wrapped.startsWith("k1.") || wrapped.length > 512) {
+      throw new HTTPException(400, { message: "wrappedVaultKey must be a k1 envelope" });
+    }
+    if (typeof body.authHash !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.authHash)) {
+      throw new HTTPException(400, { message: "authHash must be a base64url SHA-256" });
+    }
+    if (typeof body.keyEpoch !== "number" || !Number.isSafeInteger(body.keyEpoch) || body.keyEpoch < 0) {
+      throw new HTTPException(400, { message: "keyEpoch must be a whole number" });
+    }
+    const { userId, deviceName } = c.var.device;
+    const reset = await c.env.DB.prepare(
+      `UPDATE users SET wrapped_vault_key = ?, auth_hash = ?, signin_failures = 0, signin_window = NULL
+        WHERE id = ? AND key_epoch = ? RETURNING email`,
+    )
+      .bind(wrapped, body.authHash, userId, body.keyEpoch)
+      .first<{ email: string | null }>();
+    if (!reset) {
+      return c.json<ApiError>(
+        { error: STALE_EPOCH_ERROR, message: "this device is behind a re-key; restart it to pick up the current key, then try again" },
+        409,
+      );
+    }
+
+    if (c.env.MAILER && reset.email) {
+      const mailer = c.env.MAILER;
+      const to = reset.email;
+      c.executionCtx.waitUntil(
+        mailer
+          .send({
+            to,
+            subject: "Your ClipSync passphrase was reset",
+            text: [
+              `The server's operator reset your account's passphrase from your device "${deviceName}".`,
+              "Your clips and other devices are unchanged; use the new passphrase from now on.",
+              "",
+              "If this wasn't you, revoke the devices you don't recognise and re-key (clipsync rekey).",
+            ].join("\n"),
+          })
+          .catch((error: unknown) => console.error({ msg: "passphrase reset notice failed", error: String(error) })),
+      );
+    }
+    return c.json({ ok: true });
+  })
 
   /** What this account's plan allows, read with the device; one query for the device count. */
   .get("/plan", async (c) => {

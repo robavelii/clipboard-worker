@@ -780,6 +780,20 @@ so the server stores a hash of a proof derived from the passphrase and accepts
 a new wrapped key only with that proof. A phone that joined by QR can read your
 clipboard, but it cannot lock you out of it.
 
+**Forgot it, and no recovery key?** Whoever runs the server can reset it from
+one of your enrolled devices:
+
+```bash
+clipsync passphrase --reset    # asks for the admin secret (or reads CLIPSYNC_ADMIN_SECRET), then a new passphrase
+```
+
+The device wraps the vault key it already holds under the new passphrase,
+after checking that key opens the account's clips; nothing is re-encrypted
+and the other devices carry on. It takes the admin secret *and* a device of
+the account, so neither the operator nor a stolen laptop can do it alone
+(decisions §50). Afterwards, add an address and a recovery key so it never
+comes to this again: `clipsync email <address>`, `clipsync recovery new`.
+
 Accounts that predate the proof register it the next time the passphrase is
 used — the web UI's unlock, `clipsync login`, or a `CLIPSYNC_PASSPHRASE` agent
 starting. Do that once after upgrading: until then, the first device to

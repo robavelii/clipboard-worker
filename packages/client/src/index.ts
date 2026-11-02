@@ -8,6 +8,7 @@
 import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
   AccountPlan,
+  AdminPassphraseResetRequest,
   RenameDeviceRequest,
   RecoveryOpenRequest,
   RecoveryOpenResponse,
@@ -250,6 +251,11 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify({ name } satisfies RenameDeviceRequest),
     });
+  }
+
+  /** Reset the passphrase with the admin secret, from this device (decisions §50). */
+  adminPassphraseReset(body: AdminPassphraseResetRequest): Promise<{ ok: boolean }> {
+    return this.request("/api/account/passphrase-reset", { method: "POST", body: JSON.stringify(body) });
   }
 
   /** This account's plan and device count (decisions §44). */
