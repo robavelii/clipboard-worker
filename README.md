@@ -324,24 +324,9 @@ and the passphrase: `clipsync signin --url …`, or "Sign in" on the web UI.
 The server checks the passphrase's proof, never the passphrase, and stops
 accepting tries for an hour after ten wrong ones.
 
-**Mail, through Cloudflare Email Service** (the Worker's choice when it has
-one, decisions §51). `wrangler.jsonc` binds `send_email` as `EMAIL`, and
-`MAIL_FROM` is the sender. To turn it on:
-
-1. Cloudflare dashboard → Email Service → Email Sending: onboard the
-   sending domain (`clip.rfh.et` here) and let it add the SPF and DKIM
-   records.
-2. Be on the Workers Paid plan. Sending to any address needs it, and
-   Email Sending is still in beta. On the free plan the binding reaches
-   only your account's verified destination addresses, which is enough to
-   test with but not for open signup.
-3. Deploy. Nothing else is configured: no secrets, no SMTP.
-
-When the binding is there and `MAIL_FROM` is set, SMTP is not used.
-
-**Mail, through OCI Email Delivery** (SMTP: for `clipsync serve`, the
-Docker image, or a Worker without the binding). The Always Free tier sends
-3,000 a month, over SMTP on port 465 with TLS. In the OCI console:
+**Mail, through OCI Email Delivery** (what clip.rfh.et uses: SMTP on port 465
+with TLS, from the Worker or any other server). The Always Free tier sends
+3,000 a month. In the OCI console, in the same region as `SMTP_HOST`:
 
 1. Email Delivery → Approved senders: add the sending address, e.g.
    `noreply@clip.example.org`.
@@ -361,6 +346,13 @@ Docker image, or a Worker without the binding). The Always Free tier sends
    if not 465).
 
 Without mail, open signup answers 503 and invites still work.
+
+**Or Cloudflare Email Service** (decisions §51): add
+`"send_email": [{ "name": "EMAIL" }]` to `wrangler.jsonc` and it sends
+instead of SMTP, from `MAIL_FROM`, with no secrets. Sending to any address
+needs the Workers Paid plan (3,000 a month included) and the domain onboarded
+under Email Service → Email Sending; on the free plan it reaches only your
+account's verified addresses.
 
 **Leaving.** `clipsync export <dir>` saves every clip, decrypted on the
 device: text in `clips.json`, images and files under `files/`.

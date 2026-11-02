@@ -1861,34 +1861,35 @@ What it costs:
 Recovery keys (§48) remain the owner's way back. This exists for accounts
 that predate them, and for self-hosters who never made one.
 
-## 51. Mail through Cloudflare Email Service, SMTP kept as the fallback
+## 51. Mail: OCI over SMTP in production, Cloudflare Email Service as an option
 
 Signup by mailed code (§45) was built on SMTP to OCI Email Delivery, and
-production never had it set up, so signup stayed off. Cloudflare Email
-Service gives the Worker a `send_email` binding instead: one call, no
-socket, no credentials, and the sending domain is onboarded beside the
-rest of the zone's DNS.
+production never had it configured, so signup stayed off. Cloudflare Email
+Service looked like the simpler fix: a `send_email` binding, one call, no
+socket and no credentials. It is built, and not used in production.
 
-`mailerFor` now takes the binding as a third argument (the Worker entry
-passes `env.EMAIL`; Node has none) and prefers it when `MAIL_FROM` is set:
-outbox (tests), then the binding, then SMTP, then nothing. `mail.ts` still
-imports no runtime: it declares only the slice of the binding it calls,
-and `index.ts` adapts `env.EMAIL` to it, which also settles which of the
-binding's overloads is meant. `MAIL_FROM` stays a bare address for both
-paths, and both send under the name "ClipSync". It is `noreply@clip.rfh.et`,
-on the subdomain, so the sending records leave the root domain's mail alone.
+The reason is the plan. Cloudflare's free, unlimited email is Email Routing,
+which receives. Email Sending to arbitrary recipients needs the Workers Paid
+plan (3,000 a month included, then $0.35 per 1,000) and is in beta; on the
+free plan the binding reaches only the account's verified addresses, useless
+for strangers signing up. OCI Email Delivery's free tier sends 3,000 a month,
+the SMTP client already existed, and the same settings serve the Node server
+and staging. So production sends through OCI: `SMTP_HOST` is the
+eu-amsterdam-1 endpoint (the region of the OCI server), `MAIL_FROM` is
+`noreply@clip.rfh.et`, and the credentials are the `SMTP_USER` and
+`SMTP_PASSWORD` secrets. Running a mail server of our own was not
+considered further: clouds block outbound port 25, and a new IP's mail is
+spam until it has a reputation.
 
-What it costs:
-- **The Workers Paid plan.** Sending to any address needs it, and Email
-  Sending is in beta. On the free plan the binding reaches only the
-  account's verified destination addresses: fine for testing, useless for
-  strangers signing up. The SMTP path stays for that reason, and for every
-  deployment that isn't a Worker (`clipsync serve`, the Docker image,
-  staging).
-- **Two mail paths to keep working.** The Worker tests cover the choice
-  between them (`test/mail-cloudflare.test.ts`); the SMTP conversation keeps
-  its own tests.
+The binding stays in the code for the day the plan changes:
+`mailerFor(env, connect, email)` prefers it over SMTP when it is given and
+`MAIL_FROM` is set (outbox in tests, then binding, then SMTP, then none),
+and `index.ts` passes `env.EMAIL` when `wrangler.jsonc` binds one. `mail.ts`
+still imports no runtime: it declares only the slice of the binding it calls,
+and `index.ts` adapts the binding to it, which also settles which of the
+binding's overloads is meant. Both paths send `MAIL_FROM`, a bare address,
+under the name "ClipSync".
 
-Production now sets `SIGNUP` to `open`. With no working mailer, the routes
-that mail answer 503, and `GET /api/signup` reports signup closed, so
-clients ask for an invite instead.
+Production now sets `SIGNUP` to `open`. Until the SMTP secrets are set there
+is no mailer: the routes that mail answer 503, and `GET /api/signup` reports
+signup closed, so clients ask for an invite instead of failing.
