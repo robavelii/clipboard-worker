@@ -2,7 +2,9 @@
  * The web UI's static files, served the way Workers static assets serves
  * them (wrangler.jsonc `assets`):
  *
- *   - a path that names a file gets that file;
+ *   - a path that names a file gets that file, and one that names a page
+ *     without its `.html`, or a directory with an index.html, gets that
+ *     page (Cloudflare's html_handling, which the docs at /docs rely on);
  *   - any other GET or HEAD gets index.html (single-page-application);
  *   - the rules in `_headers` apply to every asset response. They carry the
  *     CSP the web UI depends on, so a server that skipped them would serve
@@ -127,10 +129,16 @@ export class StaticAssets {
     return new StaticAssets((path) => assets.get(path) ?? null, parseHeaders(headers));
   }
 
+  /** The file a path names: itself, `<path>.html`, or `<path>/index.html`. */
+  private page(path: string): Asset | null {
+    if (path.endsWith("/")) return this.lookup(`${path}index.html`);
+    return this.lookup(path) ?? this.lookup(`${path}.html`) ?? this.lookup(`${path}/index.html`);
+  }
+
   async serve(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
     const path = decodePath(pathname);
-    const asset = (path && this.lookup(path)) || this.lookup("/index.html")!;
+    const asset = (path && this.page(path)) || this.lookup("/index.html")!;
     const headers = new Headers({
       "content-type": TYPES[extname(asset.name)] ?? "application/octet-stream",
       "cache-control": "public, max-age=0, must-revalidate",

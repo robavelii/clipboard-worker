@@ -190,6 +190,8 @@ label.checkbox em { display: block; font-style: normal; color: var(--color-muted
 .menu-items button { justify-content: flex-start; border-color: transparent; background: none; font-weight: 400; font-size: var(--text-md); }
 @media (hover: hover) { .menu-items button:hover:not(:disabled) { background: var(--color-paper-3); border-color: transparent; } }
 .menu-items button.danger { color: var(--color-bad); }
+.menu-items a { display: flex; align-items: center; min-height: var(--control-h); padding: 0 var(--space-md); border: var(--rule-hair) solid transparent; border-radius: var(--radius-pill); color: var(--color-ink); text-decoration: none; font-size: var(--text-md); }
+@media (hover: hover) { .menu-items a:hover { background: var(--color-paper-3); } }
 .menu-items hr { border: 0; border-top: var(--rule-hair) solid var(--color-rule); margin: var(--space-2xs) var(--space-xs); width: auto; }
 
 .menu-items .narrow-only { display: none; }

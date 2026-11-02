@@ -1,0 +1,8 @@
+[
+  { "title": "Start here", "pages": ["index", "quickstart"] },
+  { "title": "Using ClipSync", "pages": ["devices", "web-and-phone", "agent", "files", "tray", "passphrase-and-recovery", "account", "limits"] },
+  { "title": "Running a server", "pages": ["self-host", "cloudflare", "mail"] },
+  { "title": "Reference", "pages": ["cli", "configuration", "api"] },
+  { "title": "How it works", "pages": ["architecture", "security"] },
+  { "title": "Help", "pages": ["troubleshooting", "development"] }
+]

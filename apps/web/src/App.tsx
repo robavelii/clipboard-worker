@@ -490,6 +490,7 @@ function Workspace({
             <button type="button" role="menuitem" onClick={onSetup}>Set up a phone</button>
             <button type="button" role="menuitem" className="narrow-only" onClick={addDevice}>Add device</button>
             <button type="button" role="menuitem" className="narrow-only" onClick={onLock}>Lock this tab</button>
+            <a role="menuitem" href="/docs/" target="_blank" rel="noopener">Help and docs</a>
             <hr />
             <button type="button" role="menuitem" className="danger" onClick={onSignOut}>
               Sign out of this browser
