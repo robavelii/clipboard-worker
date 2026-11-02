@@ -13,7 +13,7 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type { AccountExport, DeleteAccountRequest, SetEmailRequest } from "@clipsync/protocol";
+import type { AccountExport, AccountPlan, DeleteAccountRequest, SetEmailRequest } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
 import { toClip, toDevice, type ClipRow, type DeviceRow, type UserRow } from "../db";
 import { sha256, timingSafeEqual } from "../ids";
@@ -58,6 +58,23 @@ export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
   .use("*", requireDevice)
 
   .route("/recovery", accountRecoveryRoutes)
+
+  /** What this account's plan allows, read with the device; one query for the device count. */
+  .get("/plan", async (c) => {
+    const { plan, userId } = c.var.device;
+    const row = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = ? AND revoked_at IS NULL")
+      .bind(userId)
+      .first<{ n: number }>();
+    return c.json<AccountPlan>({
+      name: plan.name,
+      maxDevices: plan.maxDevices,
+      devices: row?.n ?? 0,
+      textTtlDays: plan.textTtlDays,
+      fileTtlDays: plan.fileTtlDays,
+      files: plan.files,
+      storageBytes: plan.storageBytes,
+    });
+  })
 
   /** Mail a code that confirms deleting this account, to its address. */
   .post("/deletion-code", async (c) => {

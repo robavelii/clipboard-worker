@@ -5,7 +5,7 @@ import { rekeyVault } from "@clipsync/client/rekey";
 import { currentKey, readClip, ringKeysFrom, type VaultRing } from "@clipsync/client/ring";
 import { changePassphrase } from "@clipsync/client/vault";
 import { DecryptError } from "@clipsync/crypto";
-import type { BlobUsageResponse, Credentials, Device, WhoAmI } from "@clipsync/protocol";
+import type { AccountPlan, BlobUsageResponse, Credentials, Device, WhoAmI } from "@clipsync/protocol";
 import { RecoveryPanel } from "./Recovery";
 import { cacheRing, isPersisted } from "./session";
 import { ago, bytes } from "./time";
@@ -143,6 +143,23 @@ function DevicesSection({ api, creds, onSignOut, onRekey }: Props & { onRekey: (
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [revoked, setRevoked] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+
+  async function rename(e: FormEvent) {
+    e.preventDefault();
+    if (!renaming) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.renameDevice(renaming.id, renaming.name);
+      setRenaming(null);
+      load();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const load = useCallback(() => {
     api.devices().then(
@@ -199,6 +216,31 @@ function DevicesSection({ api, creds, onSignOut, onRekey }: Props & { onRekey: (
       <ul className="list">
         {sorted.map((device) => {
           const self = device.id === creds.deviceId;
+          if (renaming?.id === device.id) {
+            return (
+              <li key={device.id} className="item">
+                <form className="rename" onSubmit={(e) => void rename(e)}>
+                  <label htmlFor="rename-device" className="sr-only">
+                    New name for {device.name}
+                  </label>
+                  <input
+                    id="rename-device"
+                    value={renaming.name}
+                    maxLength={64}
+                    onChange={(e) => setRenaming({ id: device.id, name: e.target.value })}
+                    autoFocus
+                    required
+                  />
+                  <button type="submit" className="primary" disabled={busy || !renaming.name.trim()}>
+                    Save
+                  </button>
+                  <button type="button" className="link" onClick={() => setRenaming(null)}>
+                    Cancel
+                  </button>
+                </form>
+              </li>
+            );
+          }
           return (
             <li key={device.id} className="item">
               <span className={`dot ${self || device.online ? "on" : ""}`} aria-hidden="true" />
@@ -213,6 +255,9 @@ function DevicesSection({ api, creds, onSignOut, onRekey }: Props & { onRekey: (
                   {new Date(device.createdAt).toLocaleDateString()}
                 </small>
               </div>
+              <button className="link" onClick={() => setRenaming({ id: device.id, name: device.name })}>
+                Rename
+              </button>
               {self ? (
                 <button onClick={onSignOut}>Sign out</button>
               ) : confirming === device.id ? (
@@ -719,33 +764,55 @@ function DeleteGroup({
 /* ---------- Plan & usage ---------- */
 
 function PlanSection({ api }: { api: ApiClient }) {
+  const [plan, setPlan] = useState<AccountPlan | null | undefined>(undefined);
   const [usage, setUsage] = useState<BlobUsageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    // Servers before /api/account/plan: show what usage alone says.
+    api.accountPlan().then(setPlan, () => setPlan(null));
     api.blobUsage().then(setUsage, (err: unknown) => setError(message(err)));
   }, [api]);
 
   const mine = usage?.account;
-  const storageCap = mine ? mine.storageBytes ?? usage.storageBudgetBytes : usage?.storageBudgetBytes ?? 0;
+  const storageCap = plan?.storageBytes ?? mine?.storageBytes ?? usage?.storageBudgetBytes ?? 0;
   const stored = mine?.storedBytes ?? usage?.storedBytes ?? 0;
+  const days = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
 
   return (
-    <Group
-      title="Plan & usage"
-      intro="Text clips expire after 30 days and images and files after 7, unless pinned. Files beyond your storage push out your oldest unpinned ones."
-    >
+    <Group title="Plan & usage">
       {error && <p className="error">{error}</p>}
-      {!usage && !error && <p className="muted">Loading…</p>}
-      {usage && (
-        <dl className="usage">
-          <div>
-            <dt>Plan</dt>
-            <dd className="plan-name">{mine?.plan ?? "default"}</dd>
-          </div>
-          <Meter label="File storage" value={stored} max={storageCap} format={bytes} />
-          {mine?.classABudget != null && <Meter label={`Uploads this month (${usage.month})`} value={mine.classA} max={mine.classABudget} />}
-          {mine?.classBBudget != null && <Meter label={`Downloads this month (${usage.month})`} value={mine.classB} max={mine.classBBudget} />}
-        </dl>
+      {(!usage || plan === undefined) && !error && <p className="muted">Loading…</p>}
+      {usage && plan !== undefined && (
+        <>
+          <dl className="usage">
+            <div>
+              <dt>Plan</dt>
+              <dd className="plan-name">{plan?.name ?? mine?.plan ?? "default"}</dd>
+            </div>
+            {plan && (
+              <div>
+                <dt>History</dt>
+                <dd>
+                  Text kept {days(plan.textTtlDays)}, images and files {days(plan.fileTtlDays)}. Pinned clips never
+                  expire.{!plan.files && " Files other than images don't sync on this plan."}
+                </dd>
+              </div>
+            )}
+            {plan &&
+              (plan.maxDevices !== null ? (
+                <Meter label="Devices" value={plan.devices} max={plan.maxDevices} />
+              ) : (
+                <div>
+                  <dt>Devices</dt>
+                  <dd>{plan.devices}, with no limit</dd>
+                </div>
+              ))}
+            <Meter label="File storage" value={stored} max={storageCap} format={bytes} />
+            {mine?.classABudget != null && <Meter label={`Uploads this month (${usage.month})`} value={mine.classA} max={mine.classABudget} />}
+            {mine?.classBBudget != null && <Meter label={`Downloads this month (${usage.month})`} value={mine.classB} max={mine.classBBudget} />}
+          </dl>
+          <p className="muted small">When files reach the storage limit, your oldest unpinned ones make room for new ones.</p>
+        </>
       )}
     </Group>
   );

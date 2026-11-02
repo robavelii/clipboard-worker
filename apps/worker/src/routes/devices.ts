@@ -7,6 +7,7 @@ import type {
   Device,
   PairCodeResponse,
   PairRequest,
+  RenameDeviceRequest,
   SetDeviceKeyRequest,
 } from "@clipsync/protocol";
 import { requireDevice, type AuthVars } from "../auth";
@@ -156,6 +157,22 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       console.error({ msg: "disconnect on self-revoke failed", deviceId, error });
     }
     return c.json({ ok: true });
+  })
+
+  /**
+   * Rename one of this account's devices, this one included. The name is
+   * metadata the server already holds in the clear, never part of a clip.
+   */
+  .patch("/:id", requireDevice, async (c) => {
+    const body = await c.req.json<Partial<RenameDeviceRequest>>().catch(() => ({}) as Partial<RenameDeviceRequest>);
+    const name = assertDeviceName(body.name);
+    const res = await c.env.DB.prepare(
+      "UPDATE devices SET name = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+    )
+      .bind(name, c.req.param("id"), c.var.device.userId)
+      .run();
+    if (!res.meta.changes) throw new HTTPException(404, { message: "device not found" });
+    return c.json({ ok: true, name });
   })
 
   /** Revoke a lost device. Its token stops resolving immediately. */

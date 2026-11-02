@@ -24,6 +24,7 @@ import { Compose } from "./Compose";
 import { FileView } from "./FileView";
 import { LatestCard, latestFromElsewhere } from "./Latest";
 import { PhoneSetup } from "./PhoneSetup";
+import { Checklist } from "./Checklist";
 import { Settings, sectionFromPath, type Section } from "./Settings";
 import { ago, bytes, expiresIn } from "./time";
 import { canCopy, copyClip, isTouchFirst } from "./clipboard";
@@ -494,6 +495,13 @@ function Workspace({
           </button>
         ))}
       </div>
+
+      <Checklist
+        api={api}
+        devices={devices}
+        onAddDevice={() => void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {})}
+        onSettings={onSettings}
+      />
 
       {pairCode !== null && (
         <div className="paircode">

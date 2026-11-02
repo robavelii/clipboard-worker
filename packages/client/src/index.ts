@@ -7,6 +7,8 @@
 
 import { AGENT_VERSION_HEADER } from "@clipsync/protocol";
 import type {
+  AccountPlan,
+  RenameDeviceRequest,
   RecoveryOpenRequest,
   RecoveryOpenResponse,
   RecoveryResetRequest,
@@ -241,6 +243,18 @@ export class ApiClient {
 
   devices(): Promise<{ devices: Device[] }> {
     return this.request("/api/devices");
+  }
+
+  renameDevice(id: string, name: string): Promise<{ ok: boolean; name: string }> {
+    return this.request(`/api/devices/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name } satisfies RenameDeviceRequest),
+    });
+  }
+
+  /** This account's plan and device count (decisions §44). */
+  accountPlan(): Promise<AccountPlan> {
+    return this.request("/api/account/plan");
   }
 
   revokeDevice(id: string): Promise<{ ok: boolean }> {
