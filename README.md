@@ -818,6 +818,9 @@ clipsync recovery new      # make one (accounts from before it existed), or repl
 clipsync recovery off      # remove it
 ```
 
+In the web UI, **Recovery key** in the workspace toolbar does the same three
+things; each takes the passphrase.
+
 Re-keying seals the new vault key to the recovery key too, so it keeps
 working (decisions §48). Clients from before recovery keys can't re-key
 an account that has one; update them first.

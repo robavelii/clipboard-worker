@@ -170,7 +170,7 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
   overflow: auto;
 }
 
-.checkbox { flex-direction: row; align-items: flex-start; gap: 9px; cursor: pointer; }
+label.checkbox { flex-direction: row; align-items: flex-start; gap: 9px; cursor: pointer; }
 .checkbox input { width: auto; margin-top: 2px; flex: none; }
 .checkbox span { display: block; color: var(--text); font-size: 13px; }
 .checkbox em { display: block; font-style: normal; color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -282,3 +282,23 @@ a.button { display: inline-block; padding: 10px 14px; border-radius: 6px; backgr
   overflow-wrap: anywhere;
   user-select: all;
 }
+
+/* Workspace panels (the recovery key): a box under the toolbar. */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+}
+.panel p { margin: 0; }
+.panel .card { width: 100%; padding: 0; border: 0; }
+.panelhead { display: flex; align-items: center; justify-content: space-between; }
+.panelhead h2 { margin: 0; font-size: 16px; }
+.panel .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.passform { display: flex; flex-direction: column; gap: 8px; }
+.passform label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }

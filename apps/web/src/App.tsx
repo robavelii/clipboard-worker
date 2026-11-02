@@ -24,6 +24,7 @@ import { Compose } from "./Compose";
 import { FileView } from "./FileView";
 import { LatestCard, latestFromElsewhere } from "./Latest";
 import { PhoneSetup } from "./PhoneSetup";
+import { RecoveryPanel } from "./Recovery";
 import { canCopy, copyClip, isTouchFirst } from "./clipboard";
 import { useClips, useSync, type DecryptedClip } from "@clipsync/react";
 
@@ -218,7 +219,7 @@ export function App() {
     );
   }
 
-  if (!keys) return null;
+  if (!keys || !ring) return null;
 
   return (
     <Workspace
@@ -226,6 +227,8 @@ export function App() {
       token={creds.token}
       account={creds.userId}
       deviceId={creds.deviceId}
+      kdfSalt={creds.kdfSalt}
+      vaultKey={currentKey(ring)}
       stranded={stranded}
       onRefreshRing={refreshRing}
       onUnlockAgain={() => setNeedsPassphrase(true)}
@@ -263,6 +266,8 @@ function Workspace({
   token,
   account,
   deviceId,
+  kdfSalt,
+  vaultKey,
   stranded,
   onRefreshRing,
   onUnlockAgain,
@@ -275,6 +280,9 @@ function Workspace({
   /** The user id envelopes are bound to. */
   account: string;
   deviceId: string;
+  kdfSalt: string;
+  /** The current vault key, for making a recovery key. */
+  vaultKey: string;
   stranded: boolean;
   onRefreshRing: () => Promise<void>;
   onUnlockAgain: () => void;
@@ -323,6 +331,7 @@ function Workspace({
   const [query, setQuery] = useState("");
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
+  const [recovery, setRecovery] = useState(false);
 
   const refreshDevices = useCallback(() => {
     void api.devices().then((r) => setDevices(r.devices)).catch(() => {});
@@ -381,6 +390,7 @@ function Workspace({
           Add device
         </button>
         <button onClick={onSetup}>Phone setup</button>
+        <button onClick={() => setRecovery((open) => !open)}>Recovery key</button>
         <button onClick={onLock}>Lock</button>
         <button className="link" onClick={onSignOut}>
           Unpair
@@ -420,6 +430,16 @@ function Workspace({
             dismiss
           </button>
         </div>
+      )}
+
+      {recovery && (
+        <RecoveryPanel
+          api={api}
+          account={account}
+          kdfSalt={kdfSalt}
+          vaultKey={vaultKey}
+          onClose={() => setRecovery(false)}
+        />
       )}
 
       {stranded && (
