@@ -4,6 +4,7 @@ import type { RingKeys } from "@clipsync/client/ring";
 import type { DecryptedClip } from "@clipsync/react";
 import { canCopy, copyClip } from "./clipboard";
 import { FileView } from "./FileView";
+import { linkify, linkOf, shortLink } from "./links";
 import { ago, bytes, expiresIn } from "./time";
 
 /** How long a deleted clip can be brought back before the server forgets it. */
@@ -143,6 +144,9 @@ export function History({
       else if (e.key === "ArrowUp" || e.key === "k") move(-1);
       else if ((e.key === "Enter" || e.key === "c") && selected && canCopy(selected)) copy(selected);
       else if (e.key === "p" && selected) onTogglePin(selected.id, !selected.pinned);
+      else if (e.key === "o" && selected && !selected.file && linkOf(selected.text)) {
+        window.open(linkOf(selected.text)!, "_blank", "noopener,noreferrer");
+      }
       else if ((e.key === "Delete" || e.key === "Backspace") && selected) remove(selected);
       else if (e.key === "z" && pendingRef.current) undo();
       else return;
@@ -196,6 +200,11 @@ export function History({
                         </>
                       ) : clip.text === null ? (
                         "Can't be opened on this device"
+                      ) : linkOf(clip.text) ? (
+                        <>
+                          <span className="kind">Link</span>
+                          {firstLines(clip.text)}
+                        </>
                       ) : (
                         firstLines(clip.text)
                       )}
@@ -259,6 +268,18 @@ function ClipDetail({
             {copied === null ? "Copy" : copied ? "Copied" : "Copy failed"}
           </button>
         )}
+        {!clip.file && linkOf(clip.text) && (
+          <a
+            className="button secondary"
+            href={linkOf(clip.text)!}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-keyshortcuts="o"
+            title={`Open ${shortLink(linkOf(clip.text)!)} in a new tab`}
+          >
+            Open link
+          </a>
+        )}
         <button type="button" onClick={onTogglePin} aria-keyshortcuts="p" title="Pinned clips never expire">
           {clip.pinned ? "Unpin" : "Pin"}
         </button>
@@ -271,7 +292,7 @@ function ClipDetail({
         <FileView api={api} keys={keys} account={account} clip={clip} />
       ) : (
         <pre className={clip.text === null ? "detail-text locked" : "detail-text"}>
-          {clip.text ?? "This clip was encrypted under a key this device doesn’t hold."}
+          {clip.text === null ? "This clip was encrypted under a key this device doesn’t hold." : <Linked text={clip.text} />}
         </pre>
       )}
       <dl className="facts">
@@ -299,5 +320,22 @@ function ClipDetail({
         </div>
       </dl>
     </div>
+  );
+}
+
+/** Clip text with its http(s) links clickable, built as nodes: no innerHTML. */
+export function Linked({ text }: { text: string }) {
+  return (
+    <>
+      {linkify(text).map((piece, i) =>
+        typeof piece === "string" ? (
+          piece
+        ) : (
+          <a key={i} href={piece.href} target="_blank" rel="noopener noreferrer">
+            {piece.text}
+          </a>
+        ),
+      )}
+    </>
   );
 }
