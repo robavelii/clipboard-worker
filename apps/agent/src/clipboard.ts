@@ -545,10 +545,14 @@ export const macos: ClipboardBackend = {
         env: utf8Env(),
       });
       if (code !== 0) throw new Error(`osascript failed: ${stderr.trim()}`);
-      // The pasteboard names the resolved path (/private/var for /var).
+      // The pasteboard names the resolved path (/private/var for /var), in
+      // decomposed Unicode (é as e and an accent): compare both as NFC.
       const [seen] = await macos.readFiles!();
-      if (seen && (seen === path || seen.endsWith(path))) return;
-      if (attempt === MAC_FILE_WRITE_ATTEMPTS) throw new Error("the pasteboard did not keep the file");
+      const want = path.normalize("NFC");
+      if (seen && seen.normalize("NFC").endsWith(want)) return;
+      if (attempt === MAC_FILE_WRITE_ATTEMPTS) {
+        throw new Error(`the pasteboard did not keep the file (it holds ${seen ? JSON.stringify(seen) : "no file"})`);
+      }
     }
   },
   watch: (onChange, onLost) =>
