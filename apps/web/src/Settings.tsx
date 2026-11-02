@@ -61,7 +61,7 @@ export function Settings(props: Props) {
   return (
     <div className="app settings-page">
       <header className="topbar">
-        <button className="back" onClick={onBack}>
+        <button type="button" className="back" onClick={onBack}>
           ← Clipboard
         </button>
         <h1>Settings</h1>
@@ -69,7 +69,7 @@ export function Settings(props: Props) {
       <div className="settings">
         <nav className="settings-nav" aria-label="Settings sections">
           {SECTIONS.map(([id, label]) => (
-            <button key={id} className={id === section ? "on" : undefined} aria-current={id === section ? "page" : undefined} onClick={() => onSection(id)}>
+            <button type="button" key={id} className={id === section ? "on" : undefined} aria-current={id === section ? "page" : undefined} onClick={() => onSection(id)}>
               {label}
             </button>
           ))}
@@ -202,10 +202,10 @@ function DevicesSection({ api, creds, onSignOut, onRekey }: Props & { onRekey: (
             now, though. If it was lost or stolen, re-key: every clip moves to a key it never had.
           </p>
           <div className="row">
-            <button className="primary" onClick={() => onRekey(revoked)}>
+            <button type="button" className="primary" onClick={() => onRekey(revoked)}>
               Re-key now
             </button>
-            <button className="link" onClick={() => setRevoked(null)}>
+            <button type="button" className="link" onClick={() => setRevoked(null)}>
               Not now
             </button>
           </div>
@@ -243,34 +243,32 @@ function DevicesSection({ api, creds, onSignOut, onRekey }: Props & { onRekey: (
           }
           return (
             <li key={device.id} className="item">
-              <span className={`dot ${self || device.online ? "on" : ""}`} aria-hidden="true" />
-              <div className="grow">
+              <div className="grow device-cols">
                 <strong>
                   {device.name} {self && <span className="tag">This browser</span>}
                 </strong>
-                <small>
-                  {PLATFORM[device.platform] ?? device.platform} ·{" "}
-                  {self || device.online ? "online now" : device.lastSeen ? `seen ${ago(device.lastSeen)}` : "never seen"}
-                  {" · added "}
-                  {new Date(device.createdAt).toLocaleDateString()}
-                </small>
+                <span className="cell">{PLATFORM[device.platform] ?? device.platform}</span>
+                <span className={self || device.online ? "cell live" : "cell measured"}>
+                  {self || device.online ? "Online now" : device.lastSeen ? `Seen ${ago(device.lastSeen)}` : "Never seen"}
+                </span>
+                <span className="cell measured">Added {new Date(device.createdAt).toLocaleDateString()}</span>
               </div>
-              <button className="link" onClick={() => setRenaming({ id: device.id, name: device.name })}>
+              <button type="button" className="link" onClick={() => setRenaming({ id: device.id, name: device.name })}>
                 Rename
               </button>
               {self ? (
-                <button onClick={onSignOut}>Sign out</button>
+                <button type="button" onClick={onSignOut}>Sign out</button>
               ) : confirming === device.id ? (
                 <div className="row">
-                  <button className="danger solid" disabled={busy} onClick={() => void revoke(device)}>
+                  <button type="button" className="danger solid" disabled={busy} onClick={() => void revoke(device)}>
                     {busy ? "Revoking…" : "Revoke"}
                   </button>
-                  <button className="link" onClick={() => setConfirming(null)}>
+                  <button type="button" className="link" onClick={() => setConfirming(null)}>
                     Cancel
                   </button>
                 </div>
               ) : (
-                <button className="danger" onClick={() => setConfirming(device.id)}>
+                <button type="button" className="danger" onClick={() => setConfirming(device.id)}>
                   Revoke
                 </button>
               )}
@@ -309,7 +307,7 @@ function ChangePassphrase({ api, kdfSalt }: { api: ApiClient; kdfSalt: string })
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (next.length < 8) return setError("The new passphrase needs at least 8 characters.");
-    if (next !== confirm) return setError("The new passphrases don't match.");
+    if (next !== confirm) return setError("The new passphrases don’t match.");
     setBusy(true);
     setError(null);
     try {
@@ -327,11 +325,11 @@ function ChangePassphrase({ api, kdfSalt }: { api: ApiClient; kdfSalt: string })
   }
 
   return (
-    <Group title="Passphrase" intro="Unlocks your history on a new device. Changing it re-encrypts nothing; your other devices keep working.">
+    <Group title="Passphrase" intro="Opens your history on a new device. Changing it re-encrypts nothing; your other devices keep working.">
       {done && <p className="ok">Passphrase changed. Use the new one from now on.</p>}
       {!open ? (
         <div className="row">
-          <button onClick={() => (setOpen(true), setDone(false))}>Change passphrase</button>
+          <button type="button" onClick={() => (setOpen(true), setDone(false))}>Change passphrase</button>
         </div>
       ) : (
         <form className="form" onSubmit={(e) => void submit(e)}>
@@ -358,7 +356,7 @@ function KeepUnlocked({ ring }: { ring: VaultRing }) {
   return (
     <Group
       title="This browser"
-      intro="Normally closing the tab locks ClipSync again. Keeping it unlocked makes the share sheet work without the passphrase, but anyone who can open this browser can read your clipboard."
+      intro="Normally closing the tab locks ClipSync again. Keeping it open makes the share sheet work without the passphrase, but anyone who can open this browser can read your clipboard."
     >
       <label className="checkbox" htmlFor="keep-unlocked">
         <input
@@ -370,7 +368,7 @@ function KeepUnlocked({ ring }: { ring: VaultRing }) {
             setPersisted(e.target.checked);
           }}
         />
-        <span>Stay unlocked after the tab closes</span>
+        <span>Stay open after the tab closes</span>
       </label>
     </Group>
   );
@@ -429,7 +427,7 @@ function Rekey({
   return (
     <Group
       title="Re-key the vault"
-      intro="Moves every clip to a new key. Your devices get it automatically; revoked ones don't, so the key they kept opens nothing. Do this after revoking a lost device."
+      intro="Moves every clip to a new key. Your devices get it automatically; revoked ones don’t, so the key they kept opens nothing. Do this after revoking a lost device."
     >
       {result && (
         <div className="ok">
@@ -446,7 +444,7 @@ function Rekey({
       )}
       {!open ? (
         <div className="row">
-          <button onClick={() => (setOpen(true), setResult(null))}>Re-key…</button>
+          <button type="button" onClick={() => (setOpen(true), setResult(null))}>Re-key…</button>
         </div>
       ) : (
         <form className="form" onSubmit={(e) => void submit(e)}>
@@ -546,9 +544,9 @@ function EmailGroup({
         <div className="item">
           <div className="grow">
             <strong>{loaded ? (email ?? "No address") : "…"}</strong>
-            {!email && loaded && <small>Without one, signing in from a new browser and confirming by email can't work.</small>}
+            {!email && loaded && <small>Without one, signing in from a new browser and confirming by email can’t work.</small>}
           </div>
-          <button onClick={() => setStep("address")}>{email ? "Change" : "Add"}</button>
+          <button type="button" onClick={() => setStep("address")}>{email ? "Change" : "Add"}</button>
         </div>
       )}
       {step === "address" && (
@@ -652,7 +650,7 @@ function ExportGroup({ api, creds, ring }: { api: ApiClient; creds: Credentials;
     >
       {error && <p className="error">{error}</p>}
       <div className="row">
-        <button onClick={() => void run()} disabled={busy}>
+        <button type="button" onClick={() => void run()} disabled={busy}>
           {busy ? `Decrypting… ${count}` : "Download history"}
         </button>
       </div>
@@ -710,7 +708,7 @@ function DeleteGroup({
     <Group title="Delete account" intro="Removes every clip, file and device, for good. Nobody can undo it, including us.">
       {!open ? (
         <div className="row">
-          <button className="danger" onClick={() => setOpen(true)}>
+          <button type="button" className="danger" onClick={() => setOpen(true)}>
             Delete account…
           </button>
         </div>
@@ -794,7 +792,7 @@ function PlanSection({ api }: { api: ApiClient }) {
                 <dt>History</dt>
                 <dd>
                   Text kept {days(plan.textTtlDays)}, images and files {days(plan.fileTtlDays)}. Pinned clips never
-                  expire.{!plan.files && " Files other than images don't sync on this plan."}
+                  expire.{!plan.files && " Files other than images don’t sync on this plan."}
                 </dd>
               </div>
             )}

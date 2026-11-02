@@ -74,7 +74,7 @@ export function JoinScreen({
     <form className="card" onSubmit={submit}>
       <h1>Join ClipSync</h1>
       <p className="muted">
-        This invite carries the key already — there is no passphrase to enter.
+        This invite carries the key already, so there is no passphrase to enter.
       </p>
 
       <label>
@@ -94,9 +94,9 @@ export function JoinScreen({
           onChange={(e) => setStayUnlocked(e.target.checked)}
         />
         <span>
-          Stay unlocked on this device
+          Keep ClipSync open on this device
           <em>
-            Needed for the share sheet. Anyone who can unlock this device can
+            Needed for the share sheet. Anyone who can get into this device can
             then read your clipboard history.
           </em>
         </span>
@@ -104,7 +104,7 @@ export function JoinScreen({
 
       {error && <p className="error">{error}</p>}
 
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {busy ? "Joining…" : "Join"}
       </button>
 

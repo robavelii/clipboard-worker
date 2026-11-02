@@ -64,11 +64,14 @@ export function LatestCard({
   return (
     <section className="latest" aria-label="Latest from your other devices">
       <div className="latesthead">
-        <span className="muted small">
-          Latest from {origin} · {ago(clip.createdAt)}
-        </span>
+        <div className="latestfrom">
+          <span className="small">Latest from {origin}</span>
+          <time className="measured small" dateTime={new Date(clip.createdAt).toISOString()}>
+            {ago(clip.createdAt)}
+          </time>
+        </div>
         {canCopy(clip) && (
-          <button className="primary" onClick={copy}>
+          <button type="button" className="primary" onClick={copy}>
             {done ? (done.ok ? "Copied" : "Copy failed") : "Copy"}
           </button>
         )}

@@ -71,7 +71,7 @@ export function Compose({
       if (err instanceof ApiRequestError && err.code === STALE_EPOCH_ERROR) {
         // Nothing is lost; once the new key is in, sending works.
         await onStale();
-        setError("The vault was re-keyed — send it again.");
+        setError("Your clipboard was re-keyed. Send it again.");
       } else if (err instanceof ApiRequestError && err.code === R2_BUDGET_ERROR) {
         setError(err.message);
       } else {
@@ -157,7 +157,8 @@ export function Compose({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onPaste={onPaste}
-          placeholder="Paste here to send to your other devices… or drop a file"
+          placeholder="Paste or type here to send it to your other devices"
+          aria-label="Send to your devices"
           rows={2}
           onKeyDown={(e) => {
             // Enter sends; Shift+Enter keeps a newline, as everywhere else.
@@ -169,7 +170,7 @@ export function Compose({
             <span className="error">{error}</span>
           ) : (
             <span className="muted small">
-              {busy ?? (justSent ? "Sent to your devices" : "Enter to send")}
+              {busy ?? (justSent ? "Sent to your devices" : "Enter sends, Shift+Enter adds a line. Drop a file to send it.")}
             </span>
           )}
           <label className={busy ? "attach disabled" : "attach"}>
@@ -184,7 +185,7 @@ export function Compose({
               }}
             />
           </label>
-          <button type="submit" disabled={!text.trim() || Boolean(busy)}>
+          <button type="submit" className="send" disabled={!text.trim() || Boolean(busy)}>
             {busy === "Sending…" ? "Sending…" : "Send"}
           </button>
         </div>
@@ -196,10 +197,10 @@ export function Compose({
             <span className={error ? "error" : "muted small"}>{error ?? busy}</span>
           ) : null}
           <div className="dockbar">
-            <button className="primary" onClick={pasteFromClipboard} disabled={Boolean(busy)}>
+            <button type="button" className="primary" onClick={pasteFromClipboard} disabled={Boolean(busy)}>
               Paste to ClipSync
             </button>
-            <button className="link" onClick={() => setDocked(false)}>
+            <button type="button" className="link" onClick={() => setDocked(false)}>
               Not now
             </button>
           </div>

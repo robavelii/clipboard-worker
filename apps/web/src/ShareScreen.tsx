@@ -145,7 +145,7 @@ export function ShareScreen({
 
   async function unlock(event: FormEvent) {
     event.preventDefault();
-    setState({ phase: "saving", label: "Unlocking…" });
+    setState({ phase: "saving", label: "Opening…" });
     let ring: VaultRing;
     try {
       ring = await unlockWithPassphrase(
@@ -156,7 +156,7 @@ export function ShareScreen({
         true, // sharing opens a new tab each time; stay unlocked or it is unusable
       );
     } catch {
-      setState({ phase: "error", message: "That passphrase did not unlock this account." });
+      setState({ phase: "error", message: "That passphrase did not open this account." });
       return;
     }
     await save(ring);
@@ -172,7 +172,7 @@ export function ShareScreen({
   if (state.phase === "locked") {
     return (
       <form className="card" onSubmit={unlock}>
-        <h1>Unlock to save</h1>
+        <h1>Enter your passphrase to save this</h1>
         {preview}
         <label>
           Passphrase
@@ -185,10 +185,9 @@ export function ShareScreen({
           />
         </label>
         <p className="muted small">
-          This device will stay unlocked afterwards, so sharing does not ask
-          again.
+          This device stays open afterwards, so sharing does not ask again.
         </p>
-        <button type="submit">Unlock and save</button>
+        <button type="submit" className="primary">Save it</button>
         {pendingId !== null && (
           <button type="button" className="link" onClick={discard}>
             Discard
@@ -221,7 +220,7 @@ export function ShareScreen({
 
       {state.phase === "error" && shared && (
         <div className="row">
-          <button
+          <button type="button"
             onClick={() => {
               const ring = cachedRing();
               if (ring) void save(ring);
@@ -231,7 +230,7 @@ export function ShareScreen({
             Try again
           </button>
           {pendingId !== null && (
-            <button className="link" onClick={discard}>
+            <button type="button" className="link" onClick={discard}>
               Discard
             </button>
           )}
@@ -239,7 +238,7 @@ export function ShareScreen({
       )}
 
       {state.phase !== "saving" && state.phase !== "loading" && (
-        <button onClick={onDone}>Open ClipSync</button>
+        <button type="button" onClick={onDone}>Open ClipSync</button>
       )}
     </div>
   );

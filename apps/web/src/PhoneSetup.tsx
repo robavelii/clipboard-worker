@@ -103,7 +103,7 @@ export function PhoneSetup({ onClose }: { onClose: () => void }) {
       <p className="muted small">
         The Shortcut sends text only. It opens Safari, which keeps its own
         storage apart from the Home Screen app: pair ClipSync in Safari too, and
-        unlock it once. The text travels in the part of the address after{" "}
+        enter the passphrase there once. The text travels in the part of the address after{" "}
         <code>#</code>, which browsers never send to a server.
       </p>
       <ul>
@@ -117,7 +117,7 @@ export function PhoneSetup({ onClose }: { onClose: () => void }) {
         </li>
       </ul>
 
-      <button onClick={onClose}>Back to ClipSync</button>
+      <button type="button" onClick={onClose}>Back to ClipSync</button>
     </article>
   );
 }

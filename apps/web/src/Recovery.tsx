@@ -103,7 +103,7 @@ export function RecoveryPanel({
       {!embedded && (
         <div className="panelhead">
           <h2>Recovery key</h2>
-          <button className="link" onClick={onClose}>
+          <button type="button" className="link" onClick={onClose}>
             close
           </button>
         </div>
@@ -115,7 +115,7 @@ export function RecoveryPanel({
 
       {status && !has && (
         <p>
-          <strong>None.</strong> If you forget the passphrase and lose every device, nothing can open your clips —
+          <strong>None.</strong> If you forget the passphrase and lose every device, nothing can open your clips,
           not even the server. A recovery key is the way back in.
         </p>
       )}
@@ -133,11 +133,11 @@ export function RecoveryPanel({
 
       {status && action === null && (
         <div className="row">
-          <button className={has && !behind ? undefined : "primary"} onClick={() => setAction("make")}>
+          <button type="button" className={has && !behind ? undefined : "primary"} onClick={() => setAction("make")}>
             {has ? "Make a new one" : "Make a recovery key"}
           </button>
           {has && (
-            <button className="danger" onClick={() => setAction("remove")}>
+            <button type="button" className="danger" onClick={() => setAction("remove")}>
               Remove
             </button>
           )}
@@ -158,7 +158,7 @@ export function RecoveryPanel({
             />
           </label>
           <p className="muted small">
-            A browser joined by link or QR code never learned it, but it is still the account's passphrase. The
+            A browser joined by link or QR code never learned it, but it is still the account’s passphrase. The
             CLI does the same: <code>clipsync recovery new</code>.
           </p>
           {error && <p className="error">{error}</p>}

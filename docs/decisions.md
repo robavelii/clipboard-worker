@@ -1783,3 +1783,35 @@ Traps:
 - The recovery key still works after a recovery. The CLI says so and
   suggests `clipsync recovery new`; it isn't rotated automatically, because
   the person recovering may have no safe place to write a new one yet.
+
+## 49. The web app is a clipboard history, not a page of cards
+
+The workspace used to be a stack of cards, one per clip, each carrying its
+own Pin, Copy and Delete. It read like a feed. People use a clipboard
+manager by scanning a list and acting on the one entry they want. So the
+history is now a ledger beside the open clip: a list of copies (the first
+lines, the time, which device) and, on a wide screen, a pane with the whole
+clip, its facts and its actions. On a phone the clip opens in place under
+its row. The keyboard works it as a clipboard tool does: arrows or j/k,
+Enter or c to copy, p to pin, Delete, and / to search.
+
+What it costs:
+- **Delete is undoable rather than instant.** The row disappears at once,
+  and the request goes to the server after six seconds, or straight away if
+  the screen is left. A clip deleted on another device within those
+  seconds simply wins. Confirming every delete was the alternative, and it
+  makes the most common clean-up the slowest action in the app.
+- **One look, self-hosted.** The theme (Console: graphite with a paper
+  colourway for light mode, Host Grotesk for what a person reads,
+  Atkinson Hyperlegible Mono for what was copied and when) is set in
+  `tokens.css`, and every colour and face goes through it. The fonts come
+  from `@fontsource` packages, bundled by Vite, because the CSP allows
+  nothing but this origin. A Google Fonts link would have meant loosening
+  `style-src` and `font-src` for a typeface.
+- **The enrol screen leads with Sign in.** Pairing with a code came first
+  when there was one account per server. With accounts, a new visitor
+  either signs in or makes an account, and pairing is the fallback.
+
+Trap: keyboard shortcuts must ignore keys typed into a field, and any key
+pressed with a modifier, or `c` and `p` land in the paste box. `ignoreKey`
+in `History.tsx` is that check, and the same rule guards `/` in `App.tsx`.
