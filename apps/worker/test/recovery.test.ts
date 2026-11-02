@@ -7,7 +7,7 @@
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { authHashOf, generateRecoveryKey, openVault, recoveryProofOf, unwrapVaultKey } from "@clipsync/crypto";
+import { authHashOf, generateRecoveryKey, openVault, recoveryProofOf, toBase64Url, unwrapVaultKey } from "@clipsync/crypto";
 import { ApiClient, ApiRequestError } from "@clipsync/client";
 import { signIn, signUp } from "@clipsync/client/account";
 import { recoverAccount, setUpRecovery } from "@clipsync/client/recovery";
@@ -20,6 +20,8 @@ import { ADMIN_SECRET, api } from "./helpers";
 const BASE = "https://clip.test";
 const fetchImpl: typeof fetch = (input, init) => SELF.fetch(input as Request | string, init);
 const passphrase = () => `recovery test ${crypto.randomUUID()}`;
+/** A stand-in proof or hash, made here so no secret-like literal sits in the source. */
+const randomB64 = () => toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 
 async function invite(): Promise<string> {
   const res = await api("/api/signup/invites", { method: "POST", body: { adminSecret: ADMIN_SECRET } });
@@ -130,12 +132,12 @@ describe("the recovery key", () => {
       method: "PUT",
       token: credentials.token,
       body: {
-        authProof: "bm90LXRoZS1wcm9vZi1ub3QtdGhlLXByb29mLW5vdC10aGU",
+        authProof: randomB64(),
         publicKey: `B${"Q".repeat(86)}`,
         wrappedPrivateKey: "r1.aXY.Y3Q",
         sealed: "d1.cHVi.aXY.Y3Q",
         epoch: 0,
-        recoveryHash: "aGFzaC1oYXNoLWhhc2gtaGFzaC1oYXNoLWhhc2gtaGF",
+        recoveryHash: randomB64(),
       },
     });
     expect(forged.status).toBe(403);
