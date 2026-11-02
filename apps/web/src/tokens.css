@@ -21,6 +21,9 @@
   --tracking-display: -0.03em; --display-weight: 500;
 }
 
+/* A QR is dark on light in both colourways: some phone cameras miss an inverted code. */
+:root { --qr-paper: oklch(99% 0.003 85); --qr-ink: oklch(16% 0.01 250); }
+
 /* console: paper, the theme's light colourway, for a system set to light. Same meanings: amber a person, cool an instrument. */
 @media (prefers-color-scheme: light) {
   :root {

@@ -109,8 +109,8 @@ export function JoinScreen({
       </button>
 
       <p className="muted small">
-        Invites last five minutes and work once. If this fails, run{" "}
-        <code>clipsync invite</code> again.
+        A code lasts five minutes and works once. If this fails, make a new one where you scanned it: Add device in
+        ClipSync, or <code>clipsync invite</code>.
       </p>
     </form>
   );

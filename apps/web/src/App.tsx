@@ -24,6 +24,7 @@ import { Compose } from "./Compose";
 import { LatestCard, latestFromElsewhere } from "./Latest";
 import { PhoneSetup } from "./PhoneSetup";
 import { Checklist } from "./Checklist";
+import { AddDevice } from "./AddDevice";
 import { History } from "./History";
 import { Settings, sectionFromPath, type Section } from "./Settings";
 import { isTouchFirst } from "./clipboard";
@@ -283,6 +284,7 @@ export function App() {
       token={creds.token}
       account={creds.userId}
       deviceId={creds.deviceId}
+      vaultKey={currentKey(ring)}
       stranded={stranded}
       onRefreshRing={refreshRing}
       onUnlockAgain={() => setNeedsPassphrase(true)}
@@ -317,6 +319,7 @@ function Workspace({
   token,
   account,
   deviceId,
+  vaultKey,
   stranded,
   onRefreshRing,
   onUnlockAgain,
@@ -330,6 +333,8 @@ function Workspace({
   /** The user id envelopes are bound to. */
   account: string;
   deviceId: string;
+  /** The current vault key: what an invite seals for the phone that scans it. */
+  vaultKey: string;
   stranded: boolean;
   onRefreshRing: () => Promise<void>;
   onUnlockAgain: () => void;
@@ -377,8 +382,7 @@ function Workspace({
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [query, setQuery] = useState("");
-  const [pairCode, setPairCode] = useState<string | null>(null);
-  const [linkUrl, setLinkUrl] = useState("");
+  const [adding, setAdding] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
 
   const refreshDevices = useCallback(() => {
@@ -441,7 +445,10 @@ function Workspace({
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  const addDevice = () => void api.pairCode().then((r) => setPairCode(r.code)).catch(() => {});
+  const addDevice = () => {
+    setAdding(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const state =
     status === "online"
       ? { cls: "live", text: `${online} of ${devices.length} device${devices.length === 1 ? "" : "s"} online` }
@@ -500,48 +507,7 @@ function Workspace({
         onStale={onRefreshRing}
       />
 
-      {pairCode !== null && (
-        <section className="notice" aria-label="Add a device">
-          <h2>Add a device</h2>
-          <p>
-            On the new device, run <code>clipsync link</code> and paste the link it prints here. It never needs the
-            passphrase.
-          </p>
-          <form
-            className="linkform"
-            onSubmit={(e) => {
-              e.preventDefault();
-              try {
-                const url = new URL(linkUrl.trim());
-                window.location.href = `/link${url.hash}`;
-              } catch {
-                /* ignore malformed input; the field stays put */
-              }
-            }}
-          >
-            <label htmlFor="link-url" className="visually-hidden">
-              Link from clipsync link
-            </label>
-            <input
-              id="link-url"
-              value={linkUrl}
-              onChange={(e) => setLinkUrl(e.target.value)}
-              placeholder="https://clip.rfh.et/link#…"
-            />
-            <button type="submit">Open</button>
-          </form>
-          <p className="muted small">
-            Or type this pairing code there; that device will then ask for the passphrase. It works once, for 10
-            minutes.
-          </p>
-          <p className="code measured">{pairCode}</p>
-          <div className="row">
-            <button type="button" className="link" onClick={() => setPairCode(null)}>
-              Done
-            </button>
-          </div>
-        </section>
-      )}
+      {adding && <AddDevice api={api} vaultKey={vaultKey} devices={devices} onClose={() => setAdding(false)} />}
 
       {stranded && (
         <section className="notice bad" aria-label="This browser missed a re-key">

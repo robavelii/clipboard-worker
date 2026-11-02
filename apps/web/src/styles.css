@@ -520,3 +520,20 @@ meter { width: 100%; max-width: 420px; height: 8px; }
   .settings-nav button { flex: none; }
   .group { padding: var(--space-md); }
 }
+
+/* ---------- Adding a device: the QR first ---------- */
+.adddevice-body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-lg); align-items: center; }
+.adddevice-text { display: flex; flex-direction: column; gap: var(--space-sm); max-width: 46ch; }
+.qrbox { padding: var(--space-xs); border-radius: var(--radius-card); background: var(--qr-paper); border: var(--rule-hair) solid var(--color-rule); }
+.qr { display: block; width: 208px; height: 208px; max-width: 100%; }
+.qr-paper { fill: var(--qr-paper); }
+.qr-ink { fill: var(--qr-ink); }
+.qr-wait { background: var(--qr-paper); }
+.other-ways { border-top: var(--rule-hair) solid var(--color-rule); padding-top: var(--space-sm); }
+.other-ways summary { cursor: pointer; color: var(--color-ink-2); font-size: var(--text-sm); font-weight: 500; }
+.other-ways summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.other-ways .stack { margin-top: var(--space-sm); }
+@media (max-width: 40rem) {
+  .adddevice-body { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; }
+  .adddevice-text .row { justify-content: center; }
+}
