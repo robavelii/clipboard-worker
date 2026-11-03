@@ -76,10 +76,10 @@ Secrets, set with `npx wrangler secret put <name> --config apps/worker/wrangler.
 
 ## Deploying from CI
 
-The repository's CI deploys every push to `main` that passes its checks: it
-applies new migrations to the production database, deploys the Worker, then
-checks that it answers. It needs two repository secrets (**Settings → Secrets
-and variables → Actions**):
+To deploy every push to `main`, add a job to your fork's CI that runs, after
+the checks pass, `npm run db:migrate` and then `npm run deploy`, the order the
+section above uses. It needs two repository secrets (**Settings → Secrets and
+variables → Actions**):
 
 - `CLOUDFLARE_API_TOKEN`: a token from the **Edit Cloudflare Workers** template,
   plus **Account → D1 → Edit** for migrations and **Zone → Workers Routes →
@@ -87,8 +87,9 @@ and variables → Actions**):
 - `CLOUDFLARE_ACCOUNT_ID`: from the dashboard's Workers & Pages sidebar, or
   `npx wrangler whoami`.
 
-Deploys on `main` queue rather than cancel each other, so one is never cut off
-between its migration and the deploy itself.
+Make deploys on `main` queue rather than cancel each other (a `concurrency`
+group with `cancel-in-progress: false`), so one is never cut off between its
+migration and the deploy itself.
 
 > [!IMPORTANT]
 > Migrations run while the old Worker is still live, so a migration must only
