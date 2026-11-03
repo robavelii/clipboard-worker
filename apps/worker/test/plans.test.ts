@@ -80,6 +80,37 @@ describe("plans", () => {
     expect(file.status).toBe(403);
   });
 
+  it("caps pins on a plan that sets one, and never refuses an unpin or a repeat", async () => {
+    const owner = await bootstrap("owner");
+    await onPlan(owner, "free");
+    await env.DB.prepare("UPDATE plans SET max_pins = 2 WHERE name = 'free'").run();
+    const ids: string[] = [];
+    for (const n of [1, 2, 3]) {
+      const res = await api("/api/clips", {
+        method: "POST",
+        token: owner.token,
+        body: { type: "text", envelope: v2Envelope(owner.deviceId), contentHash: `pin-${n}`, size: 1, keyEpoch: 0 },
+      });
+      ids.push(((await res.json()) as { id: string }).id);
+    }
+    const pin = (id: string, pinned = true) => api(`/api/clips/${id}/pin`, { method: "POST", token: owner.token, body: { pinned } });
+
+    expect((await pin(ids[0]!)).status).toBe(200);
+    expect((await pin(ids[1]!)).status).toBe(200);
+    expect((await pin(ids[1]!)).status).toBe(200); // already pinned
+    const third = await pin(ids[2]!);
+    expect(third.status).toBe(403);
+    expect(((await third.json()) as { message: string }).message).toMatch(/keeps 2 pinned clips/);
+    expect(((await (await api(`/api/clips/${ids[2]}`, { token: owner.token })).json()) as Clip).pinned).toBe(false);
+
+    expect((await pin(ids[0]!, false)).status).toBe(200);
+    expect((await pin(ids[2]!)).status).toBe(200);
+    expect((await pin("clip_missing")).status).toBe(404);
+
+    const plan = (await (await api("/api/account/plan", { token: owner.token })).json()) as { maxPins: number; pins: number };
+    expect(plan).toMatchObject({ maxPins: 2, pins: 2 });
+  });
+
   it("refuses a file at reservation, before the upload, when the client says what it is for", async () => {
     const owner = await bootstrap("owner");
     await onPlan(owner, "free");

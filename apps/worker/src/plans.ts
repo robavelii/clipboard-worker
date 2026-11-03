@@ -17,11 +17,13 @@ export interface Plan {
   storageBytes: number | null;
   classA: number | null;
   classB: number | null;
+  /** Clips that may be pinned at once; null: no cap. */
+  maxPins: number | null;
 }
 
 /** The plan columns, for a query that joins `users u` to `plans p`. */
 export const PLAN_COLUMNS = `u.plan AS plan_name, p.name AS plan_found, p.max_devices, p.text_ttl_days,
-  p.file_ttl_days, p.files, p.storage_bytes, p.class_a, p.class_b`;
+  p.file_ttl_days, p.files, p.storage_bytes, p.class_a, p.class_b, p.max_pins`;
 
 export interface PlanRow {
   plan_name: string;
@@ -33,6 +35,7 @@ export interface PlanRow {
   storage_bytes: number | null;
   class_a: number | null;
   class_b: number | null;
+  max_pins: number | null;
 }
 
 /**
@@ -52,5 +55,6 @@ export function planFromRow(row: PlanRow): Plan {
     storageBytes: row.storage_bytes,
     classA: row.class_a,
     classB: row.class_b,
+    maxPins: row.max_pins,
   };
 }

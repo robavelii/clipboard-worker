@@ -32,7 +32,7 @@ beforeEach(async () => {
   // Plans are seeded by migration; a test that changed one puts it back.
   await env.DB.prepare(
     `UPDATE plans SET max_devices = 3, text_ttl_days = 7, file_ttl_days = 7, files = 0,
-            storage_bytes = 52428800, class_a = 2000, class_b = 20000 WHERE name = 'free'`,
+            storage_bytes = 52428800, class_a = 2000, class_b = 20000, max_pins = NULL WHERE name = 'free'`,
   ).run();
   // R2 persists across tests the same way.
   const { objects } = await env.BLOBS.list();

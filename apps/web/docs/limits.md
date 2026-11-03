@@ -31,17 +31,30 @@ with duplicates.
 
 ## Plans
 
-Each account has a plan. The hosted service gives new accounts **free**:
+Each account has a plan: a row in the `plans` table that can set limits of
+its own inside the server's budgets. A plan can limit:
 
-| | Free | Unlimited |
-| --- | --- | --- |
-| Devices | 3 | no limit |
-| Text kept for | 7 days | 30 days |
-| Images and files kept for | 7 days | 7 days |
-| Files other than images | no | yes |
-| File storage held | 50 MB | the server's limit |
-| Uploads a month | 2,000 | the server's limit |
-| Downloads a month | 20,000 | the server's limit |
+| Limit | Column |
+| --- | --- |
+| Devices | `max_devices` |
+| How long unpinned text is kept | `text_ttl_days` (default 30) |
+| How long unpinned images and files are kept | `file_ttl_days` (default 7) |
+| Whether files other than images sync | `files` |
+| Pinned clips at once | `max_pins` |
+| Bytes of files held | `storage_bytes` |
+| Uploads and downloads a month | `class_a`, `class_b` |
+
+An empty column means no limit of the plan's own. A server starts with
+`unlimited`, which sets none, and `free`. New signups get the plan named by
+`SIGNUP_PLAN` (`CLIPSYNC_SIGNUP_PLAN` for `clipsync serve`). The hosted
+service at [clip.rfh.et](https://clip.rfh.et) sets its own numbers; its
+[pricing page](https://clip.rfh.et/pricing) lists them.
+
+A clip keeps the expiry it was written with: moving to another plan changes
+how long new clips live, not old ones. Pinned clips never expire, which is
+why a plan with short history can also cap how many are pinned; unpin one to
+pin another. A device past the plan's limit keeps working, but no new one can
+join until one is removed.
 
 **Settings → Plan** in the web app shows yours, with how much of each you have
 used this month. `clipsync status` shows the server's budgets.

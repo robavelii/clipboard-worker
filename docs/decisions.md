@@ -1967,3 +1967,46 @@ the app shell. It now looks for `<path>.html` and `<path>/index.html` too.
 Without redirects it doesn't match Cloudflare exactly (`/docs` is served
 rather than redirected to `/docs/`), but the pages' links are absolute, so
 the difference doesn't matter.
+
+## 54. The hosted service lives in a private repository
+
+Billing was about to go into this repository with the hosted service's
+plan numbers, its legal pages and its production config. They are the
+hosted service's business, not the product's: a self-hoster needs none of
+them, and the commercial side is the owner's to keep private.
+So the hosted service moved to a private repository,
+`robavelii/clipsync-cloud`, which builds on this one as a git submodule.
+This repository stays the whole product under the AGPL-3.0; the private one
+adds billing, the free and pro plan rows, production `wrangler.jsonc`, the
+pricing and policy pages, and the production deploy.
+
+Choices:
+- **No plugin system.** The private Worker entry imports `app` and adds its
+  routes (`/api/billing/*`) before the first request; Hono applies the
+  `/api/*` middleware registered before them, `agentGate` included. Its
+  `scheduled` wraps `purgeExpired` with its own work. Nothing here had to
+  change to allow it.
+- **Mechanisms here, numbers there.** Plans, their limits and how they are
+  enforced stay here, because a self-hoster may want them too. The rows a
+  hosted service sells are migrations in the private repository, numbered
+  from 1000 so they sort after this one's and apply on top of them.
+- **Site pages by directory.** `build-docs.mjs` renders extra pages from
+  `SITE_DIR` beside the docs, under the same CSP, and lists them in
+  `/site-pages.json`; the sign-in screen links whatever that lists. A
+  server built from this repository alone lists none.
+- **The alternatives.** Keeping billing public (Plausible's way) costs
+  nothing but publishes the commercial side; an `ee/` folder under another
+  licence keeps it visible. A separate fork would drift.
+
+Plans can now cap pinned clips (`plans.max_pins`, NULL for no cap), because
+pinned clips never expire and a plan with short history means nothing if
+everything can be pinned. The cap is checked in the same `UPDATE` that pins,
+counting the account's pins in a subquery, so two pins at once can't both
+take the last place, as `createDevice` does for devices. Unpinning, and
+pinning a clip that is already pinned, are never refused, so an account over
+the cap can always get back under it.
+
+Trap: the owner holds the copyright, so private additions to the owner's own
+AGPL code may stay private. Code from other contributors is AGPL to the owner too:
+before accepting outside contributions, ask for a contributor licence
+agreement, or that code can't go into the private build.

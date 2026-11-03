@@ -14,7 +14,7 @@
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Marked } from "marked";
 import hljs from "highlight.js/lib/core";
@@ -176,6 +176,7 @@ const pages = order.map(({ slug, section }) => {
   return { slug, section, meta, ...render(slug, body) };
 });
 
+function checkLinks() {
 for (const [from, target, anchor] of links) {
   const page = pages.find((p) => p.slug === target);
   if (!page) throw new Error(`docs/${from}.md links to ${target}.md, which does not exist`);
@@ -183,8 +184,12 @@ for (const [from, target, anchor] of links) {
     throw new Error(`docs/${from}.md links to ${target}.md#${anchor}, which has no such heading`);
   }
 }
+}
 
 // ---------- the layout ----------
+
+/** Links to the site pages (below), in every page's foot; empty when there are none. */
+let legalLinks = "";
 
 function sidebar(current) {
   const sections = nav
@@ -263,10 +268,91 @@ ${page.html}
     </div>
     <footer class="page-foot">
       <a href="${REPO}/edit/main/apps/web/docs/${page.slug}.md" rel="noopener">Edit this page on GitHub</a>
+      ${legalLinks}
     </footer>
     ${pager(index)}
   </main>
   ${toc(page.headings)}
+</div>
+</body>
+</html>
+`;
+}
+
+// ---------- site pages: an operator's own pages, at /<slug> ----------
+
+/*
+ * A hosted service adds pages beside the docs (pricing and policies, say)
+ * from its own directory, named by SITE_DIR: Markdown with the docs' front
+ * matter, rendered here without the sidebar, under the same CSP. Values that
+ * differ per operator live in that directory's site.json and fill {{key}}
+ * placeholders. This repository has none; a self-hosted server serves only
+ * the app and the docs.
+ */
+const siteSource = process.env.SITE_DIR ? resolve(process.env.SITE_DIR) : null;
+const siteInfo = siteSource ? JSON.parse(readFileSync(join(siteSource, "site.json"), "utf8")) : {};
+const siteName = siteInfo.tradingName ?? "ClipSync";
+const fill = (text, file) =>
+  text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    if (!(key in siteInfo)) throw new Error(`${file} uses {{${key}}}, which site.json does not define`);
+    return siteInfo[key];
+  });
+const sitePages = (siteSource ? readdirSync(siteSource) : [])
+  .filter((f) => f.endsWith(".md"))
+  .map((file) => {
+    const slug = file.slice(0, -3);
+    if (pages.some((p) => p.slug === slug) || ["docs", "api", "index"].includes(slug)) {
+      throw new Error(`${file} would shadow /${slug}`);
+    }
+    const { meta, body } = frontMatter(fill(readFileSync(join(siteSource, file), "utf8").replace(/\r\n?/g, "\n"), file), file);
+    return { slug, meta, ...render(slug, body) };
+  })
+  .sort((a, b) => Number(a.meta.order ?? 99) - Number(b.meta.order ?? 99));
+for (const [key, value] of Object.entries(siteInfo)) {
+  if (/TODO/.test(String(value))) console.warn(`site.json: ${key} is still a placeholder`);
+}
+if (sitePages.length) {
+  legalLinks = `<nav class="legal" aria-label="About this service">${sitePages
+    .map((p) => `<a href="/${p.slug}">${escapeHtml(p.meta.nav ?? p.meta.title)}</a>`)
+    .join("")}</nav>`;
+}
+// Docs links from the site pages too (a link from pricing.md to limits.md).
+checkLinks();
+
+function siteLayout(page) {
+  const description = page.meta.description ? `<meta name="description" content="${escapeHtml(page.meta.description)}" />` : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1d21" />
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f6f2" />
+<title>${escapeHtml(page.meta.title)} · ${escapeHtml(siteName)}</title>
+${description}
+<link rel="icon" href="/icon-192.png" />
+<link rel="stylesheet" href="/docs/docs.css" />
+</head>
+<body>
+<a class="skip" href="#content">Skip to the page</a>
+<header class="topbar">
+  <a class="brand" href="/">${escapeHtml(siteName)}</a>
+  <nav class="toplinks" aria-label="Elsewhere">
+    <a href="/docs/">Docs</a>
+    <a class="open-app" href="/">Open ${escapeHtml(siteName)}</a>
+  </nav>
+</header>
+<div class="shell single">
+  <main id="content" class="page">
+    <h1>${page.h1}</h1>
+    ${page.meta.description ? `<p class="lead">${escapeHtml(page.meta.description)}</p>` : ""}
+    ${page.meta.updated ? `<p class="updated">Last updated ${escapeHtml(page.meta.updated)}</p>` : ""}
+    <div class="prose">
+${page.html}
+    </div>
+    <footer class="page-foot">${legalLinks}</footer>
+  </main>
 </div>
 </body>
 </html>
@@ -279,6 +365,13 @@ mkdirSync(join(out, "fonts"), { recursive: true });
 pages.forEach((page, index) => {
   writeFileSync(join(out, page.slug === "index" ? "index.html" : `${page.slug}.html`), layout(page, index));
 });
+
+for (const page of sitePages) writeFileSync(join(here, "dist", `${page.slug}.html`), siteLayout(page));
+// The web app links the site pages from its sign-in screen when this lists any.
+writeFileSync(
+  join(here, "dist", "site-pages.json"),
+  JSON.stringify(sitePages.map((p) => ({ path: `/${p.slug}`, title: p.meta.nav ?? p.meta.title }))),
+);
 
 writeFileSync(
   join(out, "search.json"),
@@ -308,4 +401,4 @@ const css = [
 writeFileSync(join(out, "docs.css"), css);
 copyFileSync(join(here, "docs-assets", "docs.js"), join(out, "docs.js"));
 
-console.log(`docs: ${pages.length} pages, ${links.length} links checked → dist/docs/`);
+console.log(`docs: ${pages.length} pages, ${sitePages.length} site pages, ${links.length} links checked → dist/`);

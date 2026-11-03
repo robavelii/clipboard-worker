@@ -166,8 +166,11 @@ export function useClips(api: ApiClient, keys: RingKeys, account: string) {
       );
       try {
         await api.pinClip(id, pinned);
-      } catch {
-        void load();
+      } catch (err) {
+        // A plan's pin cap, say: put the list back, then say why (a
+        // successful load clears the error, so it is set after).
+        await load();
+        setError(err instanceof Error ? err.message : String(err));
       }
     },
     [api, load],
