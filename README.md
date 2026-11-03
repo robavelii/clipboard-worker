@@ -112,3 +112,9 @@ apps/desktop        the Tauri tray panel
 
 More in [Development](apps/web/docs/development.md). Why each part works the
 way it does is in [`docs/decisions.md`](docs/decisions.md).
+
+## Licence
+
+[AGPL-3.0](LICENSE). Run it, change it and self-host it freely; if you offer a
+changed version to others over a network, publish your changes under the same
+licence.

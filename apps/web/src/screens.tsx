@@ -62,8 +62,39 @@ export function EnrolScreen({ onEnrolled }: { onEnrolled: () => void }) {
           {" · "}
           <a href="/docs/">How ClipSync works</a>
         </p>
+        <SitePages />
       </div>
     </div>
+  );
+}
+
+/**
+ * The operator's own pages (pricing, terms, privacy), when the build added
+ * any: build-docs.mjs lists them in /site-pages.json, empty for a server
+ * built from this repository alone.
+ */
+function SitePages() {
+  const [links, setLinks] = useState<{ path: string; title: string }[]>([]);
+  useEffect(() => {
+    fetch("/site-pages.json")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((list: unknown) => {
+        if (!Array.isArray(list)) return;
+        // Same-origin paths only, so a bad list can't point the page anywhere else.
+        setLinks(list.filter((l): l is { path: string; title: string } => typeof l?.path === "string" && /^\/[a-z0-9-]+$/.test(l.path) && typeof l.title === "string"));
+      })
+      .catch(() => setLinks([]));
+  }, []);
+  if (!links.length) return null;
+  return (
+    <p className="small muted site-links">
+      {links.map((l, i) => (
+        <span key={l.path}>
+          {i > 0 && " · "}
+          <a href={l.path}>{l.title}</a>
+        </span>
+      ))}
+    </p>
   );
 }
 

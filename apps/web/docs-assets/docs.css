@@ -116,6 +116,12 @@ kbd { font-family: var(--font-outlier); font-size: var(--text-xs); padding: 1px 
 .callout.warning { border-left-color: var(--color-bad); background: var(--color-bad-soft); }
 .callout.warning .callout-title { color: var(--color-bad); }
 
+/* ---------- site pages: one column ---------- */
+.shell.single { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
+.updated { margin-top: var(--space-xs); font-size: var(--text-sm); color: var(--color-muted); }
+.legal { display: flex; flex-wrap: wrap; gap: var(--space-md); margin-top: var(--space-sm); }
+.page-foot .legal a { color: var(--color-muted); }
+
 /* ---------- foot ---------- */
 .page-foot { margin-top: var(--space-2xl); font-size: var(--text-sm); }
 .page-foot a { color: var(--color-muted); }

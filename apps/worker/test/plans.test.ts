@@ -52,14 +52,15 @@ describe("plans", () => {
   it("caps devices, and frees a place when one is revoked", async () => {
     const owner = await bootstrap("owner");
     await onPlan(owner, "free");
-    const second = (await (await pairDevice(owner, "second")).json()) as Credentials;
+    expect((await pairDevice(owner, "second")).status).toBe(200);
+    const third = (await (await pairDevice(owner, "third")).json()) as Credentials;
 
-    const third = await pairDevice(owner, "third");
-    expect(third.status).toBe(403);
-    expect(((await third.json()) as { message: string }).message).toMatch(/no room for another device/);
+    const fourth = await pairDevice(owner, "fourth");
+    expect(fourth.status).toBe(403);
+    expect(((await fourth.json()) as { message: string }).message).toMatch(/no room for another device/);
 
-    expect((await api(`/api/devices/${second.deviceId}`, { method: "DELETE", token: owner.token })).status).toBe(200);
-    expect((await pairDevice(owner, "third")).status).toBe(200);
+    expect((await api(`/api/devices/${third.deviceId}`, { method: "DELETE", token: owner.token })).status).toBe(200);
+    expect((await pairDevice(owner, "fourth")).status).toBe(200);
   });
 
   it("keeps clips for the plan's days, and syncs images but not other files", async () => {
@@ -72,25 +73,11 @@ describe("plans", () => {
     });
     const { id } = (await text.json()) as { id: string };
     const clip = (await (await api(`/api/clips/${id}`, { token: owner.token })).json()) as Clip;
-    expect((clip.expiresAt! - clip.createdAt) / 86_400_000).toBe(3);
+    expect((clip.expiresAt! - clip.createdAt) / 86_400_000).toBe(7);
 
     expect((await fileClip(owner, "image", [100])).status).toBe(200);
     const file = await fileClip(owner, "file", [100]);
     expect(file.status).toBe(403);
-  });
-
-  it("sells Pro: longer history, every file type, no pin cap", async () => {
-    const owner = await bootstrap("owner");
-    await onPlan(owner, "pro");
-    const text = await api("/api/clips", {
-      method: "POST",
-      token: owner.token,
-      body: { type: "text", envelope: v2Envelope(owner.deviceId), contentHash: "t", size: 1, keyEpoch: 0 },
-    });
-    const { id } = (await text.json()) as { id: string };
-    const clip = (await (await api(`/api/clips/${id}`, { token: owner.token })).json()) as Clip;
-    expect((clip.expiresAt! - clip.createdAt) / 86_400_000).toBe(90);
-    expect((await fileClip(owner, "file", [100])).status).toBe(200);
   });
 
   it("caps pins on a plan that sets one, and never refuses an unpin or a repeat", async () => {
@@ -119,6 +106,9 @@ describe("plans", () => {
     expect((await pin(ids[0]!, false)).status).toBe(200);
     expect((await pin(ids[2]!)).status).toBe(200);
     expect((await pin("clip_missing")).status).toBe(404);
+
+    const plan = (await (await api("/api/account/plan", { token: owner.token })).json()) as { maxPins: number; pins: number };
+    expect(plan).toMatchObject({ maxPins: 2, pins: 2 });
   });
 
   it("refuses a file at reservation, before the upload, when the client says what it is for", async () => {

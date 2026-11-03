@@ -31,27 +31,28 @@ with duplicates.
 
 ## Plans
 
-Each account has a plan. The hosted service gives new accounts **free**, a
-trial you can keep: one computer and one phone, with a short memory. **Pro**
-is the paid plan.
+Each account has a plan: a row in the `plans` table that can set limits of
+its own inside the server's budgets. A plan can limit:
 
-| | Free | Pro | Unlimited |
-| --- | --- | --- | --- |
-| Devices | 2 | 10 | no limit |
-| Text kept for | 3 days | 90 days | 30 days |
-| Images and files kept for | 1 day | 30 days | 7 days |
-| Files other than images | no | yes | yes |
-| Pinned clips | 10 | no limit | no limit |
-| File storage held | 10 MB | 2 GB | the server's limit |
-| Uploads a month | 500 | 20,000 | the server's limit |
-| Downloads a month | 5,000 | 200,000 | the server's limit |
+| Limit | Column |
+| --- | --- |
+| Devices | `max_devices` |
+| How long unpinned text is kept | `text_ttl_days` (default 30) |
+| How long unpinned images and files are kept | `file_ttl_days` (default 7) |
+| Whether files other than images sync | `files` |
+| Pinned clips at once | `max_pins` |
+| Bytes of files held | `storage_bytes` |
+| Uploads and downloads a month | `class_a`, `class_b` |
 
-`unlimited` is what accounts made before plans existed keep, and what a
-self-hosted server's first account gets.
+An empty column means no limit of the plan's own. A server starts with
+`unlimited`, which sets none, and `free`. New signups get the plan named by
+`SIGNUP_PLAN` (`CLIPSYNC_SIGNUP_PLAN` for `clipsync serve`). The hosted
+service at [clip.rfh.et](https://clip.rfh.et) sets its own numbers; its
+[pricing page](https://clip.rfh.et/pricing) lists them.
 
 A clip keeps the expiry it was written with: moving to another plan changes
 how long new clips live, not old ones. Pinned clips never expire, which is
-why a plan with short history also caps how many can be pinned; unpin one to
+why a plan with short history can also cap how many are pinned; unpin one to
 pin another. A device past the plan's limit keeps working, but no new one can
 join until one is removed.
 
