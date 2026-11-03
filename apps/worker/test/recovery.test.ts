@@ -63,6 +63,8 @@ describe("the recovery key", () => {
 
   it("resets a forgotten passphrase, keeping the vault key and the other devices", async () => {
     const { email, pass, credentials, recoveryKey, vaultKey } = await newAccount();
+    // Three devices end up enrolled; that is more than the free plan allows.
+    await env.DB.prepare("UPDATE users SET plan = 'unlimited' WHERE id = ?").bind(credentials.userId).run();
     const fresh = passphrase();
 
     const recovered = await recoverAccount({

@@ -1967,3 +1967,37 @@ the app shell. It now looks for `<path>.html` and `<path>/index.html` too.
 Without redirects it doesn't match Cloudflare exactly (`/docs` is served
 rather than redirected to `/docs/`), but the pages' links are absolute, so
 the difference doesn't matter.
+
+## 54. Free is a trial; Pro is what's sold
+
+Signup gave accounts `free` (§44): 3 devices, 7 days of history, 50 MB.
+That was generous enough that most people would never pay, and the plan
+for billing optimises for paying accounts. Free is now a trial you can
+keep: 2 devices (a computer and a phone), 3 days of text, 1 day of images,
+no other files, 10 MB, 500 uploads and 5,000 downloads a month, and 10
+pinned clips. `pro` is a new row: 10 devices, 90 days of text, 30 of
+images and files, every file type, 2 GB, 20,000 uploads and 200,000
+downloads, no pin cap. A free account at its limits costs under a cent a
+month in R2; a Pro one about $0.20.
+
+Choices:
+- **A pin cap, because pins don't expire.** Short history means nothing if
+  every clip can be pinned. `plans.max_pins` (NULL: none) is checked in the
+  same `UPDATE` that pins, counting the account's pins in a subquery, so
+  two pins at once can't both take the last place, as `createDevice` does
+  for devices. Unpinning, and pinning a clip that is already pinned, are
+  never refused, so an account over the cap can always get back under it.
+- **Nothing retroactive.** A clip's expiry is fixed when it is written
+  (`expiryFor`), and the migration changes only the plan rows, so clips
+  already stored keep their expiry and drain away within a week. A device
+  past the new cap keeps working; only new enrolments are refused. That
+  avoids a notice period and a one-off purge. The same rule means an
+  account that upgrades keeps short expiries on its old clips; billing
+  re-dates them when the plan changes (§55).
+- **Numbers in the table, not the code.** Every limit is a column, so a
+  price test or a promotion is one `UPDATE`, with no deploy.
+
+Trap: the global R2 storage budget (`R2_STORAGE_BUDGET_BYTES`, 5 GiB) is
+shared, so three Pro accounts at 2 GB would reach it and be refused before
+their own limit. Raise it as paying accounts grow: R2 storage past the free
+10 GB costs $0.015 per GB-month.

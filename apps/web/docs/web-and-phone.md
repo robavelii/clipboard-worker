@@ -31,7 +31,7 @@ expire.
   the server has nothing it could search.
 - **Filters** narrow the list to pinned clips, images and files, or what this
   device copied.
-- **Pin** a clip to keep it. Pinned clips never expire.
+- **Pin** a clip to keep it. Pinned clips never expire; the free plan keeps up to 10.
 - **Delete** removes it everywhere; **Undo** brings it back for six seconds.
 - **Open link** opens a clip that is a single link in a new tab. Links inside
   longer clips are clickable too. Only `http` and `https` links are: a copied

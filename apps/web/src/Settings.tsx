@@ -805,6 +805,7 @@ function PlanSection({ api }: { api: ApiClient }) {
                   <dd>{plan.devices}, with no limit</dd>
                 </div>
               ))}
+            {plan?.maxPins != null && <Meter label="Pinned clips" value={plan.pins ?? 0} max={plan.maxPins} />}
             <Meter label="File storage" value={stored} max={storageCap} format={bytes} />
             {mine?.classABudget != null && <Meter label={`Uploads this month (${usage.month})`} value={mine.classA} max={mine.classABudget} />}
             {mine?.classBBudget != null && <Meter label={`Downloads this month (${usage.month})`} value={mine.classB} max={mine.classBBudget} />}

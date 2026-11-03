@@ -76,9 +76,9 @@ describe("the account's plan", () => {
     const owner = await bootstrap();
     await env.DB.prepare("UPDATE users SET plan = 'free' WHERE id = ?").bind(owner.userId).run();
     const plan = (await (await api("/api/account/plan", { token: owner.token })).json()) as AccountPlan;
-    expect(plan).toMatchObject({ name: "free", maxDevices: 3, textTtlDays: 7, fileTtlDays: 7, files: false });
+    expect(plan).toMatchObject({ name: "free", maxDevices: 2, textTtlDays: 3, fileTtlDays: 1, files: false, maxPins: 10, pins: 0 });
     expect(plan.devices).toBeGreaterThanOrEqual(1);
-    expect(plan.storageBytes).toBe(52428800);
+    expect(plan.storageBytes).toBe(10 * 1024 * 1024);
   });
 
   it("counts only the caller's own account", async () => {

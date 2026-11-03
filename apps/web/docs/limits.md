@@ -31,17 +31,29 @@ with duplicates.
 
 ## Plans
 
-Each account has a plan. The hosted service gives new accounts **free**:
+Each account has a plan. The hosted service gives new accounts **free**, a
+trial you can keep: one computer and one phone, with a short memory. **Pro**
+is the paid plan.
 
-| | Free | Unlimited |
-| --- | --- | --- |
-| Devices | 3 | no limit |
-| Text kept for | 7 days | 30 days |
-| Images and files kept for | 7 days | 7 days |
-| Files other than images | no | yes |
-| File storage held | 50 MB | the server's limit |
-| Uploads a month | 2,000 | the server's limit |
-| Downloads a month | 20,000 | the server's limit |
+| | Free | Pro | Unlimited |
+| --- | --- | --- | --- |
+| Devices | 2 | 10 | no limit |
+| Text kept for | 3 days | 90 days | 30 days |
+| Images and files kept for | 1 day | 30 days | 7 days |
+| Files other than images | no | yes | yes |
+| Pinned clips | 10 | no limit | no limit |
+| File storage held | 10 MB | 2 GB | the server's limit |
+| Uploads a month | 500 | 20,000 | the server's limit |
+| Downloads a month | 5,000 | 200,000 | the server's limit |
+
+`unlimited` is what accounts made before plans existed keep, and what a
+self-hosted server's first account gets.
+
+A clip keeps the expiry it was written with: moving to another plan changes
+how long new clips live, not old ones. Pinned clips never expire, which is
+why a plan with short history also caps how many can be pinned; unpin one to
+pin another. A device past the plan's limit keeps working, but no new one can
+join until one is removed.
 
 **Settings → Plan** in the web app shows yours, with how much of each you have
 used this month. `clipsync status` shows the server's budgets.

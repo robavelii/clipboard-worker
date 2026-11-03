@@ -423,6 +423,10 @@ export interface AccountPlan {
   files: boolean;
   /** Bytes of encrypted files held at once; null for no limit of the plan's own. */
   storageBytes: number | null;
+  /** Clips that may be pinned at once; null for no cap. Absent from servers before pin caps. */
+  maxPins?: number | null;
+  /** Pinned clips now. Absent from servers before pin caps. */
+  pins?: number;
 }
 
 /** PATCH /api/devices/:id */

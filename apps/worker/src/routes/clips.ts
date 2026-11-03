@@ -513,31 +513,45 @@ export const clipRoutes = new Hono<AppEnv>()
     return c.json({ ok: true });
   })
 
-  /** Pinned clips survive the expiry cron. */
+  /**
+   * Pinned clips survive the expiry cron. A plan with `maxPins` caps how many
+   * may be pinned at once, counted in the same statement, so two pins at once
+   * cannot both take the last place. Unpinning, or pinning a clip that is
+   * already pinned, is never refused.
+   */
   .post("/:id/pin", async (c) => {
     const id = c.req.param("id");
     const body = await c.req
       .json<{ pinned?: boolean }>()
       .catch(() => ({}) as { pinned?: boolean });
     const pinned = body.pinned !== false;
+    const { plan, userId } = c.var.device;
 
     const res = await c.env.DB.prepare(
-      `UPDATE clips SET pinned = ?,
-              expires_at = CASE WHEN ? THEN NULL WHEN type = 'text' THEN ? ELSE ? END
-        WHERE id = ? AND user_id = ?`,
+      `UPDATE clips SET pinned = ?1,
+              expires_at = CASE WHEN ?1 THEN NULL WHEN type = 'text' THEN ?2 ELSE ?3 END
+        WHERE id = ?4 AND user_id = ?5
+          AND (?1 = 0 OR pinned = 1 OR ?6 IS NULL
+               OR (SELECT COUNT(*) FROM clips WHERE user_id = ?5 AND pinned = 1) < ?6)`,
     )
       .bind(
         pinned ? 1 : 0,
-        pinned ? 1 : 0,
-        expiryFor(c.var.device.plan, "text", Date.now()),
-        expiryFor(c.var.device.plan, "file", Date.now()),
+        expiryFor(plan, "text", Date.now()),
+        expiryFor(plan, "file", Date.now()),
         id,
-        c.var.device.userId,
+        userId,
+        plan.maxPins,
       )
       .run();
 
     if (!res.meta.changes) {
-      throw new HTTPException(404, { message: "clip not found" });
+      const exists = await c.env.DB.prepare("SELECT 1 AS ok FROM clips WHERE id = ? AND user_id = ?")
+        .bind(id, userId)
+        .first();
+      if (!exists) throw new HTTPException(404, { message: "clip not found" });
+      throw new HTTPException(403, {
+        message: `this account's plan keeps ${plan.maxPins} pinned clips -- unpin one first`,
+      });
     }
 
     await publish(c, c.var.device.userId, {

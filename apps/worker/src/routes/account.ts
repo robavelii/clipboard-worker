@@ -125,12 +125,15 @@ export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
     return c.json({ ok: true });
   })
 
-  /** What this account's plan allows, read with the device; one query for the device count. */
+  /** What this account's plan allows, read with the device; one query for the counts. */
   .get("/plan", async (c) => {
     const { plan, userId } = c.var.device;
-    const row = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = ? AND revoked_at IS NULL")
+    const row = await c.env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM devices WHERE user_id = ?1 AND revoked_at IS NULL) AS n,
+              (SELECT COUNT(*) FROM clips WHERE user_id = ?1 AND pinned = 1) AS pins`,
+    )
       .bind(userId)
-      .first<{ n: number }>();
+      .first<{ n: number; pins: number }>();
     return c.json<AccountPlan>({
       name: plan.name,
       maxDevices: plan.maxDevices,
@@ -139,6 +142,8 @@ export const accountRoutes = new Hono<{ Bindings: Env; Variables: AuthVars }>()
       fileTtlDays: plan.fileTtlDays,
       files: plan.files,
       storageBytes: plan.storageBytes,
+      maxPins: plan.maxPins,
+      pins: row?.pins ?? 0,
     });
   })
 
