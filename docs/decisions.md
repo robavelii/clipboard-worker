@@ -783,6 +783,13 @@ Traps:
 - Windows re-encodes a clipboard image to PNG on every read, which for a
   4K screenshot every two seconds is most of a core. The helper checks the
   clipboard's sequence number and answers "unchanged" instead.
+- AppleScript's `the clipboard as «class furl»` doesn't refuse plain text:
+  it coerces it into a path, so copying "86 characters" read as the file
+  `/86 characters`. Every text copy on macOS then looked like a missing file
+  and was never sent. The backend reads only file URLs, through
+  `NSPasteboard` with `NSPasteboardURLReadingFileURLsOnlyKey` (which also
+  returns every copied file, not just the first), and the daemon drops any
+  path that doesn't exist before treating a copy as files.
 
 ## 29. Standalone binaries: Node single executables, built where they run
 

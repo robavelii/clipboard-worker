@@ -465,6 +465,25 @@ function run(argv) {
 }
 `;
 
+/**
+ * The files a copy put on the pasteboard, one POSIX path a line. Only real
+ * file URLs: AppleScript's `the clipboard as «class furl»` coerces plain
+ * text into a path ("86 characters" became "/86 characters"), which made
+ * every copied text look like a missing file.
+ */
+const MACOS_READ_FILES = `
+ObjC.import('AppKit');
+function run() {
+  var pb = $.NSPasteboard.generalPasteboard;
+  var options = $.NSDictionary.dictionaryWithObjectForKey(true, $.NSPasteboardURLReadingFileURLsOnlyKey);
+  var urls = pb.readObjectsForClassesOptions($.NSArray.arrayWithObject($.NSURL), options);
+  if (urls.isNil()) return '';
+  var paths = [];
+  for (var i = 0; i < urls.count; i++) paths.push(urls.objectAtIndex(i).path.js);
+  return paths.join('\\n');
+}
+`;
+
 /** Writes of a file reference before giving up; one is lost now and then. */
 const MAC_FILE_WRITE_ATTEMPTS = 4;
 
@@ -522,16 +541,15 @@ export const macos: ClipboardBackend = {
     }
   },
   filesOfferText: true,
-  // A Finder copy reads as text as the bare file name. AppleScript gives the
-  // first file's path; a copy of several sends only that one.
+  // A Finder copy reads as text as the bare file name; the file URLs behind
+  // it, one per copied file, come from NSPasteboard.
   async readFiles() {
-    const { code, stdout } = await run(
-      "osascript",
-      ["-e", "POSIX path of (the clipboard as «class furl»)"],
-      { timeoutMs: READ_TIMEOUT_MS, env: utf8Env() },
-    );
-    const path = stdout.trim();
-    return code === 0 && path.startsWith("/") ? [path] : [];
+    const { code, stdout } = await run("osascript", ["-l", "JavaScript", "-e", MACOS_READ_FILES], {
+      timeoutMs: READ_TIMEOUT_MS,
+      env: utf8Env(),
+    });
+    if (code !== 0) return [];
+    return stdout.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("/"));
   },
   // A file reference (furl), as Finder's Copy makes: Finder pastes the file.
   // The writer's own read-back can be answered from its process's cache, so

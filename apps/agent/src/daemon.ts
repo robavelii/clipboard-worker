@@ -406,14 +406,22 @@ export class Daemon {
 
   /* ---------------------------- local -> cloud --------------------------- */
 
+  /**
+   * Files a copy put on the clipboard, only those that exist: a backend
+   * that mistakes text for a path (macOS's AppleScript once did) must not
+   * turn a text copy into a missing file and lose it.
+   */
   private async readFiles(): Promise<string[]> {
     if (!this.files || !this.clipboard.readFiles) return [];
+    let paths: string[];
     try {
-      return await this.clipboard.readFiles();
+      paths = await this.clipboard.readFiles();
     } catch (err) {
       if (this.options.verbose) log("clipboard file read failed:", err);
       return [];
     }
+    const found = await Promise.all(paths.map((path) => stat(path).then(() => true, () => false)));
+    return paths.filter((_, i) => found[i]);
   }
 
   /** Files on a clipboard that holds no text, where a file copy can. */
