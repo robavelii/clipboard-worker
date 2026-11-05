@@ -41,6 +41,15 @@ describe.skipIf(!native)("this machine's clipboard", () => {
     expect(await clipboard.read()).toBe("native ✓ text");
   }, 60_000);
 
+  // AppleScript's «class furl» coerced copied text into a path, so every
+  // text copy on macOS read as a missing file and was never sent.
+  it("finds no files behind copied text", async () => {
+    for (const text of ["86 characters", "notes/today.txt", "/etc"]) {
+      await clipboard.write(text);
+      expect(await clipboard.readFiles!(), text).toEqual([]);
+    }
+  }, 60_000);
+
   // Ten times, with text in between so a file left from the last round
   // can't pass: on macOS a write is lost only now and then (decisions §37).
   it("puts a file on the clipboard as a file", async () => {
