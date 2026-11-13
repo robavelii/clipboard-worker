@@ -16,7 +16,7 @@
   "dependencies": {
     "@clipsync/crypto": "*",
     "@clipsync/protocol": "*",
-    "hono": "^4.13.13"
+    "hono": "^4.13.18"
   },
   "devDependencies": {
     "@clipsync/client": "*",
